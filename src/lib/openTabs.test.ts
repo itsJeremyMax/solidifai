@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readOpenTabs, saveOpenTabs } from "./openTabs";
 
 // Node's experimental global localStorage shadows jsdom's and lacks methods here;
-// install a simple in-memory one (mirrors lastRoute.test.ts).
+// install a simple in-memory one (in-memory stub).
 const store = new Map<string, string>();
 beforeEach(() => {
   store.clear();

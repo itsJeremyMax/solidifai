@@ -8,7 +8,6 @@ import { UpdaterProvider } from "../state/updater";
 import { HeaderSlotProvider } from "../state/headerSlot";
 import { WorkspaceSessionsProvider } from "../state/workspaceSessions";
 import { useEngineLifecycle } from "../hooks/useEngineLifecycle";
-import { useRouteRestore } from "../hooks/useRouteRestore";
 import { useDeepLinks } from "../hooks/useDeepLinks";
 
 /**
@@ -22,7 +21,6 @@ import { useDeepLinks } from "../hooks/useDeepLinks";
  */
 export default function AppLayout() {
   useEngineLifecycle();
-  useRouteRestore();
   useDeepLinks();
   return (
     <AppConfigProvider>

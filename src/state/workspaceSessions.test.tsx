@@ -16,7 +16,7 @@ vi.mock("../lib/workspaces", () => ({
 vi.mock("../hooks/useArtifacts", () => ({ clearArtifactCache: vi.fn() }));
 vi.mock("./editorViewState", () => ({ clearEditorView: vi.fn() }));
 
-// Stub localStorage with a simple in-memory store (mirrors lastRoute.test.ts pattern).
+// Stub localStorage with a simple in-memory store (in-memory stub).
 const store = new Map<string, string>();
 beforeEach(() => {
   store.clear();

@@ -1,6 +1,6 @@
 /**
- * Open-tabs persistence for restore-on-launch. Mirrors lastRoute.ts — pure UI
- * state in localStorage, reads guarded, writes best-effort.
+ * Open-tabs persistence for restore-on-launch: pure UI state in localStorage,
+ * reads guarded, writes best-effort.
  */
 const KEY = "solidifai.openTabs";
 
