@@ -256,11 +256,17 @@ worktree.
 
 ## Later: OS-level signing (not required for v1)
 
-The pipeline ships with updater (minisign) signing only. Until OS signing is
-added, macOS/Windows users see a one-time Gatekeeper/SmartScreen prompt on first
+The pipeline ships with updater (minisign) signing only. macOS bundles are
+ad-hoc signed (`bundle.macOS.signingIdentity: "-"` in `tauri.conf.json`) — this
+matters on Apple Silicon, where a bundle without a valid signature seal is
+reported by Gatekeeper as "damaged" with no Open Anyway option, instead of the
+normal unidentified-developer prompt. Until real OS signing is added,
+macOS/Windows users see a one-time Gatekeeper/SmartScreen prompt on first
 launch. To remove it later, add the secrets and `tauri-action` inputs for:
 
 - **macOS**: Apple Developer ID Application certificate + notarization
   (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`,
-  `APPLE_PASSWORD`, `APPLE_TEAM_ID`).
+  `APPLE_PASSWORD`, `APPLE_TEAM_ID`). The `APPLE_SIGNING_IDENTITY` env var /
+  input replaces the ad-hoc `"-"` identity; remove it from `tauri.conf.json`
+  when wiring real certificates.
 - **Windows**: an Authenticode code-signing certificate.

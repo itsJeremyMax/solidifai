@@ -265,6 +265,10 @@ plumbing; `SHA256SUMS.txt` lets you verify a manual download.
 > On macOS, Gatekeeper blocks the app: allow it under **System Settings →
 > Privacy & Security → Open Anyway**. On Windows, SmartScreen warns: click
 > **More info → Run anyway**.
+>
+> If macOS instead reports the app as **"damaged"** (no Open Anyway offered),
+> clear the quarantine flag on the download and reopen it:
+> `xattr -d com.apple.quarantine ~/Downloads/solidifai_*.dmg`
 
 The app updates itself. When a new version is available you see an "Update
 available" indicator; how it applies (notify, auto-download, or silent) is
