@@ -178,17 +178,19 @@ self-contained engine:
   standalone CPython (via `uv`), installs the engine's production dependencies
   into it, and runs `scripts/prune_engine.py`.
 - `prune_engine.py` removes dev/unused packages (matplotlib, pytest) on every
-  platform, and on **macOS** also subsets VTK to the native dependency closure the
-  offscreen renderer plus OpenCASCADE actually link (computed empirically with
-  `otool`, seeded from every native module so OCP/lib3mf deps are kept). This
-  trims the macOS bundle from ~918 MB of site-packages to roughly **700 MB
-  installed** (about a 400 MB compressed download). Native-lib subsetting is
-  macOS-only for now: Linux's auditwheel hash-renames libs while `ldd` reports
-  unmangled SONAMEs, so a basename-matched closure could delete a needed lib;
-  validating that mapping on a Linux runner (so Linux/Windows also shrink) is a
-  tracked follow-up. Until then those platforms ship the full VTK shared libs
-  (the build smoke imports OCP + lib3mf + build123d, so a broken bundle fails CI
-  rather than shipping).
+  platform, and on **macOS and Linux** also subsets VTK to the native dependency
+  closure the offscreen renderer plus OpenCASCADE actually link (computed
+  empirically with `otool` / `patchelf --print-needed`, seeded from every native
+  module so OCP/lib3mf deps are kept; on Linux the closure matches the exact
+  DT_NEEDED basenames the wheel build wrote when it vendored the libs, and
+  SONAME symlink chains are kept whole). On macOS this trims the bundle from
+  ~918 MB of site-packages to roughly **700 MB installed** (about a 400 MB
+  compressed download). Windows still ships the full VTK shared libs (PE import
+  tables need a third-party parser). If the vendored-lib directory can't be
+  identified unambiguously, pruning is skipped and everything ships. Either
+  way, a wrong subset fails the build smoke (re-runs the view capture and
+  imports OCP + lib3mf + build123d), so it can break a release build but never
+  a user.
 - The result is shipped as a Tauri resource (`bundle.resources: ["engine-dist"]`).
   At runtime `engine.rs` resolves the bundled interpreter from the resource dir
   in release builds and falls back to the dev tree under `tauri dev`. The bundled

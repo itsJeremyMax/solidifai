@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -173,7 +174,7 @@ def _deps_linux(lib: Path) -> set[str]:
     try:
         out = subprocess.run(["patchelf", "--print-needed", str(lib)],
                              capture_output=True, text=True, check=True)
-        return {l.strip() for l in out.stdout.splitlines() if l.strip()}
+        return {ln.strip() for ln in out.stdout.splitlines() if ln.strip()}
     except Exception:
         out = subprocess.run(["ldd", str(lib)], capture_output=True, text=True)
         names = set()
@@ -190,18 +191,60 @@ def _libs_dir(site_packages: Path) -> Path | None:
 
     macOS (delocate) names libs in ``vtkmodules/.dylibs`` exactly as they appear
     in the extensions' install names, so the otool-based closure is exact (and is
-    the tested path). Linux auditwheel renames libs with a content hash
-    (``libvtkCommonCore-<hash>.so.1``) while ``ldd``/``patchelf`` report the
-    unmangled SONAME, so a basename match would wrongly delete a needed lib;
-    Windows ships DLLs alongside the extensions. Until that mapping is validated
-    on those runners we do NOT prune native libs there - those platforms still
-    drop unused vtk *extension modules* + dev deps, only the shared libs stay.
-    See docs/RELEASING.md (VTK subsetting is macOS-only for now).
+    the tested path).
+
+    Linux is exact for the same reason: the wheel build (auditwheel/its
+    equivalent) writes the vendored libs' FINAL basenames into the extensions'
+    DT_NEEDED entries when it vendors them, and ``patchelf --print-needed``
+    reports those strings verbatim - the loader resolves exactly what we match.
+    Symlink chains (``libfoo.so.1`` -> ``libfoo.so.1.2.3``) are expanded after
+    the closure so a kept link never loses its target. Only a directory that is
+    unambiguously VTK's own vendored-lib dir is pruned; anything unexpected
+    returns None, which keeps the ship-everything behavior.
+
+    Windows ships DLLs whose PE import tables need a third-party parser, so
+    Windows still ships the full lib set. Everywhere, a wrong subset fails the
+    build smoke (re-runs capture_smoke + imports OCP/lib3mf/build123d), so this
+    can break a release build but never a user.
     """
-    if platform.system() != "Darwin":
+    system = platform.system()
+    if system == "Darwin":
+        dylibs = site_packages / "vtkmodules" / ".dylibs"
+        return dylibs if dylibs.is_dir() else None
+    if system == "Linux":
+        candidates = [
+            d
+            for d in [site_packages / "vtkmodules" / ".libs",
+                      *sorted(site_packages.glob("*vtk*.libs"))]
+            if d.is_dir()
+            and sum(1 for f in d.iterdir() if f.name.startswith("libvtk")) >= 5
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            print(f"subset_vtk: ambiguous vtk lib dirs {candidates}, skipping libs")
         return None
-    dylibs = site_packages / "vtkmodules" / ".dylibs"
-    return dylibs if dylibs.is_dir() else None
+    return None
+
+
+def _expand_link_targets(kept: set[str], present: dict[str, Path]) -> set[str]:
+    """Add the resolved targets of kept symlinks (SONAME chains) to the keep set.
+
+    ``libvtkX.so.1`` is often a symlink to ``libvtkX.so.1.2.3``; keeping the
+    link while deleting its target would ship a dangling symlink. Follows
+    chains; targets outside `present` are ignored (nothing of ours to keep).
+    """
+    out = set(kept)
+    stack = [name for name in kept if name in present]
+    while stack:
+        p = present.get(stack.pop())
+        if p is None or not p.is_symlink():
+            continue
+        target = Path(os.readlink(p)).name
+        if target in present and target not in out:
+            out.add(target)
+            stack.append(target)
+    return out
 
 
 def _loaded_vtk_extensions(target_python: Path) -> set[str]:
@@ -281,7 +324,7 @@ def subset_vtk(site_packages: Path, target_python: Path) -> dict:
             name: {d for d in deps_fn(p) if d in present_libs}
             for name, p in present_libs.items()
         }
-        kept_libs = native_closure(seeds, graph)
+        kept_libs = _expand_link_targets(native_closure(seeds, graph), present_libs)
 
     # --- delete what is not kept ---
     removed_ext = removed_libs = 0

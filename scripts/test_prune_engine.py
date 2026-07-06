@@ -97,6 +97,53 @@ def test_native_closure_handles_cycles():
     assert prune_engine.native_closure({"x"}, deps) == {"x", "y"}
 
 
+def test_libs_dir_linux_requires_unambiguous_vtk_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(prune_engine.platform, "system", lambda: "Linux")
+    sp = tmp_path / "site-packages"
+
+    # nothing present -> skip
+    sp.mkdir(parents=True)
+    assert prune_engine._libs_dir(sp) is None
+
+    # a real vtk vendored dir -> found
+    libs = sp / "vtkmodules" / ".libs"
+    for i in range(6):
+        _touch(libs / f"libvtkCommonCore-{i}.so.1")
+    assert prune_engine._libs_dir(sp) == libs
+
+    # too few libvtk files -> not confidently vtk's dir -> skip
+    thin = tmp_path / "thin" / "site-packages"
+    _touch(thin / "vtkmodules" / ".libs" / "libvtkOne.so")
+    assert prune_engine._libs_dir(thin) is None
+
+    # two plausible dirs -> ambiguous -> skip (ship everything)
+    for i in range(6):
+        _touch(sp / "vtk.libs" / f"libvtkRendering-{i}.so.1")
+    assert prune_engine._libs_dir(sp) is None
+
+
+def test_libs_dir_windows_always_skips(tmp_path, monkeypatch):
+    monkeypatch.setattr(prune_engine.platform, "system", lambda: "Windows")
+    libs = tmp_path / "vtkmodules" / ".libs"
+    for i in range(6):
+        _touch(libs / f"libvtk-{i}.dll")
+    assert prune_engine._libs_dir(tmp_path) is None
+
+
+def test_expand_link_targets_keeps_soname_chains(tmp_path):
+    real = tmp_path / "libvtkX.so.1.2.3"
+    real.write_text("elf")
+    (tmp_path / "libvtkX.so.1").symlink_to(real.name)
+    (tmp_path / "libvtkX.so").symlink_to("libvtkX.so.1")
+    unrelated = tmp_path / "libvtkY.so.1"
+    unrelated.write_text("elf")
+    present = {p.name: p for p in tmp_path.iterdir()}
+
+    kept = prune_engine._expand_link_targets({"libvtkX.so"}, present)
+    assert kept == {"libvtkX.so", "libvtkX.so.1", "libvtkX.so.1.2.3"}
+    assert "libvtkY.so.1" not in kept
+
+
 def test_strip_natives_skips_linux_and_windows(tmp_path, monkeypatch):
     # auditwheel-patched libs are corrupted by strip; PE stripping is risky.
     for system in ("Linux", "Windows"):
