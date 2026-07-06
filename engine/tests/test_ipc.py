@@ -81,6 +81,37 @@ def _tcp_send(sock_path, request, *, raw_first_line=None):
     return json.loads(buf.decode("utf-8").splitlines()[0]) if buf else None
 
 
+def test_control_roundtrip_times_out_on_wedged_host(tmp_path, monkeypatch):
+    """A host that accepts but never responds must fail the tool call with
+    ControlError instead of hanging the agent session forever."""
+    from solidifai_engine import control
+
+    monkeypatch.setattr(ipc, "use_tcp", lambda: True)
+    path = str(tmp_path / "control.sock")
+    listener, _token = ipc.bind(path, force_tcp=True)
+    listener.listen(1)
+    accepted = []
+
+    def wedge():
+        conn, _ = listener.accept()
+        accepted.append(conn)  # hold the connection open, never reply
+
+    t = threading.Thread(target=wedge, daemon=True)
+    t.start()
+    monkeypatch.setenv(control.ENV_SOCK, path)
+    monkeypatch.setattr(control, "_TIMEOUT_S", 0.2)
+    start = time.monotonic()
+    try:
+        control.write("workspace", str(tmp_path), {"design": {"wallMm": 1.0}}, [])
+        raise AssertionError("expected ControlError")
+    except control.ControlError as e:
+        assert "did not respond" in str(e)
+    assert time.monotonic() - start < 5.0, "must fail via timeout, not hang"
+    for conn in accepted:
+        conn.close()
+    listener.close()
+
+
 def test_server_over_tcp_transport(tmp_path, monkeypatch):
     monkeypatch.setattr(ipc, "use_tcp", lambda: True)
     sock_path = str(tmp_path / "engine.sock")

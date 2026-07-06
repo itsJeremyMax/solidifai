@@ -15,6 +15,10 @@ from solidifai_engine import ipc
 
 ENV_SOCK = "SOLIDIFAI_CONTROL_SOCK"
 
+# Bound the whole roundtrip, mirroring the host's own 30s read / 10s write
+# limits: a wedged host must fail the agent's tool call, not hang the session.
+_TIMEOUT_S = 15.0
+
 
 class ControlError(RuntimeError):
     pass
@@ -34,6 +38,7 @@ def _roundtrip(req: dict) -> dict:
         conn = ipc.connect(_sock_path())
     except OSError as exc:
         raise ControlError(f"cannot reach the app: {exc}") from exc
+    conn.settimeout(_TIMEOUT_S)
     try:
         conn.sendall((json.dumps(req) + "\n").encode("utf-8"))
         buf = b""
@@ -42,6 +47,10 @@ def _roundtrip(req: dict) -> dict:
             if not chunk:
                 break
             buf += chunk
+    except TimeoutError as exc:
+        raise ControlError("the app did not respond in time") from exc
+    except OSError as exc:
+        raise ControlError(f"control channel failed: {exc}") from exc
     finally:
         conn.close()
     if not buf:
