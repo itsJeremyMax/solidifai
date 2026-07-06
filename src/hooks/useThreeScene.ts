@@ -147,7 +147,6 @@ export interface SceneRefs {
   measure: MeasureState;
   /** Right-click pick callback registry. */
   pick: PickState;
-  env: EnvHandle;
   lights: LightRig;
   composer: ComposerHandle;
   grid: GridHandle;
@@ -303,8 +302,11 @@ export function useThreeScene(
     controls.rotateSpeed = 0.85;
     controls.target.set(0, 0, 0);
 
-    // IBL + light rig + post-processing pipeline (modular).
-    const env = setupEnvironment(scene, renderer);
+    // Light rig + post-processing pipeline (modular). The IBL environment is
+    // attached in the renderer.init() handler below: PMREMGenerator.fromScene
+    // throws on an uninitialized backend, and on the WebGL fallback path (no
+    // WebGPU, e.g. Intel builds under Rosetta) init never wins that race.
+    let env: EnvHandle | null = null;
     const lights = buildLightRig(scene);
     renderer.toneMapping = THREE.NeutralToneMapping; // neutral product-viz tone map
     const composer = buildComposer(renderer, scene, camera, aoCamera, gridCamera);
@@ -372,7 +374,6 @@ export function useThreeScene(
       ground,
       measure,
       pick,
-      env,
       lights,
       composer,
       grid,
@@ -472,6 +473,8 @@ export function useThreeScene(
     let disposed = false;
     renderer.init().then(() => {
       if (disposed) return;
+      env = setupEnvironment(scene, renderer);
+      requestRender(); // repaint now that the IBL contributes
       renderer.setAnimationLoop(animate);
     });
 
@@ -528,7 +531,7 @@ export function useThreeScene(
       handle.composer.dispose();
       grid.dispose();
       lights.dispose();
-      env.dispose();
+      env?.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);

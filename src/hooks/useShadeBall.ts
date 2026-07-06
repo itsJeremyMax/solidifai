@@ -76,11 +76,6 @@ function ensureCtx(): ShadeBallCtx {
 
   const scene = new THREE.Scene();
 
-  // ── IBL: RoomEnvironment via PMREM, dialed down — same as scene/environment.ts ──
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  scene.environmentIntensity = 0.5;
-
   // ── light rig: same temperature contrast as scene/lighting.ts (no shadows) ──
   const hemi = new THREE.HemisphereLight(0xeef3fb, 0x20242d, 0.5);
   scene.add(hemi);
@@ -120,7 +115,14 @@ function ensureCtx(): ShadeBallCtx {
     mesh,
     target,
     canvas,
-    ready: renderer.init().then(() => undefined),
+    // IBL: RoomEnvironment via PMREM, dialed down — same as scene/environment.ts.
+    // Attached after init: PMREMGenerator.fromScene throws on an uninitialized
+    // backend (always lost on the WebGL fallback path, e.g. under Rosetta).
+    ready: renderer.init().then(() => {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      scene.environmentIntensity = 0.5;
+    }),
   };
   ctx = built;
   return built;
