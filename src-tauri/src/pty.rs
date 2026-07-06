@@ -93,9 +93,31 @@ fn build_command(
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> CommandBuilder {
-    let shell = program
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string()));
+    build_command_with_env(program, args, cwd, env, |key| std::env::var(key).ok())
+}
+
+/// [`build_command`] with the host environment lookups injected, so tests can
+/// exercise launch-path-specific branches (no SHELL, no HOME, AppImage) without
+/// mutating the process environment (which races other tests).
+fn build_command_with_env(
+    program: Option<&str>,
+    args: &[&str],
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    host_env: impl Fn(&str) -> Option<String>,
+) -> CommandBuilder {
+    let shell = program.map(|p| p.to_string()).unwrap_or_else(|| {
+        // SHELL is a unix convention; a Windows GUI launch sets neither SHELL
+        // nor HOME, so fall back to COMSPEC (the OS's own default-shell pointer).
+        #[cfg(unix)]
+        {
+            host_env("SHELL").unwrap_or_else(|| "/bin/zsh".to_string())
+        }
+        #[cfg(windows)]
+        {
+            host_env("COMSPEC").unwrap_or_else(|| "cmd.exe".to_string())
+        }
+    });
 
     let mut cmd = CommandBuilder::new(shell);
     for arg in args {
@@ -112,23 +134,28 @@ fn build_command(
     #[cfg(unix)]
     if program.is_none() {
         cmd.arg("-l");
+        scrub_appimage_env(&mut cmd, &host_env);
     }
     #[cfg(unix)]
     {
-        if std::env::var_os("TERM").is_none() {
+        if host_env("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
-        if std::env::var_os("COLORTERM").is_none() {
+        if host_env("COLORTERM").is_none() {
             cmd.env("COLORTERM", "truecolor");
         }
     }
 
-    // Working directory: explicit cwd, else the user's home, else the process cwd.
-    let dir = cwd.or_else(|| std::env::var("HOME").ok()).or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .map(|p| p.display().to_string())
-    });
+    // Working directory: explicit cwd, else the user's home (HOME on unix;
+    // Windows GUI launches set USERPROFILE instead), else the process cwd.
+    let dir = cwd
+        .or_else(|| host_env("HOME"))
+        .or_else(|| host_env("USERPROFILE"))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string())
+        });
     if let Some(dir) = dir {
         cmd.cwd(dir);
     }
@@ -140,6 +167,23 @@ fn build_command(
     }
 
     cmd
+}
+
+/// A Linux AppImage launches through an AppRun that exports LD_LIBRARY_PATH
+/// pointing into $APPDIR/usr/lib so the bundled webkit/gtk libs resolve. User
+/// tools run in the interactive terminal must NOT inherit that: system
+/// git/node/python would link the bundle's older libstdc++/libssl and fail with
+/// "GLIBCXX_... not found" style errors. Login-shell rc files rebuild PATH but
+/// never clear LD_LIBRARY_PATH, so it has to be stripped here. Only applies when
+/// actually running inside an AppImage; .deb/dev launches are left untouched,
+/// and callers only invoke this for interactive sessions (explicit programs run
+/// exactly as requested).
+#[cfg(unix)]
+fn scrub_appimage_env(cmd: &mut CommandBuilder, host_env: &impl Fn(&str) -> Option<String>) {
+    if host_env("APPIMAGE").is_some() || host_env("APPDIR").is_some() {
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("LD_PRELOAD");
+    }
 }
 
 /// Spawn `cmd` inside the slave side of `pair`, take the master writer, and start
@@ -340,6 +384,143 @@ mod tests {
             !explicit.get_argv().iter().any(|a| a == "-l"),
             "explicit programs must not gain a login flag"
         );
+    }
+
+    /// Fake host-environment lookup backed by a fixed key/value slice, so tests
+    /// never mutate the real process environment (which races other tests).
+    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
+    /// Shell selection honors SHELL when present and falls back to a fixed
+    /// default when unset (a stripped launch environment).
+    #[test]
+    #[cfg(unix)]
+    fn build_command_shell_env_and_fallback() {
+        let from_env =
+            build_command_with_env(None, &[], None, None, env_of(&[("SHELL", "/bin/bash")]));
+        assert_eq!(from_env.get_argv()[0], "/bin/bash");
+
+        let fallback = build_command_with_env(None, &[], None, None, env_of(&[]));
+        assert_eq!(fallback.get_argv()[0], "/bin/zsh");
+    }
+
+    /// Windows GUI launches set neither SHELL nor HOME: the shell must come from
+    /// COMSPEC (cmd.exe fallback) and the cwd from USERPROFILE.
+    #[test]
+    #[cfg(windows)]
+    fn build_command_windows_uses_comspec_and_userprofile() {
+        let cmd = build_command_with_env(
+            None,
+            &[],
+            None,
+            None,
+            env_of(&[
+                ("COMSPEC", "C:\\Windows\\System32\\cmd.exe"),
+                ("USERPROFILE", "C:\\Users\\test"),
+            ]),
+        );
+        assert_eq!(cmd.get_argv()[0], "C:\\Windows\\System32\\cmd.exe");
+        assert!(
+            !cmd.get_argv().iter().any(|a| a == "-l"),
+            "the unix login flag must not leak onto Windows shells"
+        );
+        assert_eq!(cmd.get_cwd().unwrap(), "C:\\Users\\test");
+
+        let bare = build_command_with_env(None, &[], None, None, env_of(&[]));
+        assert_eq!(bare.get_argv()[0], "cmd.exe");
+    }
+
+    /// Working directory falls back HOME -> USERPROFILE -> process cwd, and an
+    /// explicit cwd always wins.
+    #[test]
+    fn build_command_cwd_fallback_chain() {
+        let explicit = build_command_with_env(
+            None,
+            &[],
+            Some("/ws/here".into()),
+            None,
+            env_of(&[("HOME", "/home/u")]),
+        );
+        assert_eq!(explicit.get_cwd().unwrap(), "/ws/here");
+
+        let home = build_command_with_env(
+            None,
+            &[],
+            None,
+            None,
+            env_of(&[("HOME", "/home/u"), ("USERPROFILE", "C:\\Users\\u")]),
+        );
+        assert_eq!(home.get_cwd().unwrap(), "/home/u");
+
+        let profile = build_command_with_env(
+            None,
+            &[],
+            None,
+            None,
+            env_of(&[("USERPROFILE", "C:\\Users\\u")]),
+        );
+        assert_eq!(profile.get_cwd().unwrap(), "C:\\Users\\u");
+    }
+
+    /// Inside an AppImage the AppRun-exported loader vars must be stripped from
+    /// interactive shells (user tools would link the bundled libs), but only
+    /// there: a normal install keeps them.
+    #[test]
+    #[cfg(unix)]
+    fn scrub_appimage_env_strips_loader_vars_only_inside_appimage() {
+        let seed = |cmd: &mut CommandBuilder| {
+            cmd.env("LD_LIBRARY_PATH", "/tmp/.mount_x/usr/lib");
+            cmd.env("LD_PRELOAD", "/tmp/.mount_x/hook.so");
+        };
+
+        let mut inside = CommandBuilder::new("/bin/zsh");
+        seed(&mut inside);
+        scrub_appimage_env(
+            &mut inside,
+            &env_of(&[("APPIMAGE", "/opt/solidifai.AppImage")]),
+        );
+        assert!(inside.get_env("LD_LIBRARY_PATH").is_none());
+        assert!(inside.get_env("LD_PRELOAD").is_none());
+
+        let mut appdir_only = CommandBuilder::new("/bin/zsh");
+        seed(&mut appdir_only);
+        scrub_appimage_env(&mut appdir_only, &env_of(&[("APPDIR", "/tmp/.mount_x")]));
+        assert!(appdir_only.get_env("LD_LIBRARY_PATH").is_none());
+
+        let mut outside = CommandBuilder::new("/bin/zsh");
+        seed(&mut outside);
+        scrub_appimage_env(&mut outside, &env_of(&[]));
+        assert_eq!(
+            outside.get_env("LD_LIBRARY_PATH").unwrap(),
+            "/tmp/.mount_x/usr/lib"
+        );
+        assert_eq!(
+            outside.get_env("LD_PRELOAD").unwrap(),
+            "/tmp/.mount_x/hook.so"
+        );
+    }
+
+    /// The explicit env map from the frontend is applied after the AppImage
+    /// scrub, so a caller-provided LD_LIBRARY_PATH still wins.
+    #[test]
+    #[cfg(unix)]
+    fn build_command_explicit_env_overrides_appimage_scrub() {
+        let mut env = HashMap::new();
+        env.insert("LD_LIBRARY_PATH".to_string(), "/custom/lib".to_string());
+        let cmd = build_command_with_env(
+            None,
+            &[],
+            None,
+            Some(env),
+            env_of(&[("APPIMAGE", "/opt/solidifai.AppImage")]),
+        );
+        assert_eq!(cmd.get_env("LD_LIBRARY_PATH").unwrap(), "/custom/lib");
     }
 
     /// Storing a live child in `PtyState` and calling `kill_one()` reaps it without
