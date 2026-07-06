@@ -53,6 +53,10 @@ anyhow = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
 # OS deep links (solidifai://) -> in-app routes. See useDeepLinks on the JS side.
 tauri-plugin-deep-link = "2"
+# One app instance per user: a second launch focuses the first instead of racing
+# it for the control socket, engine sockets, and registry writes. The deep-link
+# feature forwards a link-triggered second launch to the running instance.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 # Mutexes without lock poisoning: a panic while a lock is held can't cascade into
 # a dead app through downstream .lock().unwrap() panics.
 parking_lot = "0.12"

@@ -47,6 +47,17 @@ pub fn run() {
     let instances = Arc::new(Instances::default());
 
     let mut builder = tauri::Builder::default()
+        // Registered FIRST (the plugin's requirement): a second launch exits
+        // immediately and this callback runs in the surviving instance instead.
+        // Two live instances would fight over the control socket, per-workspace
+        // engine sockets, and registry writes; the deep-link feature forwards a
+        // link-triggered second launch here so the URL still routes in-app.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
