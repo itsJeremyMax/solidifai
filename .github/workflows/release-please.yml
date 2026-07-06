@@ -2,6 +2,10 @@ name: release-please
 on:
   push:
     branches: [main]
+  # Manual recompute of the Release PR. Useful right after a release publishes:
+  # the tag is created at publish time, so a Release PR drafted in the window
+  # between merge and publish overcounts until the next run re-anchors on it.
+  workflow_dispatch:
 permissions:
   contents: write
   pull-requests: write
