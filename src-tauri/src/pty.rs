@@ -102,6 +102,27 @@ fn build_command(
         cmd.arg(arg);
     }
 
+    // Launched from Finder/Dock the app gets launchd's minimal environment: no
+    // TERM (curses tools abort) and no Homebrew in PATH (user rc files that call
+    // `brew --prefix` or prompt tools break). An interactive session (no explicit
+    // program) therefore runs as a LOGIN shell so /etc/zprofile + ~/.zprofile
+    // rebuild PATH, and TERM defaults to what xterm.js emulates. Dev runs are
+    // unaffected: there the parent env already carries both, and the explicit
+    // env map below still overrides everything.
+    #[cfg(unix)]
+    if program.is_none() {
+        cmd.arg("-l");
+    }
+    #[cfg(unix)]
+    {
+        if std::env::var_os("TERM").is_none() {
+            cmd.env("TERM", "xterm-256color");
+        }
+        if std::env::var_os("COLORTERM").is_none() {
+            cmd.env("COLORTERM", "truecolor");
+        }
+    }
+
     // Working directory: explicit cwd, else the user's home, else the process cwd.
     let dir = cwd.or_else(|| std::env::var("HOME").ok()).or_else(|| {
         std::env::current_dir()
@@ -295,6 +316,29 @@ mod tests {
         assert!(
             out.contains("solidifai-pty-ok"),
             "expected PTY output to contain marker, got: {out:?}"
+        );
+    }
+
+    /// An interactive session (default shell) must survive a Finder launch: login
+    /// shell so rc files can rebuild PATH, and a TERM default for curses tools.
+    /// An explicit program is left exactly as requested.
+    #[test]
+    #[cfg(unix)]
+    fn build_command_interactive_shell_is_login_with_term() {
+        let cmd = build_command(None, &[], None, None);
+        assert!(
+            cmd.get_argv().iter().any(|a| a == "-l"),
+            "default shell should be spawned as a login shell"
+        );
+        assert!(
+            cmd.get_env("TERM").is_some(),
+            "TERM must be set or defaulted"
+        );
+
+        let explicit = build_command(Some("/bin/sh"), &["-c", "true"], None, None);
+        assert!(
+            !explicit.get_argv().iter().any(|a| a == "-l"),
+            "explicit programs must not gain a login flag"
         );
     }
 
