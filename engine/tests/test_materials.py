@@ -207,6 +207,24 @@ def test_json_file_source_missing_file_is_empty():
     assert src.default is None
 
 
+def test_json_file_source_reads_utf8_regardless_of_locale(tmp_path):
+    # The host writes UTF-8; the read must not depend on the locale default
+    # (Windows cp1252, or the ASCII locale OCC exports leave behind).
+    p = tmp_path / "materials.json"
+    p.write_bytes(
+        json.dumps(
+            {
+                "materials": [
+                    {"id": "tolerance-pla", "label": "PLA ±0.1 µm", "base": "pla"},
+                ],
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    src = m.JsonFileSource(str(p))
+    assert src.get("tolerance-pla").label == "PLA ±0.1 µm"
+
+
 def test_resolver_uses_configured_default_when_name_is_none():
     r = m.MaterialResolver([m.BuiltinSource()], default="petg")
     assert r.resolve(None).name == "petg"

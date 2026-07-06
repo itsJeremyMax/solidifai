@@ -66,13 +66,19 @@ def _default_candidates() -> list[str]:
             str(Path(pf86) / "OrcaSlicer" / "orca-slicer.exe"),
             str(Path(pf) / "Bambu Studio" / "orca-slicer.exe"),
         ]
-    # Linux: check PATH first, then common AppImage locations
+    # Linux: check PATH first, then well-known install locations. The fixed
+    # paths matter because a desktop-entry launch gets the minimal session PATH
+    # (no shell-rc additions like ~/.local/bin), so which() alone misses
+    # installs that resolve fine from the user's own terminal.
     found = shutil.which("orca-slicer")
     candidates = [found] if found else []
     candidates += [
+        str(Path.home() / ".local" / "bin" / "orca-slicer"),
         str(Path.home() / "OrcaSlicer.AppImage"),
-        "/opt/OrcaSlicer/orca-slicer",
+        str(Path.home() / "Applications" / "OrcaSlicer.AppImage"),
+        "/usr/bin/orca-slicer",
         "/usr/local/bin/orca-slicer",
+        "/opt/OrcaSlicer/orca-slicer",
     ]
     return candidates
 

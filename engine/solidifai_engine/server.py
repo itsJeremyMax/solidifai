@@ -20,11 +20,56 @@ import json
 import logging
 import os
 import socket
+import sys
 import threading
 from typing import Any
 
 from solidifai_engine import ipc, scratch
 from solidifai_engine.session import Session
+
+# -- parent-death detection ---------------------------------------------------
+# On unix a dead parent reparents the engine, so polling getppid() works. On
+# Windows os.getppid() keeps returning the original creator PID forever, so the
+# poll never fires and orphaned engines outlive a force-quit shell; wait on the
+# parent's process handle instead.
+
+_SYNCHRONIZE = 0x0010_0000
+_WAIT_OBJECT_0 = 0
+_INFINITE = 0xFFFF_FFFF
+# OpenProcess sets this when the PID does not exist (a dead parent); any other
+# error (e.g. ACCESS_DENIED) means the parent may well be alive.
+_ERROR_INVALID_PARAMETER = 87
+
+
+def _watchdog_strategy() -> str:
+    """Which parent-death signal works here: "handle-wait" (nt) or "ppid-poll"."""
+    return "handle-wait" if os.name == "nt" else "ppid-poll"
+
+
+def _open_parent_handle(ppid: int) -> tuple[int | None, int]:
+    """OpenProcess(SYNCHRONIZE) on the parent: (handle, 0), or (None, last_error)
+    on failure so the caller can tell "parent already dead" from "can't wait".
+    (None, 0) off Windows."""
+    if sys.platform != "win32":
+        return None, 0
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(_SYNCHRONIZE, False, ppid)
+    if not handle:
+        return None, ctypes.get_last_error()
+    return int(handle), 0
+
+
+def _wait_for_parent_exit(handle: int) -> bool:
+    """Block until the parent process handle signals; True iff it exited.
+
+    False means the wait itself failed (never treat that as parent death)."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    return ctypes.windll.kernel32.WaitForSingleObject(handle, _INFINITE) == _WAIT_OBJECT_0
 
 
 class Server:
@@ -96,17 +141,47 @@ class Server:
         """Exit when the parent process dies.
 
         The app can't signal the engine on a force-quit/crash, so without this the
-        engine is reparented to PID 1 and lingers on a dead socket. A daemon thread
-        polls getppid() and hard-exits when the parent changes. os._exit (not
-        sys.exit) so a main thread wedged in a native OCC/VTK call can't block it."""
+        engine lingers on a dead socket. A daemon thread detects parent death per
+        the platform strategy (see _watchdog_strategy) and hard-exits. os._exit
+        (not sys.exit) so a main thread wedged in a native OCC/VTK call can't
+        block it."""
         original_ppid = os.getppid()
 
-        def watch() -> None:
+        def poll() -> None:
+            # Unix: a dead parent reparents us, so getppid() changes.
             while not self._stop.wait(1.0):
                 if os.getppid() != original_ppid:
                     os._exit(0)
 
-        threading.Thread(target=watch, name="parent-watchdog", daemon=True).start()
+        target = poll
+        if _watchdog_strategy() == "handle-wait":
+            handle, err = _open_parent_handle(original_ppid)
+            if handle is not None:
+
+                def wait() -> None:
+                    if _wait_for_parent_exit(handle):
+                        os._exit(0)
+                    poll()  # wait failed mid-flight: degrade rather than exit spuriously
+
+                target = wait
+            elif err == _ERROR_INVALID_PARAMETER:
+                # The shell died in the spawn->watchdog window: the PID no longer
+                # exists, so we are already orphaned — and on Windows the ppid
+                # fallback would never fire. Exit now instead of lingering forever.
+                logging.getLogger(__name__).warning(
+                    "parent watchdog: parent %d already gone at startup; exiting",
+                    original_ppid,
+                )
+                os._exit(0)
+            else:
+                logging.getLogger(__name__).warning(
+                    "parent watchdog: OpenProcess(%d) failed (error %d);"
+                    " falling back to ppid polling",
+                    original_ppid,
+                    err,
+                )
+
+        threading.Thread(target=target, name="parent-watchdog", daemon=True).start()
 
     def serve_forever(self) -> None:
         self._start_parent_watchdog()

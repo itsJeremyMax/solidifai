@@ -14,6 +14,7 @@ Source priority: later sources in the chain win (workspace > global > built-in).
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -184,8 +185,15 @@ class JsonFileSource:
         self._records: dict[str, dict] = {}
         self._default: str | None = None
         try:
-            data = json.loads(Path(path).read_text())
-        except (OSError, ValueError):
+            # Explicit UTF-8: the host writes UTF-8, and the locale default is
+            # unreliable (Windows cp1252; OCC/lib3mf exports flip it to ASCII).
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return  # no materials file is the normal empty case; stay quiet
+        except (OSError, ValueError) as exc:
+            # A present-but-unreadable file (bad JSON, non-UTF-8 hand edit) must
+            # not silently empty the catalog: leave a trace for the field report.
+            logging.getLogger(__name__).warning("materials source %s unreadable: %s", path, exc)
             return
         if not isinstance(data, dict):
             return
