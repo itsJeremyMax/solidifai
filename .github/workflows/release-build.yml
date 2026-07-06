@@ -176,8 +176,11 @@ jobs:
         run: scripts/publish-engine-assets.sh
 
       # tauri-action builds the frontend + ENGINE-LESS bundles, signs the updater
-      # payload with the key, and uploads installers + .sig + a cross-matrix
-      # latest.json to the draft release.
+      # payload with the key, and uploads installers + .sig to the draft release.
+      # It does NOT write latest.json: its per-leg read-modify-write of that one
+      # shared asset raced when two legs finished together (dropped platforms,
+      # 404s on the asset update). The publish job composes the manifest once,
+      # after the whole matrix, from the assets that actually landed.
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -186,13 +189,7 @@ jobs:
         with:
           args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
           releaseId: ${{ needs.meta.outputs.release_id }}
-          # Without tagName the action writes /releases/latest/download/ URLs
-          # into latest.json. Those only resolve while the newest stable release
-          # is GitHub's "Latest", and NEVER resolve for a beta prerelease, so
-          # pin every payload URL to this tag's /releases/download/<tag>/ path.
-          tagName: ${{ inputs.tag }}
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
+          includeUpdaterJson: false
 
       # Engine-full OFFLINE installers, rebuilt via the same Tauri bundler with a
       # resource override (installer.conf.json). These live in formats or names
@@ -264,6 +261,53 @@ jobs:
     permissions:
       contents: write
     steps:
+      # SINGLE WRITER of latest.json. The build legs upload payloads + .sig but
+      # no manifest (tauri-action's per-leg merge of the shared asset raced when
+      # legs finished together). Composing it here, after the entire matrix,
+      # from the assets that actually exist is deterministic and race-free; a
+      # missing .sig fails this step loudly, exactly like the gate below.
+      - name: Build updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir sigs
+          gh release download "$TAG" -p '*.sig' -D sigs -R "$REPO"
+          python3 - <<'PY'
+          import datetime, json, os, pathlib
+
+          tag = os.environ["TAG"]
+          version = tag.removeprefix("v")
+          url_base = f"https://github.com/{os.environ['REPO']}/releases/download/{tag}/"
+          # Updater payload per platform, plus tauri-action's historical alias
+          # keys so the manifest shape stays byte-compatible for old clients.
+          payloads = {
+              "darwin-aarch64": ("solidifai_aarch64.app.tar.gz", "darwin-aarch64-app"),
+              "darwin-x86_64": ("solidifai_x64.app.tar.gz", "darwin-x86_64-app"),
+              "linux-x86_64": (f"solidifai_{version}_amd64.AppImage", "linux-x86_64-appimage"),
+              "windows-x86_64": (f"solidifai_{version}_x64-setup.exe", "windows-x86_64-nsis"),
+          }
+          platforms = {}
+          for key, (name, alias) in payloads.items():
+              sig = pathlib.Path("sigs") / f"{name}.sig"
+              if not sig.exists():
+                  raise SystemExit(f"missing updater signature {sig.name}; re-run the failed build jobs")
+              entry = {"signature": sig.read_text().strip(), "url": url_base + name}
+              platforms[key] = entry
+              platforms[alias] = entry
+          manifest = {
+              "version": version,
+              "notes": "",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc)
+                  .strftime("%Y-%m-%dT%H:%M:%S.") + "000Z",
+              "platforms": platforms,
+          }
+          json.dump(manifest, open("latest.json", "w"), indent=2)
+          PY
+          gh release upload "$TAG" latest.json --clobber -R "$REPO"
+
       - name: Verify release completeness (manifest + assets + engine index)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -271,7 +315,7 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # The complete, matrix-merged manifest tauri-action left on the draft.
+          # The manifest the step above composed and uploaded to the draft.
           gh release download "$TAG" -p latest.json -O manifest.json -R "$REPO"
           gh release view "$TAG" -R "$REPO" --json assets --jq '.assets[].name' > assets.txt
           # The engine index must cover this run's engine revs: newest manifest
@@ -279,10 +323,10 @@ jobs:
           gh release download engine -R "$REPO" -p solidifai-engine-index.json --clobber
           gh api "repos/$REPO/releases/tags/engine" \
             --jq '[.assets[] | select(.name | endswith(".manifest.json")) | {name, created_at}]' > engine-manifests.json
-          # tauri-action merges latest.json with an unlocked read-modify-write per
-          # matrix job, so a concurrent-finish race can silently drop a platform.
+          # Independent re-validation of the composed manifest: every platform
+          # present, every URL tag-pinned, every payload actually on the release.
           # Fail loudly instead of publishing an incomplete release; a re-run of
-          # the failed jobs re-merges and this gate runs again.
+          # the failed jobs re-uploads and this gate runs again.
           python3 - <<'PY'
           import json, os, sys, urllib.parse
           manifest = json.load(open("manifest.json"))
