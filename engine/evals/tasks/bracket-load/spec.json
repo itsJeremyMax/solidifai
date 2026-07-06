@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "timeout_s": 1500,
+  "graders": ["requirements", "dfm", "watertight", "dim_match", "stress"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
+  ],
+  "expected_dims": [
+    {"kind": "hole", "expected": 5.5, "tol": 0.3, "count": 2},
+    {
+      "kind": "center_distance",
+      "between": "holes",
+      "diameter": 5.5,
+      "diameter_tol": 0.3,
+      "expected": 40.0,
+      "tol": 0.5
+    }
+  ],
+  "views": ["iso", "front-top-right", "front", "right"]
+}

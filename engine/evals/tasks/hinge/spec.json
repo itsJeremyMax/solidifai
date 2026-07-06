@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "timeout_s": 1800,
+  "graders": ["requirements", "dfm", "watertight", "interference", "motion"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
+    {"id": "no-overlap", "quantity": "overlaps", "op": "<=", "bound": 0}
+  ],
+  "motion": {
+    "kind": "revolute",
+    "part": {"name_contains": "leaf", "fallback": "largest"},
+    "axis": "pair_seam",
+    "start": 5,
+    "stop": 90,
+    "steps": 18,
+    "expect": "clear_to",
+    "threshold_deg": 85
+  },
+  "views": ["iso", "front-top-right", "top", "front"]
+}

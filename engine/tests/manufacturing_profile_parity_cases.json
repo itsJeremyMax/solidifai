@@ -1,0 +1,50 @@
+[
+  {
+    "name": "no overrides resolves to the shipped builtin",
+    "global": {},
+    "workspace": {},
+    "expected": {
+      "schema": 1,
+      "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 },
+      "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
+      "process": { "kind": "fdm", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 },
+      "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 }
+    }
+  },
+  {
+    "name": "workspace scalar override keeps siblings and other sections",
+    "global": {},
+    "workspace": { "design": { "wallMm": 1.6 } },
+    "expected": {
+      "schema": 1,
+      "design": { "fit": "normal", "wallMm": 1.6, "filletMm": 1.0, "minFeatureMm": 1.0 },
+      "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
+      "process": { "kind": "fdm", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 },
+      "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 }
+    }
+  },
+  {
+    "name": "workspace beats global beats builtin across sections",
+    "global": { "design": { "wallMm": 3.0, "filletMm": 2.0 }, "process": { "infillPct": 35 } },
+    "workspace": { "design": { "wallMm": 1.6 }, "fabrication": { "bedTempC": 70 } },
+    "expected": {
+      "schema": 1,
+      "design": { "fit": "normal", "wallMm": 1.6, "filletMm": 2.0, "minFeatureMm": 1.0 },
+      "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
+      "process": { "kind": "fdm", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 35 },
+      "fabrication": { "nozzleTempC": 210, "bedTempC": 70, "filamentCostPerKg": 25 }
+    }
+  },
+  {
+    "name": "deep nested overrides including enum changes preserve untouched leaves",
+    "global": { "fits": { "tightMm": 0.05 }, "process": { "kind": "sla", "overhangDeg": 50 } },
+    "workspace": { "design": { "fit": "tight" } },
+    "expected": {
+      "schema": 1,
+      "design": { "fit": "tight", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 },
+      "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.05 },
+      "process": { "kind": "sla", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 50, "infillPct": 20 },
+      "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 }
+    }
+  }
+]

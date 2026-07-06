@@ -1,0 +1,1 @@
+Model the standard GoPro 2-prong mount tab (the part on the camera side that slides into a 3-prong base) with the thumbscrew hole, on a small flat plate I can glue to things. Match the real GoPro interface dimensions so it actually fits.

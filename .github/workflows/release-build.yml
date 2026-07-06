@@ -1,0 +1,469 @@
+# Called by release-please(.beta).yml right after it cuts a DRAFT release, or
+# run manually (workflow_dispatch) to rebuild an existing draft after a fix
+# lands on the branch. The release stays a draft until every platform's assets
+# are built, uploaded, and verified; the final publish job is the only thing
+# that makes it public. A release ships with all assets for all platforms, or
+# not at all: nothing partial is ever visible to users or to the updater feed.
+name: release-build
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag of the DRAFT release to build and publish (e.g. v0.2.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the DRAFT release to build and publish (e.g. v0.2.0)
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: release-build-${{ inputs.tag }}
+jobs:
+  # Refuse anything that is not an existing draft: published releases are
+  # immutable artifacts, and building into one would swap assets under users.
+  meta:
+    runs-on: ubuntu-22.04
+    permissions:
+      # write, not read: draft releases are invisible to read-scope tokens.
+      contents: write
+    outputs:
+      release_id: ${{ steps.rel.outputs.release_id }}
+      prerelease: ${{ steps.rel.outputs.prerelease }}
+    steps:
+      - id: rel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          info="$(gh release view "$TAG" -R "$REPO" --json databaseId,isDraft,isPrerelease)"
+          if [ "$(jq -r .isDraft <<<"$info")" != "true" ]; then
+            echo "release $TAG is not a draft; refusing to rebuild a published release" >&2
+            exit 1
+          fi
+          echo "release_id=$(jq -r .databaseId <<<"$info")" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$(jq -r .isPrerelease <<<"$info")" >> "$GITHUB_OUTPUT"
+
+  # Nothing builds or uploads until the full CI gate (typecheck, lint, tests,
+  # audits across all three stacks) passes on the exact commit being released
+  # (github.sha: the merge commit when called from release-please, the branch
+  # head on a manual dispatch).
+  gate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: 'build: ${{ matrix.label }}'
+    needs: [meta, gate]
+    strategy:
+      # Let the other platforms finish so an environmental failure on one leg
+      # can be fixed with a re-run of just that job; the release stays a draft
+      # until the publish job sees every asset.
+      fail-fast: false
+      matrix:
+        # `bundles` is the ENGINE-LESS tauri-action pass: exactly the updater
+        # payload formats (.app.tar.gz via app, -setup.exe via nsis, AppImage)
+        # and nothing more. Updater payloads stay engine-less and are NEVER
+        # replaced afterwards, or the signatures in latest.json would no longer
+        # match the bytes clients download; installed apps fetch their pinned
+        # engine from the `engine` release, so engine-less updates self-heal.
+        # dmg/deb deliberately do NOT exist after this pass: they appear only
+        # when the engine-full installer pass uploads them, so the publish
+        # gate's dmg/deb checks cannot be satisfied by engine-less builds.
+        # macos-15-intel is the last Intel image GitHub hosts (until Aug 2027,
+        # macos-13 was retired Dec 2025); after that the Intel leg moves to an
+        # arm runner with the build under Rosetta, or Intel support is dropped.
+        include:
+          - { os: macos-14,       rust_target: aarch64-apple-darwin,     label: 'macOS (Apple Silicon)', bundles: app }
+          - { os: macos-15-intel, rust_target: x86_64-apple-darwin,      label: 'macOS (Intel)',         bundles: app }
+          - { os: windows-latest, rust_target: x86_64-pc-windows-msvc,   label: Windows,                 bundles: nsis }
+          - { os: ubuntu-22.04,   rust_target: x86_64-unknown-linux-gnu, label: Linux,                   bundles: appimage }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # A partial re-run of a single build leg AFTER the release was published
+      # would clobber assets whose signatures are frozen in the mirrored
+      # updater manifest. meta's cached outputs don't re-check on job re-runs,
+      # so assert the draft here, before anything uploads.
+      - name: Refuse to rebuild a published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          [ "$(gh release view "$TAG" -R "$REPO" --json isDraft --jq .isDraft)" = "true" ] \
+            || { echo "release $TAG is already published; a rebuild would corrupt signed assets" >&2; exit 1; }
+
+      # The placeholder pubkey would make every app update and engine fetch fail
+      # signature verification, so an unusable updater must never ship.
+      - name: Guard against placeholder updater pubkey
+        shell: bash
+        run: |
+          if grep -q REPLACE_WITH src-tauri/tauri.conf.json; then
+            echo "updater pubkey is still the setup placeholder; run the key setup in docs/RELEASING.md" >&2
+            exit 1
+          fi
+
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libgl1-mesa-dev libglu1-mesa xvfb
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with: { toolchain: stable, targets: '${{ matrix.rust_target }}' }
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with: { workspaces: 'src-tauri -> target' }
+      - uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+
+      - run: pnpm install --frozen-lockfile
+
+      # Build the trimmed, self-contained engine into src-tauri/engine-dist BEFORE
+      # the Tauri build, so it gets bundled as a resource. The engine smoke does
+      # offscreen VTK rendering, which on a headless Linux runner needs a virtual
+      # display (xvfb); macOS/Windows render offscreen without one.
+      - name: Build engine-dist (macOS)
+        if: runner.os == 'macOS'
+        run: scripts/build-engine-dist.sh 3.12
+      - name: Build engine-dist (Linux, headless GL via xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a scripts/build-engine-dist.sh 3.12
+      # GitHub's Windows runners have no GPU (OpenGL 1.1 via GDI) and VTK needs
+      # GL 3.2+, so the engine's offscreen render probe/smoke would segfault.
+      # Deploy Mesa's software OpenGL system-wide, runner-only; nothing ships.
+      - name: Software OpenGL for headless VTK (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $v = '26.1.3'
+          Invoke-WebRequest "https://github.com/pal1000/mesa-dist-win/releases/download/$v/mesa3d-$v-release-msvc.7z" -OutFile mesa.7z
+          # Release assets are mutable under a fixed tag, and this job later
+          # holds the updater signing key: verify the archive before running
+          # anything out of it. Hash from the 26.1.3 asset's sha256 digest.
+          $expected = '6dd431f4620cea73970b13e3ffa94f721f2a3924306b8a4283c97648cdb6eb9c'
+          $actual = (Get-FileHash mesa.7z -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "mesa.7z sha256 mismatch: $actual" }
+          7z x mesa.7z -oC:\mesa | Out-Null
+          & C:\mesa\systemwidedeploy.cmd 1
+
+      - name: Build engine-dist (Windows)
+        if: runner.os == 'Windows'
+        run: pwsh scripts/build-engine-dist.ps1 -PyVer 3.12
+
+      # Publish this platform's content-addressed engine assets (signed manifest,
+      # full archive, incremental pack vs the previous rev) to the permanent
+      # `engine` release. Runs under bash on every platform (Git Bash on the
+      # Windows runner; build-engine-dist.ps1 emits the same engine-out layout).
+      - name: Publish engine assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: scripts/publish-engine-assets.sh
+
+      # tauri-action builds the frontend + ENGINE-LESS bundles, signs the updater
+      # payload with the key, and uploads installers + .sig + a cross-matrix
+      # latest.json to the draft release.
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
+          releaseId: ${{ needs.meta.outputs.release_id }}
+          # Without tagName the action writes /releases/latest/download/ URLs
+          # into latest.json. Those only resolve while the newest stable release
+          # is GitHub's "Latest", and NEVER resolve for a beta prerelease, so
+          # pin every payload URL to this tag's /releases/download/<tag>/ path.
+          tagName: ${{ inputs.tag }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+      # Engine-full OFFLINE installers, rebuilt via the same Tauri bundler with a
+      # resource override (installer.conf.json). These live in formats or names
+      # DISJOINT from the updater payloads so nothing signed is ever replaced:
+      #   macOS   .dmg           (updater payload is .app.tar.gz)
+      #   Linux   .deb           (updater payload is the AppImage, kept engine-less)
+      #   Windows -offline-setup.exe (updater payload is -setup.exe, kept engine-less)
+      - name: Installer pass (engine-full, macOS dmg / Linux deb)
+        if: runner.os != 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          BUNDLES=$([ "$RUNNER_OS" = "macOS" ] && echo dmg || echo deb)
+          pnpm tauri build --target ${{ matrix.rust_target }} \
+            --config src-tauri/installer.conf.json --bundles "$BUNDLES"
+          # Fail loudly if the bundler emitted nothing (an empty find would
+          # exit 0 and the publish gate would then pass on engine-less files).
+          found="$(find "src-tauri/target/${{ matrix.rust_target }}/release/bundle" \
+            \( -name '*.dmg' -o -name '*.deb' \))"
+          [ -n "$found" ] || { echo "installer pass produced no $BUNDLES bundle" >&2; exit 1; }
+          echo "$found" | while IFS= read -r f; do
+            gh release upload "$TAG" "$f" --clobber -R "$REPO"
+          done
+
+      - name: Installer pass (engine-full, Windows offline exe)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          pnpm tauri build --target ${{ matrix.rust_target }} --config src-tauri/installer.conf.json --bundles nsis
+          # Materialize before iterating (the copy would match the -Include
+          # pattern mid-enumeration) and fail loudly if nothing was built.
+          $setups = @(Get-ChildItem -Recurse "src-tauri\target\${{ matrix.rust_target }}\release\bundle" -Include *-setup.exe |
+            Where-Object { $_.Name -notmatch '-offline-setup\.exe$' })
+          if ($setups.Count -eq 0) { throw "installer pass produced no nsis bundle" }
+          foreach ($s in $setups) {
+            $offline = $s.FullName -replace '-setup\.exe$', '-offline-setup.exe'
+            Copy-Item $s.FullName $offline
+            gh release upload "$env:TAG" $offline --clobber -R "$env:REPO"
+          }
+
+      # The installers minify the frontend closure and statically compile the
+      # crate graph, which strips the copyright notices that MIT/BSD/ISC
+      # redistribution requires; attach the aggregated notices to the release.
+      # One leg suffices: cargo metadata spans all platforms' dependencies.
+      - name: Publish THIRD-PARTY-NOTICES.txt
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/generate-third-party-notices.py THIRD-PARTY-NOTICES.txt
+          gh release upload "$TAG" THIRD-PARTY-NOTICES.txt --clobber -R "$REPO"
+
+  # The all-or-nothing gate. Runs ONCE after the entire matrix: verifies the
+  # cross-platform updater manifest and the full asset set, adds checksums,
+  # and only then flips the draft to published and mirrors the updater feed.
+  publish:
+    # publish-engine-index is a hard dependency: every updater payload is
+    # engine-less, so a published release whose engineRev is not yet in the
+    # index would strand updaters at "engineRev not in index" on next launch.
+    needs: [meta, build, publish-engine-index]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Verify release completeness (manifest + assets + engine index)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # The complete, matrix-merged manifest tauri-action left on the draft.
+          gh release download "$TAG" -p latest.json -O manifest.json -R "$REPO"
+          gh release view "$TAG" -R "$REPO" --json assets --jq '.assets[].name' > assets.txt
+          # The engine index must cover this run's engine revs: newest manifest
+          # per platform on the `engine` release, matched against the index.
+          gh release download engine -R "$REPO" -p solidifai-engine-index.json --clobber
+          gh api "repos/$REPO/releases/tags/engine" \
+            --jq '[.assets[] | select(.name | endswith(".manifest.json")) | {name, created_at}]' > engine-manifests.json
+          # tauri-action merges latest.json with an unlocked read-modify-write per
+          # matrix job, so a concurrent-finish race can silently drop a platform.
+          # Fail loudly instead of publishing an incomplete release; a re-run of
+          # the failed jobs re-merges and this gate runs again.
+          python3 - <<'PY'
+          import json, os, sys, urllib.parse
+          manifest = json.load(open("manifest.json"))
+          assets = set(open("assets.txt").read().splitlines())
+          expected = {"darwin-aarch64", "darwin-x86_64", "windows-x86_64", "linux-x86_64"}
+          missing = expected - set(manifest.get("platforms", {}))
+          if missing:
+              sys.exit(f"latest.json is missing platforms {sorted(missing)}; re-run the failed build jobs")
+          # URLs must be pinned to THIS tag. A /releases/latest/download/ URL
+          # (tauri-action's fallback when tagName is absent) points at whatever
+          # release is currently "Latest": wrong bytes for a beta prerelease,
+          # and a signature-mismatch window for stable at every later publish.
+          url_base = f"https://github.com/{os.environ['REPO']}/releases/download/{os.environ['TAG']}/"
+          for plat, entry in manifest["platforms"].items():
+              if not entry["url"].startswith(url_base):
+                  sys.exit(f"updater URL for {plat} is not pinned to this tag: {entry['url']}")
+              name = urllib.parse.unquote(entry["url"].rsplit("/", 1)[-1])
+              if name not in assets:
+                  sys.exit(f"updater payload for {plat} ({name}) is not on the release")
+              if not entry.get("signature"):
+                  sys.exit(f"updater entry for {plat} has no signature")
+          offline = {
+              "macOS arm64 dmg": lambda n: n.endswith("_aarch64.dmg"),
+              "macOS x64 dmg": lambda n: n.endswith("_x64.dmg"),
+              "Linux deb": lambda n: n.endswith(".deb"),
+              "Windows offline exe": lambda n: n.endswith("-offline-setup.exe"),
+          }
+          absent = [label for label, ok in offline.items() if not any(ok(n) for n in assets)]
+          if absent:
+              sys.exit(f"engine-full offline installers missing: {absent}")
+          index = json.load(open("solidifai-engine-index.json"))
+          engine_manifests = json.load(open("engine-manifests.json"))
+          newest = {}
+          for m in sorted(engine_manifests, key=lambda m: m["created_at"]):
+              stem = m["name"][len("solidifai-engine-"):-len(".manifest.json")]
+              plat, rev = stem.rsplit("-", 1)
+              newest[plat] = rev
+          engine_plats = {"darwin-aarch64", "darwin-x86_64", "windows-x86_64", "linux-x86_64"}
+          for plat in engine_plats:
+              rev = newest.get(plat)
+              if rev is None:
+                  sys.exit(f"no engine manifest for {plat} on the engine release")
+              if plat not in index.get("revs", {}).get(rev, {}).get("platforms", {}):
+                  sys.exit(f"engine index is missing rev {rev} for {plat}; updaters would strand")
+          print(f"release {len(assets)} assets, all platforms present, engine index covers {newest}")
+          PY
+
+      # The updater endpoint, engine index, and installer self-heal all fetch
+      # public release URLs; on a private repo every one of them 404s for real
+      # users. Publishing privately is a legitimate rehearsal, so warn, loudly.
+      - name: Warn if the repository is private
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$(gh repo view "$REPO" --json isPrivate --jq .isPrivate)" = "true" ]; then
+            echo "::warning title=Private repository::$REPO is private: auto-update, engine fetch, and the online installers will not work for users until the repository is public."
+          fi
+
+      # First-time downloaders land on the release page, so it explains its own
+      # assets. Marker-guarded so a rebuild of the draft doesn't append twice.
+      - name: Append download guide to the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" -R "$REPO" --json body --jq .body > notes.md
+          grep -q '<!-- download-guide -->' notes.md && { echo "guide already present"; exit 0; }
+          V="${TAG#v}"
+          cat >> notes.md <<EOF
+
+          <!-- download-guide -->
+          ## Which file do I download?
+
+          | You are on | Download |
+          |---|---|
+          | macOS (Apple Silicon) | \`solidifai_${V}_aarch64.dmg\` |
+          | macOS (Intel) | \`solidifai_${V}_x64.dmg\` |
+          | Windows | \`solidifai_${V}_x64-setup.exe\`, or \`_x64-offline-setup.exe\` for machines without internet access |
+          | Debian/Ubuntu | \`solidifai_${V}_amd64.deb\` |
+          | Other Linux | \`solidifai_${V}_amd64.AppImage\` (portable, no install) |
+
+          The macOS, offline Windows, and Debian installers include the CAD engine and run without any setup or network. The standard Windows installer and the AppImage fetch the engine on first launch. Everything else here (\`.sig\`, \`.app.tar.gz\`, \`latest.json\`) is auto-updater plumbing; \`SHA256SUMS.txt\` lets you verify a manual download.
+          EOF
+          gh release edit "$TAG" -R "$REPO" --notes-file notes.md
+
+      # Checksums are for humans and packagers verifying manual downloads; the
+      # updater itself trusts the minisign signatures, not this file (a checksum
+      # fetched from the same release adds nothing against a tampered release).
+      # The .sig lets the checksums file be verified with the same release key.
+      - name: Publish SHA256SUMS.txt (+ minisign signature)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets && cd release-assets
+          gh release download "$TAG" -R "$REPO" --clobber
+          rm -f SHA256SUMS.txt SHA256SUMS.txt.sig
+          sha256sum * > SHA256SUMS.txt
+          npx --yes @tauri-apps/cli@^2 signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt SHA256SUMS.txt.sig --clobber -R "$REPO"
+
+      # Everything is verified: make the release public. --target pins the tag
+      # GitHub creates on publish to the exact commit this run built.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: gh release edit "$TAG" -R "$REPO" --target "$GITHUB_SHA" --draft=false
+
+      # Mirror the verified manifest to a permanent, non-prerelease `updater`
+      # release under the channel's filename, AFTER the release is public so
+      # every URL in it already resolves. This gives both channels a stable URL
+      # (the app checks /releases/download/updater/{latest,beta}.json).
+      - name: Mirror updater manifest to the fixed `updater` release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # Ensure the permanent manifest-host release exists (non-prerelease so
+          # it is never auto-deleted and its assets keep a stable download URL).
+          # Tolerate the create losing a first-publish race with another run.
+          if ! gh release view updater -R "$REPO" >/dev/null 2>&1; then
+            gh release create updater -R "$REPO" --title "Updater manifests" --latest=false \
+              --notes "Auto-published channel manifests (latest.json, beta.json). Do not delete." || true
+            gh release view updater -R "$REPO" >/dev/null
+          fi
+          if [ "$PRERELEASE" = "true" ]; then
+            cp manifest.json beta.json
+            gh release upload updater beta.json --clobber -R "$REPO"
+          else
+            cp manifest.json latest.json
+            gh release upload updater latest.json --clobber -R "$REPO"
+            # Stable releases also refresh the beta feed: a beta user should be
+            # offered the promoted stable (semver: 0.3.0 > 0.3.0-beta.N). If a
+            # newer beta cycle is already running, its version outranks this one
+            # and clients simply see no update until the next beta publishes.
+            cp manifest.json beta.json
+            gh release upload updater beta.json --clobber -R "$REPO"
+          fi
+
+  # Rebuild solidifai-engine-index.json from every manifest/pack on the `engine`
+  # release, in one job (avoids the per-matrix-job race), and upload it. The app
+  # reads this to resolve which engine assets to fetch for its pinned rev.
+  publish-engine-index:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    # Serialize index rebuilds across ALL release runs (stable + beta): two
+    # interleaved snapshot-then-clobber writers could drop the other channel's
+    # new rev from the index.
+    concurrency:
+      group: engine-index
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Build + upload solidifai-engine-index.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release view engine -R "$REPO" >/dev/null 2>&1 || { echo "no engine release yet"; exit 0; }
+          mkdir -p /tmp/engine-assets
+          gh release download engine -R "$REPO" -D /tmp/engine-assets --clobber \
+            -p '*.manifest.json' -p '*.sha256' || true
+          # latestRev by upload time (download mtimes are meaningless).
+          LATEST_REV="$(gh api "repos/$REPO/releases/tags/engine" \
+            --jq '[.assets[] | select(.name | endswith(".manifest.json"))] | sort_by(.created_at) | last.name' \
+            | sed 's/\.manifest\.json$//; s/.*-//')"
+          python3 scripts/build-engine-index.py "$REPO" /tmp/engine-assets solidifai-engine-index.json "$LATEST_REV"
+          gh release upload engine solidifai-engine-index.json --clobber -R "$REPO"

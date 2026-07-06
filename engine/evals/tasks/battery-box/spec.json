@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "timeout_s": 1800,
+  "graders": ["requirements", "dfm", "watertight", "interference", "containment"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
+    {"id": "no-overlap", "quantity": "overlaps", "op": "<=", "bound": 0}
+  ],
+  "containment": {
+    "volumes": [
+      {"name": "cell-1", "size_mm": [19, 19, 66]},
+      {"name": "cell-2", "size_mm": [19, 19, 66]},
+      {"name": "cell-3", "size_mm": [19, 19, 66]},
+      {"name": "cell-4", "size_mm": [19, 19, 66]}
+    ]
+  },
+  "views": ["iso", "front-top-right", "top"]
+}

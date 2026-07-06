@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "skeleton": "skeleton.py",
+  "children": [
+    {"id": "base", "kind": "part", "source": "parts/base.py", "attach": "base_frame", "inputs": ["body_w", "wall"]},
+    {"id": "lid", "kind": "part", "source": "parts/lid.py", "attach": "lid_frame", "inputs": ["body_w", "wall"]},
+    {"id": "hinge", "kind": "assembly", "source": "hinge/", "attach": "hinge_frame", "inputs": ["body_w"]}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "timeout_s": 600,
+  "graders": ["requirements", "dfm", "watertight", "interference"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
+  ],
+  "views": ["iso", "front-top-right", "right"]
+}

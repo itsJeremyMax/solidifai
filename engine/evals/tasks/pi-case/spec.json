@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "timeout_s": 1800,
+  "graders": ["requirements", "dfm", "watertight", "interference", "containment"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
+    {"id": "no-overlap", "quantity": "overlaps", "op": "<=", "bound": 0}
+  ],
+  "containment": {
+    "volumes": [{"name": "pi5-board", "size_mm": [85, 56, 18]}]
+  },
+  "views": ["iso", "front-top-right", "back-top-left", "back"]
+}

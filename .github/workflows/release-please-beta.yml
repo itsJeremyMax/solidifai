@@ -1,0 +1,38 @@
+name: release-please-beta
+on:
+  push:
+    branches: [beta]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  release-please:
+    runs-on: ubuntu-22.04
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # PAT/App token, not the default GITHUB_TOKEN. See docs/RELEASING.md.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: beta
+          config-file: release-please-config.beta.json
+          manifest-file: .release-please-manifest.beta.json
+
+  # Same all-or-nothing chain as main: build the draft pre-release on every
+  # platform and publish it atomically.
+  release-build:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write
+    # Job-level, because workflow-level concurrency inside a called workflow is
+    # not reliably applied; one build per tag at a time.
+    concurrency:
+      group: release-build-${{ needs.release-please.outputs.tag_name }}
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    secrets: inherit

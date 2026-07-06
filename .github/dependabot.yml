@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # GitHub Actions used by the release + lint workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      # The release pipeline was verified against tauri-action v0 (updater-json
+      # merge behavior, input names). Migrate to v1 deliberately, not via a bump.
+      - dependency-name: tauri-apps/tauri-action
+        update-types: ["version-update:semver-major"]
+
+  # Frontend (pnpm)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      frontend-minor-patch:
+        update-types: [minor, patch]
+
+  # Tauri shell (Cargo)
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      rust-minor-patch:
+        update-types: [minor, patch]
+
+# The Python engine is managed with uv (engine/pyproject.toml); update it there
+# with `uv lock --upgrade` rather than through Dependabot.

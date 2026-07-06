@@ -1,0 +1,74 @@
+"""Standard ISO metric hardware: dimensions to spec, manifold parts, right bores."""
+
+import math
+
+import pytest
+from build123d import Box
+
+from solidifai import hardware
+
+
+def test_dims_m3():
+    d = hardware.dims("M3")
+    assert math.isclose(d["head_dia"], 5.5, abs_tol=0.01)
+    assert math.isclose(d["head_height"], 3.0, abs_tol=0.01)
+    assert math.isclose(d["clearance_medium"], 3.4, abs_tol=0.01)
+    assert math.isclose(d["nut_width"], 5.5, abs_tol=0.01)
+
+
+def test_socket_head_screw_envelope():
+    s = hardware.socket_head_cap_screw("M3", 12)
+    bb = s.bounding_box()
+    assert s.is_manifold
+    assert math.isclose(bb.size.X, 5.5, abs_tol=0.2)  # head dia dominates
+    assert math.isclose(bb.size.Z, 12 + 3.0, abs_tol=0.2)  # length + head height
+
+
+def test_clearance_hole_diameter():
+    plate = Box(20, 20, 5)
+    bored = plate - hardware.clearance_hole("M3", depth=5)
+    drop = plate.volume - bored.volume
+    assert math.isclose(drop, math.pi * (3.4 / 2) ** 2 * 5, rel_tol=0.05)
+
+
+def test_hex_nut_across_flats():
+    n = hardware.hex_nut("M3")
+    bb = n.bounding_box()
+    assert n.is_manifold
+    assert math.isclose(min(bb.size.X, bb.size.Y), 5.5, abs_tol=0.2)
+
+
+def test_washer_outer_diameter():
+    w = hardware.washer("M3")
+    bb = w.bounding_box()
+    assert w.is_manifold
+    assert math.isclose(bb.size.X, 7.0, abs_tol=0.2)
+
+
+def test_unknown_size_raises():
+    with pytest.raises(ValueError):
+        hardware.dims("M99")
+
+
+def test_table_is_single_homed_on_standards():
+    from solidifai_engine import standards
+
+    for size in hardware.sizes():
+        d = hardware.dims(size)
+        assert d["head_dia"] == standards.screw(size, head="cap")["head_dia"]
+        assert d["clearance_medium"] == standards.ISO273_CLEARANCE[size]["medium"]
+        assert d["nut_thickness"] == standards.nut(size)["thickness"]
+
+
+def test_nut_thickness_corrected_to_iso4032():
+    assert hardware.dims("M5")["nut_thickness"] == 4.7
+    assert hardware.dims("M6")["nut_thickness"] == 5.2
+    assert hardware.dims("M8")["nut_thickness"] == 6.8
+
+
+def test_clearance_hole_close_and_coarse_are_iso273():
+    # Same removed-volume technique as test_clearance_hole_diameter above.
+    for fit, dia in (("close", 3.2), ("coarse", 3.6)):
+        plate = Box(20, 20, 5) - hardware.clearance_hole("M3", depth=5, fit=fit)
+        removed = 20 * 20 * 5 - plate.volume
+        assert math.isclose(removed, math.pi * (dia / 2) ** 2 * 5, rel_tol=0.05), fit

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "timeout_s": 600,
+  "graders": ["requirements", "dfm", "watertight", "dim_match"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
+  ],
+  "expected_dims": [
+    {"kind": "bbox_sorted", "axis": "min", "expected": 1.6, "tol": 0.2},
+    {"kind": "bbox_sorted", "axis": "mid", "expected": 16.0, "tol": 0.3},
+    {"kind": "bbox_sorted", "axis": "max", "expected": 16.0, "tol": 0.3},
+    {"kind": "hole", "expected": 8.4, "tol": 0.25}
+  ],
+  "views": ["iso", "top", "front"]
+}

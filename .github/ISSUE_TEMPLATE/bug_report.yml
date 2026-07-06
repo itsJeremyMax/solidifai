@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in solidifai doesn't work as expected.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: I asked the agent for a 20mm cube and the viewport stayed empty.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a new workspace
+        2. Run `claude` in the terminal
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: solidifai version
+      description: From the About screen, or the git commit for a dev checkout.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent CLI
+      options:
+        - Claude Code
+        - Codex
+        - opencode
+        - Not agent-related
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Terminal output, the engine-status pill state, or a screenshot of the viewport.

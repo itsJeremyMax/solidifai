@@ -1,0 +1,1 @@
+Build a case for my Raspberry Pi 5. The board is the standard 85 x 56 mm. I need the USB-C power and the two micro-HDMI ports usable, and some ventilation so it doesn't cook. With the connectors on it the board stands about 18 mm tall, so leave room for that.

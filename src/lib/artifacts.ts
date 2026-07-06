@@ -1,0 +1,211 @@
+/**
+ * Artifact types + parsing for the engine's `model.json` render manifest.
+ *
+ * The engine writes a `model.json` (this {@link ModelInfo} shape) plus a sibling
+ * `model.glb` on every successful build. The Rust side surfaces the JSON via the
+ * `read_model_json` command and the GLB bytes via `read_model_glb`; a
+ * `model-updated` event fires (with the new `buildId`) whenever a fresh build
+ * lands. {@link parseModelInfo} validates the JSON defensively so a malformed or
+ * partial manifest degrades to `null` rather than throwing into the render path.
+ */
+
+/** Per-object PBR appearance resolved by the engine (schema 2+). */
+export interface Appearance {
+  /** Canonical material id, e.g. "aluminum". Informational. */
+  material: string;
+  /** Linear RGB base color, 0..1. */
+  baseColor: Vec3;
+  metalness: number;
+  roughness: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+  /** Render opacity 0..1 (schema 2+). < 1 ghosts the object (imported references). */
+  opacity?: number;
+}
+
+/**
+ * A single solid/feature in the build. Joined to GLB meshes by ORDER (the i-th
+ * object ↔ the i-th child mesh), not by `node` name — build123d's glTF export
+ * does not preserve readable node names.
+ */
+export interface ModelObject {
+  id: string;
+  name: string;
+  kind: string;
+  /** Engine-side node slug; NOT a reliable GLB scene-graph key (see above). */
+  node: string;
+  visible: boolean;
+  /** "part" = your designed geometry; "reference" = a ghosted imported fixture
+   *  you fit around (not exported, not DFM'd). Defaults to "part" when absent. */
+  role?: "part" | "reference";
+  /** Present in schema 2+. Absent for legacy schema-1 history artifacts. */
+  appearance?: Appearance;
+  /** Per-object mass (schema 2+). Null for references (no manufactured mass). */
+  mass?: { value: number; material: string; density: number } | null;
+}
+
+/** A `[x, y, z]` triple in model units (mm). */
+export type Vec3 = [number, number, number];
+
+/** Definition for one tunable parameter (slider bounds + unit + short description). */
+export interface ParamSchemaEntry {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+  /** Short, plain-language description ("" when none). Rendered as a subtitle. */
+  desc: string;
+}
+
+/** The full render manifest emitted alongside `model.glb`. */
+export interface ModelInfo {
+  schema: 1 | 2;
+  buildId: number;
+  units: "mm";
+  build: { ok: boolean; durationMs: number; warnings: string[] };
+  objects: ModelObject[];
+  bbox: { size: Vec3; min: Vec3; max: Vec3 };
+  volume: number;
+  centerOfMass: Vec3;
+  mass: { value: number; material: string; density: number };
+  valid: boolean;
+  manifold: boolean;
+  params: {
+    schema: Record<string, ParamSchemaEntry>;
+    values: Record<string, number>;
+  };
+}
+
+function isVec3(v: unknown): v is Vec3 {
+  return (
+    Array.isArray(v) &&
+    v.length === 3 &&
+    v.every((n) => typeof n === "number" && Number.isFinite(n))
+  );
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isModelObject(v: unknown): v is ModelObject {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.id === "string" &&
+    typeof v.name === "string" &&
+    typeof v.kind === "string" &&
+    typeof v.node === "string" &&
+    typeof v.visible === "boolean"
+  );
+}
+
+function isParamSchemaEntry(v: unknown): v is ParamSchemaEntry {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.value === "number" &&
+    typeof v.min === "number" &&
+    typeof v.max === "number" &&
+    typeof v.step === "number" &&
+    typeof v.unit === "string" &&
+    typeof v.desc === "string"
+  );
+}
+
+/**
+ * Parse + validate the contents of `model.json`.
+ *
+ * Returns a typed {@link ModelInfo} on success, or `null` if the input is empty,
+ * not valid JSON, or fails structural validation. Never throws — callers can use
+ * the result directly as render state.
+ */
+export function parseModelInfo(json: string | null | undefined): ModelInfo | null {
+  if (!json) return null;
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(raw)) return null;
+
+  // Accept schema 1 (legacy history artifacts) and 2 (per-object appearance).
+  if (raw.schema !== 1 && raw.schema !== 2) return null;
+  if (typeof raw.buildId !== "number" || !Number.isFinite(raw.buildId)) return null;
+  if (raw.units !== "mm") return null;
+
+  if (!isRecord(raw.build)) return null;
+  const build = raw.build;
+  if (
+    typeof build.ok !== "boolean" ||
+    typeof build.durationMs !== "number" ||
+    !Array.isArray(build.warnings) ||
+    !build.warnings.every((w) => typeof w === "string")
+  ) {
+    return null;
+  }
+
+  if (!Array.isArray(raw.objects) || !raw.objects.every(isModelObject)) return null;
+
+  if (!isRecord(raw.bbox)) return null;
+  if (!isVec3(raw.bbox.size) || !isVec3(raw.bbox.min) || !isVec3(raw.bbox.max)) {
+    return null;
+  }
+
+  if (typeof raw.volume !== "number" || !Number.isFinite(raw.volume)) return null;
+  if (!isVec3(raw.centerOfMass)) return null;
+
+  if (!isRecord(raw.mass)) return null;
+  const mass = raw.mass;
+  if (
+    typeof mass.value !== "number" ||
+    typeof mass.material !== "string" ||
+    typeof mass.density !== "number"
+  ) {
+    return null;
+  }
+
+  if (typeof raw.valid !== "boolean" || typeof raw.manifold !== "boolean") return null;
+
+  // params — sanitized, NOT rejected. A near-miss PARAMS schema (e.g. an agent
+  // wrote a malformed entry) must never block geometry from rendering, so we
+  // tolerantly keep only the well-formed bits rather than failing the manifest:
+  //   • keep schema entries that are valid ParamSchemaEntry shapes;
+  //   • keep numeric `values` whose key survives in the sanitized schema;
+  //   • if `params` is missing / not an object, fall back to empty maps.
+  // (All other top-level validations above stay strict.)
+  const params = sanitizeParams(raw.params);
+
+  // Structurally validated — assert through to the typed shape, substituting
+  // the sanitized params so the inspector's slider section degrades gracefully.
+  return { ...(raw as unknown as ModelInfo), params };
+}
+
+/**
+ * Tolerantly normalize a raw `params` block into the {@link ModelInfo} `params`
+ * shape. Never throws and never rejects: drops malformed schema entries and any
+ * `values` key that isn't a finite number or isn't in the kept schema.
+ */
+function sanitizeParams(raw: unknown): ModelInfo["params"] {
+  if (!isRecord(raw)) return { schema: {}, values: {} };
+
+  const schema: Record<string, ParamSchemaEntry> = {};
+  if (isRecord(raw.schema)) {
+    for (const [key, entry] of Object.entries(raw.schema)) {
+      if (isParamSchemaEntry(entry)) schema[key] = entry;
+    }
+  }
+
+  const values: Record<string, number> = {};
+  if (isRecord(raw.values)) {
+    for (const [key, v] of Object.entries(raw.values)) {
+      if (key in schema && typeof v === "number" && Number.isFinite(v)) {
+        values[key] = v;
+      }
+    }
+  }
+
+  return { schema, values };
+}

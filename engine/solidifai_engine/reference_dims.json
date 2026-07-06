@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "units": "mm",
+  "objects": [
+    {
+      "id": "18650",
+      "aliases": ["18650 cell", "18650 battery", "18650 li-ion"],
+      "category": "cell",
+      "dims_mm": {"dia_max": 18.6, "length_max": 65.2, "dia_nominal": 18.0, "length_nominal": 65.0},
+      "notes": "Unprotected flat-top max envelope; button-top ~66-67 and protected cells up to ~69-70 long. Slot design: dia_max + fit clearance per side; never a press fit on a bare cell.",
+      "source": "https://en.wikipedia.org/wiki/List_of_battery_sizes"
+    },
+    {
+      "id": "21700",
+      "aliases": ["21700 cell", "21700 battery", "21700 li-ion"],
+      "category": "cell",
+      "dims_mm": {"dia_max": 21.7, "length_max": 70.8, "dia_nominal": 21.0, "length_nominal": 70.0},
+      "notes": "Max envelope per LG M50-class datasheets; same slot-design rule as 18650.",
+      "source": "https://en.wikipedia.org/wiki/List_of_battery_sizes"
+    },
+    {
+      "id": "aa",
+      "aliases": ["aa battery", "aa cell", "lr6", "mignon"],
+      "category": "cell",
+      "dims_mm": {"dia_max": 14.5, "length_max": 50.5},
+      "notes": "IEC 60086 LR6 max envelope incl. the button terminal.",
+      "source": "https://en.wikipedia.org/wiki/AA_battery"
+    },
+    {
+      "id": "aaa",
+      "aliases": ["aaa battery", "aaa cell", "lr03", "micro"],
+      "category": "cell",
+      "dims_mm": {"dia_max": 10.5, "length_max": 44.5},
+      "notes": "IEC 60086 LR03 max envelope incl. the button terminal.",
+      "source": "https://en.wikipedia.org/wiki/AAA_battery"
+    },
+    {
+      "id": "usb-a",
+      "aliases": ["usb a", "usb type a", "usb-a port", "usb a cutout"],
+      "category": "port-cutout",
+      "dims_mm": {"plug_shell": [12.0, 4.5], "cutout": [13.0, 5.6]},
+      "notes": "cutout = shell + 0.5 per side for a wall the plug passes through; overmolds vary widely, so recess or chamfer the outside of any wall thicker than ~3.",
+      "source": "https://en.wikipedia.org/wiki/USB_hardware"
+    },
+    {
+      "id": "usb-c",
+      "aliases": ["usb c", "usb type c", "type-c", "usb-c port", "usb c cutout"],
+      "category": "port-cutout",
+      "dims_mm": {"plug_shell": [8.34, 2.56], "cutout": [9.2, 3.4], "overmold_max": [12.35, 6.5]},
+      "notes": "plug_shell per the USB-IF Type-C spec; overmold_max per the USB-IF locking-connector spec. Recess the outside of walls thicker than ~3 to overmold_max so third-party cables seat.",
+      "source": "https://www.usb.org/sites/default/files/documents/usb_type-c_locking_connector_specification_rev_1_0_20160309_0.pdf"
+    },
+    {
+      "id": "hdmi-a",
+      "aliases": ["hdmi", "full size hdmi", "hdmi type a", "hdmi cutout"],
+      "category": "port-cutout",
+      "dims_mm": {"plug_shell": [13.9, 4.45], "cutout": [15.0, 5.6]},
+      "notes": "Type A plug shell per the HDMI spec; same recess rule as USB for thick walls.",
+      "source": "https://en.wikipedia.org/wiki/HDMI"
+    },
+    {
+      "id": "micro-hdmi-d",
+      "aliases": ["micro hdmi", "micro-hdmi", "hdmi type d", "hdmi d", "micro hdmi cutout"],
+      "category": "port-cutout",
+      "dims_mm": {"plug_shell": [6.4, 2.8], "cutout": [7.4, 3.8]},
+      "notes": "Type D (micro) plug shell per the HDMI spec; SBCs often pair two of these, check the board drawing for exact port positions.",
+      "source": "https://en.wikipedia.org/wiki/HDMI"
+    }
+  ]
+}

@@ -1,0 +1,450 @@
+"""Newline-delimited JSON RPC server over a local IPC endpoint (see ipc.py:
+a UNIX-domain socket on unix, token-guarded loopback TCP on Windows).
+
+Two clients reach the engine over this endpoint: the app's UI (via Rust) and
+the MCP stdio bridge. Every request is dispatched to a *single* shared
+``Session`` under a lock, so builds are serialized and there is exactly one
+current model.
+
+Wire format (one JSON object per line):
+  request:  {"id": int, "method": str, "params": obj}
+  response: {"id": int, "ok": true, "result": any}
+        or  {"id": int, "ok": false, "error": str}
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hmac
+import json
+import logging
+import os
+import socket
+import threading
+from typing import Any
+
+from solidifai_engine import ipc, scratch
+from solidifai_engine.session import Session
+
+
+class Server:
+    def __init__(self, socket_path: str, artifacts_dir: str, model_path: str | None = None):
+        self.socket_path = socket_path
+        self.artifacts_dir = artifacts_dir
+        self.model_path = model_path
+        os.makedirs(artifacts_dir, exist_ok=True)
+
+        # Reset the per-session scratch dir on startup (= "reset on workspace
+        # open"; the engine is spawned per-workspace). Best-effort: a failure
+        # here must never block the server from starting.
+        with contextlib.suppress(OSError):
+            scratch.clear_scratch(artifacts_dir)
+
+        self._session = Session(artifacts_dir, model_path=model_path)
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._sock: socket.socket | None = None
+        self._token: str | None = None  # set by _bind on the TCP transport
+
+        # Point the material resolver at this workspace so builds resolve the
+        # workspace + global materials (not just the built-ins).
+        from solidifai_engine import materials
+
+        materials.configure_resolver(self._workspace_root())
+
+    def _workspace_root(self) -> str:
+        """The workspace root for this engine.
+
+        Derived from the model path (the app spawns us with
+        ``--model <root>/model.py``); falls back to the artifacts grandparent
+        (artifacts live at ``<root>/.solidifai/artifacts``)."""
+        if self.model_path:
+            return os.path.dirname(os.path.abspath(self.model_path))
+        return os.path.dirname(os.path.dirname(os.path.abspath(self.artifacts_dir)))
+
+    def _refresh_resolver(self) -> None:
+        """Re-read the global + workspace material libraries from disk so a
+        material created/edited after engine start is always resolvable. Cheap
+        (two small JSON reads) next to any build/render."""
+        from solidifai_engine import materials
+
+        materials.configure_resolver(self._workspace_root())
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def _bind(self) -> socket.socket:
+        # Owner-only either way: unix socket mode 0600, or a token handshake on
+        # the Windows TCP substitute. No other local account may drive the
+        # engine (execute_script et al.).
+        sock, self._token = ipc.bind(self.socket_path)
+        sock.listen(8)
+        sock.settimeout(0.2)
+        return sock
+
+    def _load_startup_model(self) -> None:
+        """Bring the workspace's model + saved settings live on startup. Never
+        crash the server if the model or settings fail to load.
+
+        Delegates entirely to ``Session.startup()`` (which itself never raises);
+        the try/except here is a belt-and-suspenders guard."""
+        try:
+            self._session.startup()
+        except Exception:  # noqa: BLE001 - never crash on a bad model
+            logging.getLogger(__name__).exception("startup failed")
+
+    def _start_parent_watchdog(self) -> None:
+        """Exit when the parent process dies.
+
+        The app can't signal the engine on a force-quit/crash, so without this the
+        engine is reparented to PID 1 and lingers on a dead socket. A daemon thread
+        polls getppid() and hard-exits when the parent changes. os._exit (not
+        sys.exit) so a main thread wedged in a native OCC/VTK call can't block it."""
+        original_ppid = os.getppid()
+
+        def watch() -> None:
+            while not self._stop.wait(1.0):
+                if os.getppid() != original_ppid:
+                    os._exit(0)
+
+        threading.Thread(target=watch, name="parent-watchdog", daemon=True).start()
+
+    def serve_forever(self) -> None:
+        self._start_parent_watchdog()
+        self._sock = self._bind()
+        self._load_startup_model()
+        try:
+            while not self._stop.is_set():
+                try:
+                    conn, _ = self._sock.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                self._handle_connection(conn)
+        finally:
+            self._close()
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        # Nudge accept() loop and clean up the socket file.
+        self._close()
+
+    def _close(self) -> None:
+        if self._sock is not None:
+            with contextlib.suppress(OSError):
+                self._sock.close()
+            self._sock = None
+        if os.path.exists(self.socket_path):
+            with contextlib.suppress(OSError):
+                os.unlink(self.socket_path)
+
+    # -- connection / dispatch ---------------------------------------------
+
+    def _handle_connection(self, conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(None)
+            buf = b""
+            authed = self._token is None
+            while not self._stop.is_set():
+                try:
+                    chunk = conn.recv(65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                # TCP transport: the first line must be the shared token; drop
+                # the connection on any mismatch (or an oversized first line).
+                if not authed and len(buf) > 1024:
+                    return
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.strip()
+                    if not authed:
+                        presented = line.decode("utf-8", "replace")
+                        if not hmac.compare_digest(presented, self._token or ""):
+                            return
+                        authed = True
+                        continue
+                    if not line:
+                        continue
+                    response = self._handle_line(line)
+                    try:
+                        conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+                    except OSError:
+                        return
+
+    def _handle_line(self, line: bytes) -> dict:
+        try:
+            request = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            return {"id": None, "ok": False, "error": f"invalid JSON: {exc}"}
+
+        req_id = request.get("id")
+        method = request.get("method")
+        params = request.get("params") or {}
+
+        try:
+            result = self._dispatch(method, params)
+        except Exception as exc:  # noqa: BLE001
+            return {"id": req_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        # Methods that already return an {ok: false, error: ...} envelope
+        # (e.g. a failed build) are surfaced as a failed RPC response.
+        if isinstance(result, dict) and result.get("ok") is False:
+            return {"id": req_id, "ok": False, "error": result.get("error", "build failed")}
+
+        return {"id": req_id, "ok": True, "result": result}
+
+    @staticmethod
+    def _require(params: dict, key: str) -> Any:
+        """Fetch a required param, raising a clean error (surfaced to the client
+        as ok:false) instead of a raw KeyError when it is missing."""
+        if key not in params:
+            raise ValueError(f"missing param {key!r}")
+        return params[key]
+
+    def _dispatch(self, method: str, params: dict) -> Any:
+        with self._lock:
+            handler = _HANDLERS.get(method)
+            if handler is None:
+                raise ValueError(f"unknown method: {method!r}")
+            # Script, material, and import changes need the material resolver
+            # pointed at the current workspace before the session method runs.
+            if method in _REFRESH_BEFORE:
+                self._refresh_resolver()
+            return handler(self, params)
+
+
+def _h_list_materials(srv: Server, p: dict) -> Any:
+    # Lazy import keeps the materials module (and its OCC color deps) off the
+    # server import path until a client actually asks for the library.
+    from solidifai_engine import materials
+
+    return materials.list_effective(srv._workspace_root())
+
+
+def _h_get_manufacturing_profile(srv: Server, p: dict) -> Any:
+    from solidifai_engine import manufacturing_profile
+
+    return manufacturing_profile.effective(srv._workspace_root())
+
+
+def _h_set_manufacturing_profile(srv: Server, p: dict) -> Any:
+    from solidifai_engine import control, manufacturing_profile
+
+    # Rust is the sole writer; delegate over the control channel, then return the
+    # freshly resolved view (re-reads disk, echoes the default material).
+    control.write(
+        scope=p.get("scope", "workspace"),
+        workspace_root=srv._workspace_root(),
+        values=p.get("values") or {},
+        unset=p.get("unset") or [],
+    )
+    srv._refresh_resolver()
+    return manufacturing_profile.effective(srv._workspace_root())
+
+
+def _h_lookup_standard(srv: Server, p: dict) -> Any:
+    from solidifai_engine import standards
+
+    return standards.lookup_standard(srv._require(p, "query"), workspace_root=srv._workspace_root())
+
+
+def _h_lookup_reference(srv: Server, p: dict) -> Any:
+    from solidifai_engine import standards
+
+    return standards.lookup_reference(srv._require(p, "object"))
+
+
+def _h_save_reference(srv: Server, p: dict) -> Any:
+    from datetime import date
+
+    from solidifai_engine import control, workspace_metadata
+
+    # Strip None values so setdefault fills them in cleanly below.
+    entry = {k: v for k, v in dict(srv._require(p, "entry")).items() if v is not None}
+    for key in ("id", "category", "dims_mm", "source"):
+        if not entry.get(key):
+            raise ValueError(f"entry is missing {key!r}")
+    entry.setdefault("origin", "learned")
+    entry.setdefault("verified_at", date.today().isoformat())
+    meta = workspace_metadata.load_metadata(srv._workspace_root())
+    entry.setdefault("verified_in", meta.get("name") or "")
+    try:
+        library = control.write_reference(entry)
+    except control.ControlError as exc:
+        raise RuntimeError(
+            f"reference library unavailable ({exc}); keep the verified dims in the build brief"
+        ) from exc
+    return {"saved": entry, "count": len(library.get("objects", []))}
+
+
+def _orient_overhang(srv: Server, p: dict) -> float:
+    """The overhang angle for fab_orient: explicit param, else the workspace
+    manufacturing profile's process.overhangDeg, else 45."""
+    given = p.get("overhang_deg")
+    if given is not None:
+        return float(given)
+    from solidifai_engine import manufacturing_profile
+
+    prof = manufacturing_profile.resolve(srv._workspace_root())
+    return float((prof.get("process") or {}).get("overhangDeg", 45))
+
+
+# RPC method registry: method name -> handler(server, params) -> raw result.
+# The handle() wrapper adds the {ok, ...} envelope and maps exceptions. A table
+# keeps the surface O(1) and introspectable (tests/test_surface_parity.py locks
+# it against the MCP tool set) instead of an ever-growing if/elif.
+# When this contract changes (add/remove/rename a method), bump PROTOCOL_VERSION
+# in solidifai_engine/protocol.py so the Rust host rejects a stale engine loudly.
+_HANDLERS: dict[str, Any] = {
+    "ping": lambda srv, p: "pong",
+    "execute_script": lambda srv, p: srv._session.execute_script(srv._require(p, "code")),
+    "run_file": lambda srv, p: srv._session.run_file(srv._require(p, "path")),
+    "render": lambda srv, p: srv._session.render(),
+    "get_model_info": lambda srv, p: srv._session.get_model_info(),
+    "list_materials": _h_list_materials,
+    "get_manufacturing_profile": _h_get_manufacturing_profile,
+    "set_manufacturing_profile": _h_set_manufacturing_profile,
+    "lookup_standard": _h_lookup_standard,
+    "lookup_reference": _h_lookup_reference,
+    "save_reference": _h_save_reference,
+    "get_params": lambda srv, p: srv._session.get_params(),
+    "inspect_features": lambda srv, p: srv._session.inspect_features(),
+    "check_interferences": lambda srv, p: srv._session.check_interferences(),
+    "analyze_dfm": lambda srv, p: srv._session.analyze_dfm(p.get("process")),
+    "measure": lambda srv, p: srv._session.measure(),
+    "stress_check": lambda srv, p: srv._session.stress_check(),
+    "tolerance_stack": lambda srv, p: srv._session.tolerance_stack(p.get("chain")),
+    "get_workspace_meta": lambda srv, p: srv._session.get_workspace_meta(),
+    "set_workspace_meta": lambda srv, p: srv._session.set_workspace_meta(
+        srv._require(p, "patch"), force=bool(p.get("force", False)), user=bool(p.get("user", False))
+    ),
+    "set_workspace_name": lambda srv, p: srv._session.set_workspace_name(srv._require(p, "name")),
+    "dismiss_proposed_name": lambda srv, p: srv._session.dismiss_proposed_name(),
+    "set_requirements": lambda srv, p: srv._session.set_requirements(p.get("requirements")),
+    "check_requirements": lambda srv, p: srv._session.check_requirements(),
+    "propose_build": lambda srv, p: srv._session.propose_build(srv._require(p, "brief")),
+    "get_build_brief": lambda srv, p: srv._session.get_build_brief(),
+    "sweep": lambda srv, p: srv._session.sweep(
+        srv._require(p, "param"), p.get("values") or [], bool(p.get("checks", False))
+    ),
+    "optimize": lambda srv, p: srv._session.optimize(
+        srv._require(p, "param"),
+        p.get("objective", "min_mass"),
+        int(p.get("steps", 9)),
+        p.get("constraints"),
+        p.get("values"),
+    ),
+    "check_motion": lambda srv, p: srv._session.check_motion(
+        srv._require(p, "part"),
+        p.get("kind", "revolute"),
+        p.get("axis_origin"),
+        p.get("axis_dir"),
+        float(p.get("start", 0.0)),
+        float(p.get("stop", 90.0)),
+        int(p.get("steps", 12)),
+    ),
+    "analyze_import": lambda srv, p: srv._session.analyze_import(p.get("name")),
+    "diff_against": lambda srv, p: srv._session.diff_against(int(srv._require(p, "index"))),
+    "build_report": lambda srv, p: srv._session.build_report(p.get("views")),
+    "import_reference": lambda srv, p: srv._session.import_reference(
+        srv._require(p, "path"), p.get("name")
+    ),
+    "stage_import": lambda srv, p: srv._session.stage_import(srv._require(p, "path")),
+    "remove_import": lambda srv, p: srv._session.remove_import(srv._require(p, "id")),
+    "list_imports": lambda srv, p: srv._session.list_imports(),
+    "create_drawing": lambda srv, p: srv._session.create_drawing(p.get("path"), p.get("options")),
+    "set_feature": lambda srv, p: srv._session.set_feature(
+        srv._require(p, "name"), srv._require(p, "values")
+    ),
+    "feature_at": lambda srv, p: srv._session.feature_at(srv._require(p, "point")),
+    "set_params": lambda srv, p: srv._session.set_params(srv._require(p, "values")),
+    "set_part_material": lambda srv, p: srv._session.set_part_material(
+        srv._require(p, "part_id"), p.get("material")
+    ),
+    "export": lambda srv, p: srv._session.export(
+        srv._require(p, "format"), p.get("path"), p.get("options")
+    ),
+    "capture_views": lambda srv, p: srv._session.capture_views(
+        p.get("views"),
+        p.get("layout") or "separate",
+        p.get("color", True),
+        explode=p.get("explode") or 0.0,
+        highlight=p.get("highlight"),
+        resolution=p.get("resolution") or 512,
+        section=p.get("section"),
+        focus=p.get("focus"),
+    ),
+    "undo": lambda srv, p: srv._session.undo(),
+    "redo": lambda srv, p: srv._session.redo(),
+    "goto": lambda srv, p: srv._session.goto(srv._require(p, "index")),
+    "history": lambda srv, p: srv._session.history_state(),
+    "checkpoint": lambda srv, p: srv._session.checkpoint(srv._require(p, "message")),
+    "fab_detect": lambda srv, p: srv._session.fab_detect(),
+    "fab_profiles": lambda srv, p: srv._session.fab_profiles(),
+    "fab_estimate": lambda srv, p: srv._session.fab_estimate(p.get("destination_id")),
+    "fab_orient": lambda srv, p: srv._session.fab_orient(_orient_overhang(srv, p)),
+    "fab_open": lambda srv, p: srv._session.fab_open(p.get("destination_id")),
+    "list_destinations": lambda srv, p: srv._session.list_destinations(),
+    "set_destinations": lambda srv, p: srv._session.set_destinations(
+        srv._require(p, "destinations")
+    ),
+    "converge_to_spec": lambda srv, p: srv._session.converge_to_spec(
+        p.get("objective", "min_mass"), p.get("apply", False)
+    ),
+    # Assembly authoring: write skeleton/parts and edit the tree.
+    "set_skeleton": lambda srv, p: srv._session.set_skeleton(srv._require(p, "code")),
+    "set_part": lambda srv, p: srv._session.set_part(
+        srv._require(p, "id"),
+        srv._require(p, "code"),
+        attach=p.get("attach"),
+        inputs=p.get("inputs"),
+        shape_inputs=p.get("shape_inputs"),
+        kind=p.get("kind", "part"),
+    ),
+    "get_part_info": lambda srv, p: srv._session.get_part_info(srv._require(p, "id")),
+    "get_assembly_tree": lambda srv, p: srv._session.get_assembly_tree(),
+    "export_flat_model": lambda srv, p: srv._session.export_flat_model(
+        write=bool(p.get("write", False))
+    ),
+    "check_interfaces": lambda srv, p: srv._session.check_interfaces(),
+    "attach": lambda srv, p: srv._session.attach(srv._require(p, "id"), p.get("frame")),
+    "set_inputs": lambda srv, p: srv._session.set_inputs(
+        srv._require(p, "id"), p.get("inputs") or []
+    ),
+    "remove_part": lambda srv, p: srv._session.remove_part(srv._require(p, "id")),
+    "add_subassembly": lambda srv, p: srv._session.add_subassembly(
+        srv._require(p, "id"),
+        attach=p.get("attach"),
+        inputs=p.get("inputs"),
+    ),
+    "build_part": lambda srv, p: srv._session.build_part(srv._require(p, "id")),
+    # Authoring round: freeze the skeleton, defer compose, then compose once.
+    "begin_round": lambda srv, p: srv._session.begin_round(),
+    "end_round": lambda srv, p: srv._session.end_round(),
+    "abort_round": lambda srv, p: srv._session.abort_round(),
+}
+
+# Methods that mutate script/material/import state and so need the material
+# resolver refreshed against the current workspace before they run.
+_REFRESH_BEFORE = frozenset(
+    {
+        "execute_script",
+        "run_file",
+        "render",
+        "set_params",
+        "set_part_material",
+        "import_reference",
+        "remove_import",
+        "set_skeleton",
+        "set_part",
+        "attach",
+        "set_inputs",
+        "remove_part",
+        "add_subassembly",
+        "build_part",
+        "end_round",
+    }
+)

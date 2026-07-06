@@ -1,0 +1,40 @@
+name: release-please
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  release-please:
+    runs-on: ubuntu-22.04
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          # A PAT (or GitHub App token), NOT the default GITHUB_TOKEN, so the
+          # releases and PRs it creates behave like user activity. See
+          # docs/RELEASING.md for creating RELEASE_PLEASE_TOKEN.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # release-please cut a DRAFT release for this merge: build every platform and
+  # publish it atomically. Called directly (not event-triggered) so the chain
+  # from version bump to published release is deterministic.
+  release-build:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write
+    # Job-level, because workflow-level concurrency inside a called workflow is
+    # not reliably applied; one build per tag at a time.
+    concurrency:
+      group: release-build-${{ needs.release-please.outputs.tag_name }}
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    secrets: inherit

@@ -1,0 +1,51 @@
+/** User-facing strings for the Materials feature. No em dashes; hand-written voice. */
+export const MAT_COPY = {
+  title: "Materials",
+  description: "The materials your parts are made of. Set them up here, then apply them per part.",
+  newMaterial: "New material",
+  addLocal: "Add local material",
+  emptyGlobal: "No materials yet. Add one to get started.",
+  scopeGlobal: "Global library",
+  save: "Save",
+  setDefault: "Set as default",
+  pin: "Pin to workspace",
+  delete: "Delete",
+  cannotDeleteLast: "This is your only material, so it cannot be deleted.",
+  cannotDeleteDefault: "This is the default. Pick another default first, then delete it.",
+  processInferred: "inferred",
+  // process name -> short human label
+  processLabel: {
+    fdm: "FDM, 3D printing",
+    sla: "SLA, resin",
+    cnc: "CNC machining",
+    injection: "Injection molding",
+  } as Record<string, string>,
+  processNote:
+    "The agent's design rules follow this process. Pick a metal base and this becomes CNC machining.",
+  inheritDefault: "Using the global default",
+  // ── per-part material picker ──
+  useModelDefault: "Use model default",
+  pickerHeading: "Material",
+
+  // ── editor drawer ──
+  editTitle: "Edit material",
+  newTitle: "New material",
+  pinTitle: "Pin to workspace",
+  pinSubtitle: "Copy this global material into the workspace, then edit it here.",
+  fieldName: "Name",
+  namePlaceholder: "Name this material",
+  fieldBase: "Base substance",
+  baseHint: "sets density and finish baseline",
+  fieldColor: "Color",
+  fieldFinish: "Finish",
+  processCaption: "Inferred process",
+  previewLive: "live",
+  previewUntitled: "Untitled material",
+  densityLabel: "Density",
+  canonicalLabel: "Canonical name",
+  isDefaultNote: "This material is the default",
+  loading: "Loading materials…",
+  scopeWorkspacePrefix: "Available in",
+  countLabel: "Materials",
+  close: "Close",
+} as const;

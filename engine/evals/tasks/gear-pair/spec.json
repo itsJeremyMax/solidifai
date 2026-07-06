@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "timeout_s": 1800,
+  "graders": ["requirements", "dfm", "watertight", "interference", "dim_match", "motion"],
+  "requirements": [
+    {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
+    {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
+    {"id": "no-overlap", "quantity": "overlaps", "op": "<=", "bound": 0}
+  ],
+  "expected_dims": [
+    {
+      "kind": "center_distance",
+      "between": "parts",
+      "name_contains": "gear",
+      "expected": 50.0,
+      "tol": 0.8
+    }
+  ],
+  "motion": {
+    "kind": "revolute",
+    "part": {"name_contains": "gear", "fallback": "max_faces"},
+    "axis": "self_spin",
+    "start": 0,
+    "stop": 18,
+    "steps": 10,
+    "expect": "collides_within",
+    "threshold_deg": 18
+  },
+  "views": ["iso", "top", "front-top-right"]
+}

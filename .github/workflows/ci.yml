@@ -1,0 +1,130 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main, beta]
+  # Lets release-build.yml re-run this exact gate on the tagged commit before
+  # anything is built or uploaded.
+  workflow_call:
+permissions:
+  contents: read
+# github.workflow is the TOP caller's name, so a release-build gate run gets a
+# different group from push-CI; sharing one group let a push to main cancel an
+# in-flight release gate (and vice versa).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+      - name: Lint
+        run: pnpm exec eslint .
+      - name: Format check
+        run: pnpm exec prettier --check .
+      - name: Unit tests
+        run: pnpm exec vitest run
+
+  engine:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # VTK does offscreen GL rendering in the view/render tests; a headless
+      # runner needs Mesa + a virtual display.
+      - name: System deps (headless GL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libglu1-mesa xvfb
+      - uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+        with:
+          enable-cache: true
+          working-directory: engine
+      - name: Sync engine venv
+        working-directory: engine
+        run: uv sync
+      - name: Lint (ruff)
+        working-directory: engine
+        run: uv run ruff check .
+      - name: Format check (ruff)
+        working-directory: engine
+        run: uv run ruff format --check .
+      - name: Typecheck (mypy)
+        working-directory: engine
+        run: uv run mypy solidifai_engine solidifai_mcp solidifai
+      # Short basetemp/TMPDIR keep the AF_UNIX engine socket path under the
+      # platform length limit.
+      - name: Tests (pytest)
+        working-directory: engine
+        env:
+          TMPDIR: /tmp
+        run: xvfb-run -a uv run pytest -q --basetemp=/tmp/pt
+
+  shell:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libgl1-mesa-dev libglu1-mesa
+      # SHA-pinned, so the toolchain must be named explicitly (the ref no
+      # longer carries it).
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with: { workspaces: 'src-tauri -> target' }
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      # --workspace: without it cargo operates on the root package only and
+      # silently skips the engine-pack member (the release-integrity layer).
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+
+  security:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: npm dependency audit
+        run: pnpm audit --audit-level high
+      - uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
+        with:
+          enable-cache: true
+          working-directory: engine
+      # pip-audit gates on NEW advisories. The VTK 9.3.1 advisories
+      # (PYSEC-2025-224/225/226) are accepted-risk exceptions: VTK is pinned by
+      # cadquery-ocp 7.8.1.1 (OCCT/VTK ABI coupling) so it cannot be bumped
+      # independently, and it is used only for offscreen rendering of the user's
+      # own local models, not for parsing untrusted input. Tracked for a future
+      # coordinated OCP/OCCT/VTK stack upgrade. See SECURITY.md.
+      - name: Python dependency audit (pip-audit)
+        working-directory: engine
+        run: >
+          uv run --with pip-audit pip-audit
+          --ignore-vuln PYSEC-2025-224
+          --ignore-vuln PYSEC-2025-225
+          --ignore-vuln PYSEC-2025-226
+      # Fails on vulnerabilities; unmaintained-crate warnings (the Tauri GTK3
+      # Linux bindings et al.) are surfaced but non-blocking, matching cargo
+      # audit's default exit behavior.
+      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2
+        with: { tool: cargo-audit }
+      - name: Rust dependency audit (cargo-audit)
+        run: cargo audit --file src-tauri/Cargo.lock

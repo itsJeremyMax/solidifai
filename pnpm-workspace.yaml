@@ -1,0 +1,6 @@
+packages:
+  - .
+
+# jsdom's transitive undici carried known advisories below 7.28.
+overrides:
+  undici: ^7.28.0

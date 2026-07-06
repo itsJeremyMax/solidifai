@@ -1,0 +1,15 @@
+dist
+src-tauri
+engine
+node_modules
+pnpm-lock.yaml
+docs
+*.md
+public
+
+# Owned by other tooling/agents; out of this config's scope.
+.github
+commitlint.config.js
+# release-please rewrites these as compact JSON on every release PR.
+.release-please-manifest.json
+.release-please-manifest.beta.json

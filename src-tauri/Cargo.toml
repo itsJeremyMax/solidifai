@@ -1,0 +1,72 @@
+[workspace]
+members = [".", "engine-pack"]
+
+[package]
+name = "solidifai"
+# Crate version only. The app version is single-sourced from the root
+# package.json (tauri.conf.json reads it via "version": "../package.json").
+version = "0.1.0"
+description = "Agentic parametric CAD."
+authors = ["Jeremy Max"]
+license = "Apache-2.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "solidifai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Loopback-IPC token generation (windows AF_UNIX substitute); see src/ipc.rs.
+getrandom = { version = "0.4", features = ["std"] }
+portable-pty = "0.9"
+# Filesystem watching for the artifact watcher (model.glb / model.json).
+notify = "8"
+notify-debouncer-full = "0.7"
+# Home-directory resolution for the workspace path (~/solidifai-workspace).
+dirs = "6"
+tauri-plugin-dialog = "2.7.1"
+# Strip browser behaviors (right-click menu, text selection, reload/print/zoom
+# shortcuts) from the webview so the app feels native. Registered in release
+# builds only — see lib.rs (off in `tauri dev`).
+tauri-plugin-prevent-default = "5"
+# Embed the app-managed Agent Skills tree into the binary for provisioning.
+include_dir = "0.7"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+# Content-addressed engine manifest/pack format — the single source of truth the
+# CI build (via the engine-pack CLI) and the runtime (here) both use.
+engine-pack = { path = "engine-pack" }
+anyhow = "1"
+# Blocking HTTP for the engine fetch (TLS inherited from the updater's reqwest).
+reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
+# OS deep links (solidifai://) -> in-app routes. See useDeepLinks on the JS side.
+tauri-plugin-deep-link = "2"
+# Mutexes without lock poisoning: a panic while a lock is held can't cascade into
+# a dead app through downstream .lock().unwrap() panics.
+parking_lot = "0.12"
+# Structured logging to a rolling file in the OS log dir + a panic hook, so field
+# failures (incl. forwarded frontend errors) are recoverable after the fact.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+# Base64 encoding for thumbnail data URLs (already transitive; declared so the
+# version is explicit and the usage of `Engine` trait is not an unlisted dep).
+base64 = "0.22"
+
+[dev-dependencies]
+# Parse generated .codex/config.toml back in provisioner unit tests.
+toml = "1.1"
+tempfile = "3"
+

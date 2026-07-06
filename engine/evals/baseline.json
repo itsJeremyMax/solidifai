@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "recorded": "2026-06-11T12:01:46",
+  "rubric_version": "1",
+  "tasks": {
+    "battery-box": 0.6,
+    "box-lid-fit": 0.655,
+    "bracket-load": 0.7,
+    "desk-organizer": 0.69,
+    "gear-pair": 0.64,
+    "handle-grip": 0.88,
+    "hinge": 0.74,
+    "hook-wall": 0.84,
+    "match-object": 0.84,
+    "phone-stand": 0.62,
+    "pi-case": 0.72,
+    "washer-spec": 0.88
+  }
+}

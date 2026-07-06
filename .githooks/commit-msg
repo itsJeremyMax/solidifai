@@ -1,0 +1,11 @@
+#!/bin/sh
+# Validate the commit message against Conventional Commits.
+# Skip gracefully when commitlint isn't available yet (fresh clone before
+# `pnpm install`, or a non-JS contributor) so commits aren't hard-blocked; CI
+# (.github/workflows/commitlint.yml) is the backstop. This hook is wired by the
+# `prepare` npm script (`git config core.hooksPath .githooks`), which overrides
+# any existing per-repo core.hooksPath.
+if ! command -v pnpm >/dev/null 2>&1 || [ ! -d node_modules ]; then
+  exit 0
+fi
+pnpm exec commitlint --edit "$1"

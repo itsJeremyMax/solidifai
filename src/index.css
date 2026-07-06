@@ -1,0 +1,275 @@
+/* Scope content detection to the frontend source. Tailwind v4 otherwise scans
+   from the project root and crawls sibling trees (engine/.venv, .worktree/,
+   .claude/ — hundreds of MB of repo copies), which wedges the dev server. All
+   UI classes live under src/, so detect there explicitly. */
+@import "tailwindcss" source(none);
+@import "./assets/fonts/fonts.css";
+@source "./**/*.{html,js,jsx,ts,tsx}";
+
+/* ── solidifai design tokens ── Apple-meets-Atlassian: refined, light, precise ── */
+@theme {
+  --font-ui: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-paper: #f4f4f1;
+  --color-surface: #ffffff;
+  --color-surface-2: #fbfbf9;
+  --color-ink: #15171d;
+  --color-ink-2: #565a64;
+  --color-ink-3: #8a8f99;
+  --color-line: rgba(18, 20, 28, 0.08);
+  --color-line-2: rgba(18, 20, 28, 0.13);
+  /* faint ink wash for hover over a light surface (tabs, menu rows) */
+  --color-surface-hover: rgba(18, 20, 28, 0.04);
+
+  --color-accent: #2b6cff;
+  --color-accent-tint: rgba(43, 108, 255, 0.1);
+  --color-accent-press: #1b49c9;
+  /* exact cobalt alpha tints (rgb 43,108,255 = --color-accent) */
+  --color-accent-line: rgba(43, 108, 255, 0.45);
+  --color-accent-bg: rgba(43, 108, 255, 0.16);
+  --color-engine: #19a957;
+  --color-amber: #e0a23b;
+
+  /* destructive / danger palette */
+  --color-danger: #d23b3b;
+  --color-danger-press: #bd3236;
+  --color-danger-bold: #e5484d;
+  --color-danger-line: rgba(229, 72, 77, 0.3);
+  --color-danger-bg: rgba(229, 72, 77, 0.06);
+
+  /* dark-surface UI (terminal, context menu, viewport overlays) */
+  --color-term: #14161c;
+  --color-term-ink: #c9d1dc; /* primary body on dark */
+  --color-term-ink-bright: #e7ebf2; /* titles on dark */
+  --color-term-ink-dim: #8a93a4; /* muted/secondary on dark */
+  --color-term-line: rgba(255, 255, 255, 0.08); /* hairline on dark */
+  --color-line-3: rgba(18, 20, 28, 0.22); /* strongest light hairline (hover) */
+  --color-scrim: rgba(20, 23, 30, 0.55); /* viewport dim overlay */
+
+  /* dense desktop type scale (custom steps between native text-xs/sm) */
+  --text-micro: 0.65625rem; /* 10.5px */
+  --text-caption: 0.71875rem; /* 11.5px */
+  --text-body: 0.8125rem; /* 13px — primary body/control text */
+
+  --tracking-eyebrow: 0.09em;
+  --tracking-snug: -0.01em;
+
+  --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --radius-panel: 12px;
+
+  --shadow-card: 0 1px 2px rgba(16, 18, 24, 0.05), 0 14px 30px -14px rgba(16, 18, 24, 0.18);
+  --shadow-float: 0 2px 6px rgba(16, 18, 24, 0.09), 0 22px 48px -20px rgba(16, 18, 24, 0.3);
+}
+
+@layer base {
+  /* Tailwind v4's reset follows the browser default (cursor: default) for
+     buttons, so every enabled control reads as non-clickable. Restore the
+     pointer for interactive elements that aren't disabled. Intentional
+     cursor-default / cursor-not-allowed utilities still win, since they sit in
+     the later `utilities` cascade layer. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  select:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-ui);
+    /* refined paper backdrop: soft top-left glow + faint cobalt wash */
+    background:
+      radial-gradient(1100px 520px at 18% -8%, #fbfbfa, transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(43, 108, 255, 0.06), transparent 55%),
+      var(--color-paper);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+/* ── xterm bar caret: trim to ~text height ──
+   xterm draws the "bar" cursor as an inset box-shadow spanning the full line-cell
+   (fontSize × lineHeight ≈ 19px), which reads oversized. Clipping the cell shortens
+   the painted bar to ~the font size while keeping box-shadow as the draw mechanism
+   (so blink — a @keyframes that toggles box-shadow:none — still works) and the themed
+   cursor color. round 1px gives soft, refined caret caps. */
+.xterm .xterm-cursor-bar {
+  clip-path: inset(0.3em 0 round 1px);
+}
+
+/* ── restrained motion: load rise, engine pulse, terminal cursor, float ── */
+@layer utilities {
+  @keyframes solidifai-rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.995);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes solidifai-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 4px rgba(25, 169, 87, 0.14);
+    }
+    50% {
+      box-shadow: 0 0 0 7px rgba(25, 169, 87, 0.04);
+    }
+  }
+  @keyframes solidifai-blink {
+    50% {
+      opacity: 0;
+    }
+  }
+  @keyframes solidifai-floaty {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-7px);
+    }
+  }
+
+  .animate-rise {
+    opacity: 0;
+    animation: solidifai-rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+  }
+  .animate-engine-pulse {
+    animation: solidifai-pulse 2.4s ease-in-out infinite;
+  }
+  .animate-term-cursor {
+    animation: solidifai-blink 1.1s steps(1) infinite;
+  }
+  .animate-floaty {
+    animation: solidifai-floaty 7s ease-in-out infinite;
+  }
+  /* building-tab underline shimmer (workspace switcher): a thin amber bar that
+     sweeps under a mid-build pill so a busy tab still pulls the eye. */
+  @keyframes solidifai-shimmer {
+    0% {
+      background-position: 120% 0;
+    }
+    100% {
+      background-position: -120% 0;
+    }
+  }
+  .animate-build-shimmer {
+    background: linear-gradient(
+      90deg,
+      rgba(224, 162, 59, 0.15),
+      var(--color-amber),
+      rgba(224, 162, 59, 0.15)
+    );
+    background-size: 200% 100%;
+    animation: solidifai-shimmer 1.5s linear infinite;
+  }
+
+  /* two-layer soft shadows pulled from the mockup tokens */
+  .shadow-card {
+    box-shadow:
+      0 1px 2px rgba(16, 18, 24, 0.05),
+      0 14px 30px -14px rgba(16, 18, 24, 0.18);
+  }
+  .shadow-float {
+    box-shadow:
+      0 2px 6px rgba(16, 18, 24, 0.09),
+      0 22px 48px -20px rgba(16, 18, 24, 0.3);
+  }
+
+  /* glossy top-down sheen on raised surfaces (workspace cards, sheets) */
+  .bg-sheen {
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(251, 251, 249, 0.78));
+  }
+}
+
+/* ── viewport explode slider ──
+   A precision-instrument range control for the frosted viewport HUD. The track's
+   filled portion is painted inline (a value-driven accent gradient on the
+   element's `background`), so this layer only styles the rail metrics + the thumb.
+   The thumb is a crisp white disc with a soft drop shadow; hover/active add a faint
+   cobalt (--color-accent) ring and a subtle press scale. */
+@layer components {
+  .explode-range {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 9999px;
+    cursor: pointer;
+    background: var(--color-term-line);
+  }
+  /* Firefox track + thumb (WebKit selectors below cover Tauri's WKWebView). */
+  .explode-range::-moz-range-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: transparent;
+  }
+  .explode-range::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 9999px;
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    transition:
+      box-shadow 120ms var(--ease-out-soft),
+      transform 120ms var(--ease-out-soft);
+  }
+  .explode-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: transparent;
+  }
+  .explode-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: #ffffff;
+    margin-top: -5px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    transition:
+      box-shadow 120ms var(--ease-out-soft),
+      transform 120ms var(--ease-out-soft);
+  }
+  .explode-range:hover::-webkit-slider-thumb {
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 3px rgba(43, 108, 255, 0.18);
+  }
+  .explode-range:active::-webkit-slider-thumb {
+    transform: scale(1.15);
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 4px rgba(43, 108, 255, 0.32);
+  }
+  .explode-range:hover::-moz-range-thumb {
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 3px rgba(43, 108, 255, 0.18);
+  }
+  .explode-range:active::-moz-range-thumb {
+    transform: scale(1.15);
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 4px rgba(43, 108, 255, 0.32);
+  }
+  .explode-range:focus-visible {
+    outline: none;
+  }
+  .explode-range:focus-visible::-webkit-slider-thumb {
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.5),
+      0 0 0 3px rgba(43, 108, 255, 0.32);
+  }
+}

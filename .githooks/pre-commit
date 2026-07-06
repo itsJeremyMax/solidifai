@@ -1,0 +1,37 @@
+#!/bin/sh
+# Lean pre-commit gate: format + lint on staged files only. Fast (no test
+# suites or typecheck; CI is the backstop for those). Each language block skips
+# gracefully when its toolchain isn't available, so a fresh clone or a
+# single-language contributor is never hard-blocked. Wired via the `prepare`
+# npm script (git config core.hooksPath .githooks).
+set -e
+
+staged() {
+  git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+# --- TypeScript / React (src/**) ---
+ts_files=$(staged 'src/*.ts' 'src/*.tsx' 'src/**/*.ts' 'src/**/*.tsx')
+if [ -n "$ts_files" ] && command -v pnpm >/dev/null 2>&1 && [ -d node_modules ]; then
+  echo "pre-commit: prettier + eslint (staged TS)"
+  echo "$ts_files" | xargs pnpm exec prettier --check
+  echo "$ts_files" | xargs pnpm exec eslint
+fi
+
+# --- Python engine (engine/**) ---
+py_files=$(staged 'engine/*.py' 'engine/**/*.py')
+if [ -n "$py_files" ] && command -v uv >/dev/null 2>&1 && [ -d engine/.venv ]; then
+  echo "pre-commit: ruff check + format (staged Python)"
+  rel=$(echo "$py_files" | sed 's#^engine/##')
+  (cd engine && echo "$rel" | xargs uv run ruff check)
+  (cd engine && echo "$rel" | xargs uv run ruff format --check)
+fi
+
+# --- Rust shell (src-tauri/**) ---
+rs_files=$(staged 'src-tauri/*.rs' 'src-tauri/**/*.rs')
+if [ -n "$rs_files" ] && command -v cargo >/dev/null 2>&1; then
+  echo "pre-commit: cargo fmt --check"
+  cargo fmt --manifest-path src-tauri/Cargo.toml --check
+fi
+
+exit 0

@@ -1,0 +1,55 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Brainstorming / visual companion artifacts
+.superpowers/
+
+# Local isolated worktrees
+.worktree/
+
+# Claude Code agent dir. Native worktrees live here too: full repo copies with
+# their own node_modules (~200M). Keep it out of git AND, since Tailwind v4's
+# content scanner skips gitignored paths, out of the CSS scan that was wedging
+# the dev server.
+.claude/
+
+# Python / engine
+engine/.venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.ruff_cache/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Built engine bundle (produced in CI / by build-engine-dist)
+src-tauri/engine-dist/
+.engine-build/
+
+# engine-pack standalone build (merges into src-tauri/target once it is a workspace member)
+src-tauri/engine-pack/target/
+
+# internal design history (plans, specs, mockups) stays local
+docs/superpowers/
+docs/previews/

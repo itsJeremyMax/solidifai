@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "skeleton": "skeleton.py",
+  "children": [
+    {"id": "pin", "kind": "part", "source": "parts/pin.py", "attach": "pin_frame", "inputs": ["pin_d"]},
+    {"id": "knuckle", "kind": "part", "source": "parts/knuckle.py", "attach": "knuckle_frame", "inputs": ["pin_d"]}
+  ]
+}
