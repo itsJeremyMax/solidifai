@@ -15,11 +15,33 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 use serde_json::json;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
+
+/// Per-user directory for engine IPC endpoints, set once at startup (the app
+/// config dir). The socket / Windows pointer file must NOT live under the
+/// user-chosen workspace root: on Windows the pointer file (which holds the
+/// auth token) would inherit the workspace directory's ACLs, so a workspace on
+/// a shared or world-readable path exposes the token; on unix a deep workspace
+/// path can push the socket past the ~104-byte AF_UNIX sun_path limit. Tests
+/// (and any pre-init call) fall back to the OS temp dir, which is per-user on
+/// every supported platform.
+static IPC_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn init_ipc_dir(config_dir: &Path) {
+    let _ = IPC_DIR.set(config_dir.join("ipc"));
+}
+
+fn ipc_dir() -> PathBuf {
+    IPC_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("solidifai-ipc"))
+}
 
 /// Marker substring that flags a file as owned/managed by solidifai.
 const MANAGED_MARKER: &str = "solidifai-managed";
@@ -85,22 +107,23 @@ pub fn skill_description(skill_name: &str) -> Option<String> {
 pub struct WorkspacePaths {
     /// The workspace root (e.g. `~/solidifai-workspace` or any user-chosen dir).
     pub root: PathBuf,
-    /// `<root>/.solidifai` — the engine's private dir (socket + artifacts live here).
+    /// `<root>/.solidifai` — the engine's private dir (artifacts live here).
     pub dot: PathBuf,
     /// `<root>/.solidifai/artifacts`
     pub artifacts: PathBuf,
-    /// `<root>/.solidifai/engine.sock`
+    /// `<ipc_dir>/engine-<hash-of-root>.sock` — deliberately OUTSIDE the
+    /// workspace (see [`IPC_DIR`]); the hash keys the endpoint to its workspace.
     pub socket: PathBuf,
 }
 
 impl WorkspacePaths {
-    /// Derive the workspace layout for an arbitrary root:
-    /// `<root>/.solidifai/{artifacts,engine.sock}`.
+    /// Derive the workspace layout for an arbitrary root.
     pub fn for_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let dot = root.join(".solidifai");
         let artifacts = dot.join("artifacts");
-        let socket = dot.join("engine.sock");
+        let digest = engine_pack::hash::sha256_bytes(root.to_string_lossy().as_bytes());
+        let socket = ipc_dir().join(format!("engine-{}.sock", &digest[..12]));
         Self {
             root,
             dot,
@@ -109,14 +132,23 @@ impl WorkspacePaths {
         }
     }
 
-    /// Create the workspace dir tree (`root`, `.solidifai`, `.solidifai/artifacts`).
+    /// Create the workspace dir tree (`root`, `.solidifai`, `.solidifai/artifacts`)
+    /// and the per-user IPC dir the socket lives in.
     pub fn ensure_dirs(&self) -> Result<(), String> {
         fs::create_dir_all(&self.artifacts).map_err(|e| {
             format!(
                 "failed to create workspace dirs at {}: {e}",
                 self.artifacts.display()
             )
-        })
+        })?;
+        if let Some(parent) = self.socket.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create ipc dir at {}: {e}", parent.display()))?;
+        }
+        // Older versions bound the socket inside the workspace; clear the stale
+        // file so it can't confuse anything scanning `.solidifai/`.
+        let _ = fs::remove_file(self.dot.join("engine.sock"));
+        Ok(())
     }
 
     pub fn artifacts_str(&self) -> String {
@@ -787,6 +819,35 @@ mod tests {
         let ws = WorkspacePaths::for_root(unique("prov-test"));
         ws.ensure_dirs().unwrap();
         ws
+    }
+
+    /// The engine endpoint must never live under the user-chosen workspace root
+    /// (Windows pointer-file ACLs, unix sun_path length), must be stable per
+    /// root, and distinct across roots.
+    #[test]
+    fn engine_socket_lives_outside_the_workspace() {
+        let a = WorkspacePaths::for_root(unique("sock-a"));
+        let b = WorkspacePaths::for_root(unique("sock-b"));
+        assert!(
+            !a.socket.starts_with(&a.root),
+            "socket must not inherit workspace-dir ACLs: {}",
+            a.socket.display()
+        );
+        assert_ne!(a.socket, b.socket, "one endpoint per workspace");
+        assert_eq!(
+            a.socket,
+            WorkspacePaths::for_root(a.root.clone()).socket,
+            "endpoint must be stable for a given root"
+        );
+        // AF_UNIX sun_path budget (~104 bytes): the endpoint stays short no
+        // matter how deep the workspace root is.
+        assert!(
+            a.socket.as_os_str().len() < 104,
+            "socket path too long: {}",
+            a.socket.display()
+        );
+        a.ensure_dirs().unwrap();
+        assert!(a.socket.parent().unwrap().is_dir(), "ipc dir created");
     }
 
     /// An empty templates dir (no overrides) so provision uses embedded defaults.

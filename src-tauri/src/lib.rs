@@ -91,6 +91,11 @@ pub fn run() {
             if let Ok(dir) = app.path().app_config_dir() {
                 let _ = std::fs::create_dir_all(&dir);
 
+                // Engine IPC endpoints live under the config dir (user-owned),
+                // never under the user-chosen workspace root. Set before any
+                // workspace can open.
+                provision::init_ipc_dir(&dir);
+
                 // Pull legacy materials/destinations into the unified config dir
                 // before anything reads (and re-seeds) them.
                 legacy::migrate_into(&dir);

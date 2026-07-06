@@ -6,11 +6,9 @@
 //! port and writes the file, and clients read it, connect, and send the token
 //! as their first line (a bare loopback port would be reachable by any local
 //! process). ACLs on the pointer file gate access the way socket modes do on
-//! unix only where its directory is user-owned: that holds for the control
-//! socket (app config dir), but the engine endpoint lives under the
-//! user-chosen workspace root, so a workspace on a shared or world-readable
-//! path exposes the token to other local users. Keep workspaces under the
-//! user profile on multi-user Windows machines.
+//! unix, because every endpoint lives in a user-owned directory: the control
+//! socket and the per-workspace engine endpoints are all under the app config
+//! dir (provision.rs `IPC_DIR`), never under the user-chosen workspace root.
 //! Readiness semantics match unix: the path
 //! appears once the listener is up. The Python twin is
 //! `engine/solidifai_engine/ipc.py`.

@@ -5,13 +5,11 @@ no AF_UNIX support in CPython, so there the *path* is a small file holding
 ``127.0.0.1:<port>\\n<token>``: the listener binds a loopback TCP port and
 writes the file, and clients read it, connect, and send the token as their
 first line (a bare loopback port would be reachable by any local process).
-ACLs on the pointer file gate access the way socket modes do on unix only
-where its directory is user-owned: that holds for the control socket (app
-config dir), but the engine endpoint lives under the user-chosen workspace
-root, so a workspace on a shared or world-readable path exposes the token to
-other local users. Keep workspaces under the user profile on multi-user
-Windows machines. Readiness semantics match unix: the path appears once the
-listener is up.
+ACLs on the pointer file gate access the way socket modes do on unix, because
+every endpoint lives in a user-owned directory: the host computes all socket
+paths (control and per-workspace engine endpoints) under its app config dir,
+never under the user-chosen workspace root. Readiness semantics match unix:
+the path appears once the listener is up.
 
 The TCP flavor works on every platform (``force_tcp``), so unix-run tests
 exercise the exact code Windows runs.
