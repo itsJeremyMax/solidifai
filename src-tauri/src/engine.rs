@@ -28,6 +28,24 @@ use crate::engine_fetch;
 use crate::engine_pin::EnginePin;
 use engine_pack::manifest::Manifest;
 
+/// A `Command` that never allocates a console window on Windows. The release
+/// shell is a GUI-subsystem process (`windows_subsystem = "windows"` in main.rs),
+/// so a console-subsystem child (python.exe, uv, orca-slicer) would otherwise get
+/// a fresh visible console — and closing that stray window kills the child.
+/// No-op on other platforms. Every child spawn outside the PTY (which uses
+/// ConPTY) must go through this.
+pub(crate) fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Managed state for the engine process and the paths the rest of the app needs.
 ///
 /// `child` is the live engine server process (if running). The supervisor thread
@@ -45,8 +63,9 @@ pub struct EngineState {
     /// mount AFTER the one-time `ready` emit; `get_engine_status` lets it seed
     /// itself from this stored value so it never gets stuck on "provisioning".
     pub last_status: Mutex<EngineStatus>,
-    /// Monotonic supervisor generation. Each [`start_supervised`] captures the
-    /// current value; [`kill`](Self::kill) bumps it so a stale supervisor thread
+    /// Monotonic supervisor generation. Each supervisor owns the value its spawner
+    /// claimed via [`claim_generation`](Self::claim_generation);
+    /// [`kill`](Self::kill) bumps it so a stale supervisor thread
     /// (from a previous workspace) knows to stop instead of restarting the engine
     /// or fighting the new supervisor for the `child` slot.
     pub generation: AtomicU64,
@@ -120,6 +139,15 @@ impl EngineState {
     /// The current supervisor generation.
     fn current_generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Atomically bump the generation and return the new value: the caller's
+    /// supervisor claims ownership, and every earlier supervisor (even one still
+    /// inside `resolve_env`) becomes stale. Claimed on the spawning thread BEFORE
+    /// the supervisor thread starts, so two concurrent kill+restart opens of the
+    /// same workspace can never both think they own the engine.
+    pub fn claim_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 }
 
@@ -294,6 +322,18 @@ const ENGINE_INDEX_URL: &str =
 /// cache so app updates can ship engine-less: cache-hit, else seed from the
 /// installer-bundled engine, else fetch the pinned engine.
 pub fn resolve_engine_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    resolve_engine_dir_status(app, None)
+}
+
+/// [`resolve_engine_dir`] with an optional [`EngineState`] to report download
+/// progress through. With a state, progress goes through `set_status` so it
+/// carries the workspace id and persists as `last_status` (a late-mounting pill
+/// or a webview reload seeds with live progress); without one (the provisioning
+/// interpreter fallback has no state) it falls back to a bare emit.
+fn resolve_engine_dir_status(
+    app: &AppHandle,
+    state: Option<&EngineState>,
+) -> Result<PathBuf, String> {
     let pin = EnginePin::embedded();
     if std::env::var("SOLIDIFAI_ENGINE_DIR").is_ok() || pin.is_dev() {
         return resolve_engine_dir_from(
@@ -315,8 +355,23 @@ pub fn resolve_engine_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map(|r| r.join("engine-dist"))
         .filter(|d| d.is_dir());
     let pubkey = updater_pubkey()?;
+    // Throttle progress: the fetch reports every 64KB read, which would be
+    // thousands of IPC emits for a full engine archive. The final report
+    // (done == total) always goes out.
+    let mut last_emit: Option<std::time::Instant> = None;
     let mut emit = |done: u64, total: Option<u64>| {
-        let _ = app.emit("engine-status", EngineStatus::updating(done, total));
+        let now = std::time::Instant::now();
+        let due = last_emit
+            .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(100));
+        if !due && total != Some(done) {
+            return;
+        }
+        last_emit = Some(now);
+        let status = EngineStatus::updating(done, total);
+        match state {
+            Some(s) => s.set_status(app, status),
+            None => emit_status(app, status),
+        }
     };
     resolve_cached_engine_dir(
         &cache,
@@ -336,10 +391,14 @@ pub fn mcp_launcher(app: &AppHandle) -> Option<String> {
         return None;
     }
     let app_data = app.path().app_data_dir().ok()?;
-    let launcher = EngineCache::new(&app_data).launcher();
-    launcher
-        .exists()
-        .then(|| launcher.to_string_lossy().into_owned())
+    let cache = EngineCache::new(&app_data);
+    // Deterministic path, returned even before any engine is installed: the shim
+    // execs whatever `current` points at, so agent configs stay valid across
+    // engine swaps and a first launch never falls back to a blocking in-command
+    // fetch (or, offline, an empty interpreter path). Written best-effort so the
+    // file exists as early as possible.
+    let _ = cache.write_launcher();
+    Some(cache.launcher().to_string_lossy().into_owned())
 }
 
 fn current_platform() -> String {
@@ -359,6 +418,12 @@ fn updater_pubkey() -> Result<String, String> {
         .ok_or_else(|| "updater pubkey missing in tauri.conf.json".to_string())
 }
 
+/// Serializes engine resolution process-wide. Every workspace tab has its own
+/// supervisor thread and they share one cache; without this, two first opens
+/// during a seed/fetch could interleave installs and clobber a just-installed
+/// engine. The waiter re-checks the cache under the lock and becomes a hit.
+static RESOLVE_LOCK: Mutex<()> = Mutex::new(());
+
 /// cache-hit -> seed-from-bundle -> fetch. Pure over its inputs (the fetch is the
 /// only side-effecting branch and is exercised only in real release builds).
 fn resolve_cached_engine_dir(
@@ -369,19 +434,24 @@ fn resolve_cached_engine_dir(
     pubkey: &str,
     on_progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, String> {
+    let _guard = RESOLVE_LOCK.lock();
     if cache.is_ready(&pin.manifest_hash) {
+        cache.gc(&[&pin.manifest_hash]);
         return Ok(cache.engine_dir(&pin.manifest_hash));
     }
     if let Some(bundle) = bundle {
         match seed_from_bundle(cache, pin, platform, bundle) {
-            Ok(dir) => return Ok(dir),
+            Ok(dir) => {
+                cache.gc(&[&pin.manifest_hash]);
+                return Ok(dir);
+            }
             // Fall through to a network fetch if the bundle is absent/mismatched.
             Err(e) => eprintln!("engine seed from bundle failed ({e}); fetching"),
         }
     }
     let current_dir = cache.current_dir();
     let current_rev = current_dir.as_deref().and_then(EngineCache::rev_of);
-    engine_fetch::ensure(
+    let dir = engine_fetch::ensure(
         &engine_fetch::HttpTransport::default(),
         cache,
         ENGINE_INDEX_URL,
@@ -392,7 +462,24 @@ fn resolve_cached_engine_dir(
         pubkey,
         on_progress,
     )
-    .map_err(|e| format!("engine fetch failed: {e}"))
+    .map_err(|e| {
+        // Full chain to the log; the status pill gets a short human message. A
+        // failed open is retried on the next open_workspace (workspaces.rs), so
+        // point the user there for network errors.
+        tracing::warn!("engine fetch failed: {e:#}");
+        // Walk the whole chain: a mid-body network drop surfaces as an io::Error
+        // whose source is the reqwest error, not a top-level reqwest::Error.
+        if e.chain().any(|c| c.is::<reqwest::Error>()) {
+            "Couldn't download the engine. Check your connection and reopen the workspace to retry."
+                .to_string()
+        } else {
+            format!("engine install failed: {e}")
+        }
+    })?;
+    // Sweep superseded engines + stale staging/archives, keeping the pinned one
+    // (gc always protects `current`, the next delta base). Best-effort.
+    cache.gc(&[&pin.manifest_hash]);
+    Ok(dir)
 }
 
 /// Copy the installer-bundled engine into the cache (offline first-run), verifying
@@ -409,10 +496,16 @@ fn seed_from_bundle(
     if manifest.manifest_hash != pin.manifest_hash {
         anyhow::bail!("bundled engine does not match pin");
     }
+    // Unique staging per attempt; verify the copy before installing (the copy is
+    // not atomic, so a torn tree must never be finalized as ready).
     let staging = cache.staging_dir(&pin.manifest_hash);
-    let _ = std::fs::remove_dir_all(&staging);
-    copy_tree(bundle, &staging)?;
-    cache.install_trusted(&staging, &manifest)
+    let result = copy_tree(bundle, &staging)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| cache.install_verified(&staging, &manifest));
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -422,6 +515,13 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
         let from = entry.path();
         let to = dst.join(entry.file_name());
         let ft = entry.file_type()?;
+        // Skip OS droppings (.DS_Store et al): the manifest walker ignores them,
+        // so copying one into staging would fail install_verified's exact-tree
+        // check and needlessly push an offline first run onto the network path.
+        if ft.is_file() && engine_pack::manifest::is_junk_file(&entry.file_name().to_string_lossy())
+        {
+            continue;
+        }
         if ft.is_symlink() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
@@ -465,7 +565,7 @@ pub fn resolve_uv() -> Result<PathBuf, String> {
 }
 
 /// Minimal PATH search for an executable, avoiding an extra dependency.
-fn which_on_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn which_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
@@ -494,7 +594,7 @@ pub fn interpreter_path(engine_dir: &Path) -> PathBuf {
 
 /// Run `uv sync` in `engine_dir` to provision/refresh the virtualenv. Idempotent.
 fn uv_sync(uv: &Path, engine_dir: &Path) -> Result<(), String> {
-    let output = Command::new(uv)
+    let output = quiet_command(uv)
         .arg("sync")
         .current_dir(engine_dir)
         .output()
@@ -515,7 +615,7 @@ fn uv_sync(uv: &Path, engine_dir: &Path) -> Result<(), String> {
 /// `"<pyMaj>.<pyMin> <build123dVersion>"`, which we reformat in Rust to avoid
 /// embedding non-ASCII in the `-c` argument.
 fn engine_version(interpreter: &Path) -> Result<String, String> {
-    let output = Command::new(interpreter)
+    let output = quiet_command(interpreter)
         .args([
             "-c",
             "import sys, build123d; print(f'{sys.version_info.major}.{sys.version_info.minor} {build123d.__version__}')",
@@ -546,7 +646,7 @@ const EXPECTED_ENGINE_PROTOCOL: u32 = 10;
 /// constant (or can't import the engine) prints `0`, which `check_protocol` then
 /// surfaces as "stale" rather than letting the probe itself fail obscurely.
 fn engine_protocol(interpreter: &Path) -> Result<u32, String> {
-    let output = Command::new(interpreter)
+    let output = quiet_command(interpreter)
         .args([
             "-c",
             "try:\n from solidifai_engine.protocol import PROTOCOL_VERSION as P\nexcept Exception:\n P = 0\nprint(P)",
@@ -599,7 +699,7 @@ fn spawn_engine_server(
     config_dir: &Path,
     model_path: Option<&str>,
 ) -> Result<Child, String> {
-    let mut cmd = Command::new(interpreter);
+    let mut cmd = quiet_command(interpreter);
     cmd.args([
         "-m",
         "solidifai_engine",
@@ -639,7 +739,7 @@ struct ResolvedEnv {
 /// interpreter+version on [`EngineState`] and skip `uv sync` / the version probe,
 /// since the engine venv is app-global (only socket/artifacts are per-workspace).
 fn resolve_env(state: &Arc<EngineState>, app: &AppHandle) -> Result<ResolvedEnv, String> {
-    let engine_dir = resolve_engine_dir(app)?;
+    let engine_dir = resolve_engine_dir_status(app, Some(state))?;
 
     // Fast path: env already resolved on a previous workspace open. Skip the
     // expensive `uv sync` + version probe.
@@ -712,13 +812,22 @@ pub fn start_supervised(
     socket_path: String,
     artifacts_dir: String,
     model_path: Option<String>,
+    generation: u64,
 ) {
+    // Already superseded before we even started (a second kill+restart of this
+    // workspace claimed a newer generation): stop before touching status or env.
+    if state.current_generation() != generation {
+        return;
+    }
     state.set_status(&app, EngineStatus::provisioning());
 
     let env = match resolve_env(&state, &app) {
         Ok(e) => e,
         Err(e) => {
-            state.set_status(&app, EngineStatus::error(e));
+            // Don't clobber a newer supervisor's status with our stale failure.
+            if state.current_generation() == generation {
+                state.set_status(&app, EngineStatus::error(e));
+            }
             return;
         }
     };
@@ -742,10 +851,9 @@ pub fn start_supervised(
         }
     };
 
-    // Capture our supervisor generation. If a later `kill()` (workspace switch /
-    // shutdown) bumps it, this thread stops instead of restarting or clobbering
-    // the next workspace's engine.
-    let generation = state.current_generation();
+    // `generation` was claimed by our spawner via `claim_generation()`. If a
+    // later `kill()` or a newer supervisor bumps it, this thread stops instead
+    // of restarting or clobbering the next supervisor's engine.
 
     // Spawn + supervise. Try once, and restart a single time on unexpected exit.
     let mut attempts = 0u32;
@@ -882,6 +990,22 @@ fn wait_for_child(child: &Arc<Mutex<Option<Child>>>) -> ChildExit {
 mod tests {
     use super::*;
 
+    /// `quiet_command` must behave exactly like a plain `Command` apart from the
+    /// Windows creation flags (cross-platform dispatch check).
+    #[test]
+    fn quiet_command_spawns_like_a_plain_command() {
+        let (shell, flag) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+        let status = quiet_command(shell)
+            .args([flag, "exit 0"])
+            .status()
+            .expect("quiet_command spawns");
+        assert!(status.success());
+    }
+
     #[test]
     fn resolve_engine_dir_from_override_then_dev_sibling() {
         let tmp = std::env::temp_dir();
@@ -1015,6 +1139,23 @@ mod tests {
         assert_eq!(g1, g0 + 1, "kill must advance the supervisor generation");
         state.kill();
         assert_eq!(state.current_generation(), g0 + 2);
+    }
+
+    /// `claim_generation()` bumps AND returns the new value in one atomic step:
+    /// of two racing kill+restart opens, exactly one supervisor token matches the
+    /// final generation, so exactly one supervisor survives its checks.
+    #[test]
+    fn claim_generation_returns_the_new_current_value() {
+        let state = EngineState::default();
+        let g1 = state.claim_generation();
+        assert_eq!(state.current_generation(), g1);
+        let g2 = state.claim_generation();
+        assert!(g2 > g1, "claims must be strictly increasing");
+        assert_eq!(
+            state.current_generation(),
+            g2,
+            "only the newest claim is current"
+        );
     }
 
     /// A ChildGuard reaps its process on drop, but `into_child` defuses it so the

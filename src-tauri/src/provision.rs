@@ -681,17 +681,23 @@ pub fn provision(
         .map_err(|e| format!("failed to write {}: {e}", directive_path.display()))?;
     let directive_str = directive_path.to_string_lossy();
 
-    // MCP / agent config (code-generated; NOT user-editable).
-    write_managed(&root.join(".mcp.json"), &mcp_json(py, sock))?;
-    write_managed(
-        &root.join(".codex/config.toml"),
-        &codex_config_toml(py, sock),
-    )?;
-    write_managed(&root.join("opencode.json"), &opencode_json(py, sock))?;
-    write_managed(
-        &root.join(".claude/settings.json"),
-        &claude_settings_json(py, &directive_str),
-    )?;
+    // MCP / agent config (code-generated; NOT user-editable). All four embed the
+    // interpreter as the command, so when it is unknown (e.g. an offline first
+    // launch before the engine cache exists) skip them rather than writing a
+    // broken empty command; they are managed files, rewritten on the next open
+    // once the engine resolves.
+    if !py.is_empty() {
+        write_managed(&root.join(".mcp.json"), &mcp_json(py, sock))?;
+        write_managed(
+            &root.join(".codex/config.toml"),
+            &codex_config_toml(py, sock),
+        )?;
+        write_managed(&root.join("opencode.json"), &opencode_json(py, sock))?;
+        write_managed(
+            &root.join(".claude/settings.json"),
+            &claude_settings_json(py, &directive_str),
+        )?;
+    }
     // Cursor's session-start equivalent (always-apply rule).
     write_managed(
         &root.join(".cursor/rules/using-solidifai.mdc"),

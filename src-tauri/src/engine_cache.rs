@@ -29,8 +29,16 @@ impl EngineCache {
     pub fn ready_marker(&self, hash: &str) -> PathBuf {
         self.engine_dir(hash).join(".ready")
     }
+    /// A staging dir for ONE assemble/install attempt. Unique per call (pid +
+    /// counter) so overlapping attempts can never share a path; leftovers from
+    /// failed attempts are swept by [`gc`](Self::gc).
     pub fn staging_dir(&self, hash: &str) -> PathBuf {
-        self.root.join(".staging").join(format!("{hash}.tmp"))
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        self.root
+            .join(".staging")
+            .join(format!("{hash}.{}.{n}.tmp", std::process::id()))
     }
     pub fn current_pointer(&self) -> PathBuf {
         self.root.join("current")
@@ -62,12 +70,6 @@ impl EngineCache {
             let _ = std::fs::remove_dir_all(staging);
             return Err(e);
         }
-        self.finalize(staging, manifest)
-    }
-
-    /// Install without re-verifying. Only for the seed path, where the manifest was
-    /// already matched against the bundle before the (faithful) copy into staging.
-    pub fn install_trusted(&self, staging: &Path, manifest: &Manifest) -> anyhow::Result<PathBuf> {
         self.finalize(staging, manifest)
     }
 
@@ -125,19 +127,27 @@ impl EngineCache {
         std::fs::create_dir_all(&self.root)?;
         let launcher = self.launcher();
         #[cfg(unix)]
+        let content = "#!/bin/sh\nexec \"$(dirname \"$0\")/current/bin/python3\" \"$@\"\n";
+        #[cfg(windows)]
+        let content = "@echo off\r\nset /p H=<\"%~dp0current\"\r\n\"%~dp0%H%\\python.exe\" %*\r\n";
+        // Already correct: don't rewrite. The shim is exec'd by external agents at
+        // arbitrary times, and this runs on every workspace open outside the
+        // resolve lock — a truncate-then-write here could hand an agent a torn read.
+        if std::fs::read(&launcher).is_ok_and(|cur| cur == content.as_bytes()) {
+            return Ok(());
+        }
+        // First write (or content change): temp + rename so the shim path only
+        // ever holds a complete file.
+        let tmp = self
+            .root
+            .join(format!(".launcher.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, content)?;
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::write(
-                &launcher,
-                "#!/bin/sh\nexec \"$(dirname \"$0\")/current/bin/python3\" \"$@\"\n",
-            )?;
-            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         }
-        #[cfg(windows)]
-        std::fs::write(
-            &launcher,
-            "@echo off\r\nset /p H=<\"%~dp0current\"\r\n\"%~dp0%H%\\python.exe\" %*\r\n",
-        )?;
+        std::fs::rename(&tmp, &launcher)?;
         Ok(())
     }
 
@@ -193,7 +203,9 @@ mod tests {
         let c = EngineCache::new(Path::new("/app"));
         assert_eq!(c.engine_dir("ab"), Path::new("/app/engines/ab"));
         assert_eq!(c.current_pointer(), Path::new("/app/engines/current"));
-        assert!(c.staging_dir("ab").ends_with("engines/.staging/ab.tmp"));
+        let s = c.staging_dir("ab");
+        assert!(s.starts_with("/app/engines/.staging"));
+        assert_ne!(c.staging_dir("ab"), s, "staging is unique per call");
     }
 
     #[test]

@@ -50,7 +50,10 @@ tauri-plugin-process = "2"
 engine-pack = { path = "engine-pack" }
 anyhow = "1"
 # Blocking HTTP for the engine fetch (TLS inherited from the updater's reqwest).
-reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
+# system-proxy is a reqwest DEFAULT that default-features=false drops: without it
+# neither this transport nor the updater's shared reqwest sees an OS-configured
+# proxy (corporate Windows/macOS), and the engine fetch + update checks all fail.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "system-proxy"] }
 # OS deep links (solidifai://) -> in-app routes. See useDeepLinks on the JS side.
 tauri-plugin-deep-link = "2"
 # One app instance per user: a second launch focuses the first instead of racing

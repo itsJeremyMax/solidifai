@@ -98,16 +98,20 @@ pub fn plan_download(
 pub trait Transport {
     fn get(&self, url: &str) -> anyhow::Result<Vec<u8>>;
 
-    /// Like `get`, but reports `(downloaded, total)` as bytes arrive. The default
-    /// is non-streaming (one final callback) so test transports need not implement it.
-    fn get_streaming(
+    /// Stream `url` into the file at `dest`, reporting `(downloaded, total)` as
+    /// bytes arrive. The default buffers via `get` (one final callback) so test
+    /// transports need not implement it; the real transport streams to disk so
+    /// the full engine archive never sits in memory.
+    fn get_to_file(
         &self,
         url: &str,
+        dest: &Path,
         on: &mut dyn FnMut(u64, Option<u64>),
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<()> {
         let bytes = self.get(url)?;
+        std::fs::write(dest, &bytes)?;
         on(bytes.len() as u64, Some(bytes.len() as u64));
-        Ok(bytes)
+        Ok(())
     }
 }
 
@@ -140,23 +144,37 @@ pub fn ensure(
         anyhow::bail!("manifest hash disagrees with the pin or the index");
     }
 
-    let archive = transport.get_streaming(&dl.archive_url, on_progress)?;
-    let got = engine_pack::hash::sha256_bytes(&archive);
-    if got != dl.archive_sha256 {
-        anyhow::bail!("archive sha256 mismatch");
+    // Archive name derived from the manifest hash (unique per engine); staging is
+    // unique per attempt. Downloaded straight to disk and verified from there so
+    // the multi-hundred-MB archive never sits in memory.
+    let staging = cache.staging_dir(&manifest.manifest_hash);
+    std::fs::create_dir_all(staging.parent().unwrap())?;
+    let archive_path = cache
+        .root()
+        .join(".staging")
+        .join(format!("{}.tar.zst", manifest.manifest_hash));
+    if let Err(e) = transport.get_to_file(&dl.archive_url, &archive_path, on_progress) {
+        // A failed download must not strand a multi-hundred-MB partial archive
+        // until some future successful resolve's gc (never, if the user stays
+        // offline). A retry recreates the file from scratch either way.
+        let _ = std::fs::remove_file(&archive_path);
+        return Err(e);
     }
 
-    let staging = cache.staging_dir(&manifest.manifest_hash);
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(staging.parent().unwrap())?;
-    let archive_path = cache.root().join(".staging").join("download.tar.zst");
-    std::fs::write(&archive_path, &archive)?;
-
-    let base = dl.use_base.then_some(current_dir).flatten();
-    engine_pack::archive::assemble(base, &archive_path, &manifest, &staging)?;
-    let dest = cache.install_verified(&staging, &manifest)?;
+    let result = (|| {
+        let got = engine_pack::hash::sha256_file(&archive_path)?;
+        if got != dl.archive_sha256 {
+            anyhow::bail!("archive sha256 mismatch");
+        }
+        let base = dl.use_base.then_some(current_dir).flatten();
+        engine_pack::archive::assemble(base, &archive_path, &manifest, &staging)?;
+        cache.install_verified(&staging, &manifest)
+    })();
     let _ = std::fs::remove_file(&archive_path);
-    Ok(dest)
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
 }
 
 /// Blocking HTTP transport over reqwest (the engine fetch runs on the engine
@@ -179,26 +197,34 @@ impl Transport for HttpTransport {
         Ok(resp.bytes()?.to_vec())
     }
 
-    fn get_streaming(
+    fn get_to_file(
         &self,
         url: &str,
+        dest: &Path,
         on: &mut dyn FnMut(u64, Option<u64>),
-    ) -> anyhow::Result<Vec<u8>> {
-        use std::io::Read;
+    ) -> anyhow::Result<()> {
+        use std::io::{Read, Write};
         let mut resp = self.client.get(url).send()?.error_for_status()?;
         let total = resp.content_length();
-        // cap the reservation: a bogus Content-Length must not trigger a huge alloc
-        let mut buf = Vec::with_capacity(total.unwrap_or(0).min(16 << 20) as usize);
+        let mut file = std::io::BufWriter::new(std::fs::File::create(dest)?);
         let mut chunk = [0u8; 65536];
+        let mut done: u64 = 0;
         loop {
             let n = resp.read(&mut chunk)?;
             if n == 0 {
                 break;
             }
-            buf.extend_from_slice(&chunk[..n]);
-            on(buf.len() as u64, total);
+            file.write_all(&chunk[..n])?;
+            done += n as u64;
+            on(done, total);
         }
-        Ok(buf)
+        file.flush()?;
+        // No Content-Length: the throttle's always-send case is done == total,
+        // so emit a final complete report or the progress UI freezes short.
+        if total.is_none() {
+            on(done, Some(done));
+        }
+        Ok(())
     }
 }
 

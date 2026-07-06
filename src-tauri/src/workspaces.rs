@@ -155,6 +155,11 @@ pub fn start_workspace(
     // `ready` quickly).
     let app_handle = app.clone();
     let engine_for_thread = engine.clone();
+    // Claim the supervisor generation HERE, atomically, before the thread spawns:
+    // two concurrent kill+restart opens of the same workspace each get a distinct
+    // token, and only the newest one survives the supervisor's generation checks
+    // (the older one bails instead of spawning a second engine on the socket).
+    let generation = engine.claim_generation();
     std::thread::spawn(move || {
         engine::start_supervised(
             app_handle,
@@ -162,6 +167,7 @@ pub fn start_workspace(
             socket,
             artifacts,
             Some(model),
+            generation,
         );
     });
 
@@ -317,17 +323,30 @@ fn open_workspace_blocking(app: AppHandle, path: String) -> Result<Workspace, St
     // / restart the watcher on every open.
     let already_active = instances.focused_id().as_deref() == Some(canonical.as_str());
 
-    if !already_active {
+    // A workspace whose engine died terminally (e.g. the first-launch engine
+    // fetch failed offline) gets a fresh start on ANY re-open instead of staying
+    // dead for the whole session.
+    let errored = instances
+        .get(&canonical)
+        .is_some_and(|e| e.current_status().status == "error");
+
+    if !already_active || errored {
         // N live instances: switching does NOT tear down the previous workspace.
         // `ensure_new` decides spawn-vs-refocus atomically under one lock, so two
         // concurrent first-opens of the same workspace can't both spawn a supervisor.
         let ws_paths = WorkspacePaths::for_root(&root);
-        let (_engine, is_new) = instances.ensure_new(&canonical);
+        let (engine, is_new) = instances.ensure_new(&canonical);
         app.state::<WorkspaceState>().set_focused(ws_paths.clone());
         instances.set_focus(canonical.clone());
         if is_new {
             // First open: provision + spawn its engine + watcher. `start_workspace`
             // calls `ensure(id)` internally, which returns the Arc just inserted here.
+            start_workspace(&app, &instances, &ws_paths)?;
+        } else if errored {
+            // Kill first to reap any leftover child; `start_workspace` then claims
+            // a fresh supervisor generation, so even two concurrent reopens of an
+            // errored workspace resolve to exactly one live supervisor.
+            engine.kill();
             start_workspace(&app, &instances, &ws_paths)?;
         } else {
             // Already running in the background: just re-focus + retarget the watcher.

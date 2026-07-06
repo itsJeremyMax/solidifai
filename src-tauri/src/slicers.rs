@@ -8,7 +8,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -73,12 +73,21 @@ fn orca_candidates() -> Vec<PathBuf> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        // PATH first, then well-known install locations, same order as the
+        // engine's `_default_candidates` (which also fixed-path-probes because a
+        // desktop-entry launch gets the minimal session PATH).
         let mut out = Vec::new();
-        if let Some(home) = dirs::home_dir() {
-            out.push(home.join("OrcaSlicer.AppImage"));
+        if let Some(found) = crate::engine::which_on_path("orca-slicer") {
+            out.push(found);
         }
-        out.push(PathBuf::from("/opt/OrcaSlicer/orca-slicer"));
+        if let Some(home) = dirs::home_dir() {
+            out.push(home.join(".local/bin/orca-slicer"));
+            out.push(home.join("OrcaSlicer.AppImage"));
+            out.push(home.join("Applications/OrcaSlicer.AppImage"));
+        }
+        out.push(PathBuf::from("/usr/bin/orca-slicer"));
         out.push(PathBuf::from("/usr/local/bin/orca-slicer"));
+        out.push(PathBuf::from("/opt/OrcaSlicer/orca-slicer"));
         out
     }
 }
@@ -144,7 +153,7 @@ fn resolve_executable(path: &Path) -> Option<PathBuf> {
 /// Run `<exe> --version`, bounded by [`VERSION_TIMEOUT`], and return the last
 /// whitespace token of stdout (OrcaSlicer prints e.g. `OrcaSlicer 2.1.1`).
 fn probe_version(exe: &Path) -> Option<String> {
-    let mut child = Command::new(exe)
+    let mut child = crate::engine::quiet_command(exe)
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

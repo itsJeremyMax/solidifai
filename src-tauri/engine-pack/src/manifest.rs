@@ -49,11 +49,19 @@ pub struct Manifest {
     pub manifest_hash: String,
 }
 
+/// OS/desktop droppings that must never make it into a manifest: a user merely
+/// browsing the bundled engine in Finder/Explorer writes these, and they would
+/// otherwise change the manifest hash and fail the offline seed against the pin.
+pub fn is_junk_file(name: &str) -> bool {
+    matches!(name, ".DS_Store" | "Thumbs.db" | "desktop.ini") || name.starts_with("._")
+}
+
 impl Manifest {
     /// Walk `root` and build a manifest. Entries are sorted by path so the
     /// manifest is deterministic for identical inputs. `manifest_hash` is the
     /// SHA-256 over the canonical JSON of the sorted file list (excluding the
-    /// hash field itself).
+    /// hash field itself). Known OS junk files ([`is_junk_file`]) are ignored,
+    /// so a Finder-browsed tree hashes the same as the pristine CI tree.
     pub fn build_from_dir(
         root: &Path,
         engine_rev: &str,
@@ -64,6 +72,9 @@ impl Manifest {
             let entry = entry?;
             let p = entry.path();
             if p == root {
+                continue;
+            }
+            if entry.file_type().is_file() && is_junk_file(&entry.file_name().to_string_lossy()) {
                 continue;
             }
             let rel = p.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
@@ -115,6 +126,22 @@ impl Manifest {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    /// OS droppings (a user browsing the bundled engine in Finder writes
+    /// .DS_Store) must not change the manifest, or the offline seed fails its
+    /// hash check against the pin built from the pristine CI tree.
+    #[test]
+    fn junk_files_do_not_change_the_manifest_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path());
+        let clean = Manifest::build_from_dir(dir.path(), "r1", "darwin-aarch64").unwrap();
+        std::fs::write(dir.path().join(".DS_Store"), b"finder junk").unwrap();
+        std::fs::write(dir.path().join("bin/._python3"), b"appledouble").unwrap();
+        std::fs::write(dir.path().join("Thumbs.db"), b"explorer junk").unwrap();
+        let junked = Manifest::build_from_dir(dir.path(), "r1", "darwin-aarch64").unwrap();
+        assert_eq!(clean.manifest_hash, junked.manifest_hash);
+        assert_eq!(clean.files.len(), junked.files.len());
+    }
 
     fn fixture(root: &Path) {
         std::fs::create_dir_all(root.join("bin")).unwrap();
