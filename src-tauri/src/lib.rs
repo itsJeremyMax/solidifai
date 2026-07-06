@@ -36,14 +36,26 @@ use tauri::{Manager, RunEvent, WindowEvent};
 
 /// Kill every workspace engine (via the registry) and the PTY shell. The registry
 /// also drops the held artifact watcher. Called on window-destroy and app exit so
-/// no child processes / file watches outlive the app.
-fn shutdown(app_handle: &tauri::AppHandle) {
+/// no child processes / file watches outlive the app. Also called by the updater
+/// before the Windows install handoff, which exits without firing RunEvent::Exit.
+pub(crate) fn shutdown(app_handle: &tauri::AppHandle) {
     app_handle.state::<Arc<Instances>>().kill_all();
     app_handle.state::<PtyState>().kill_all();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // webkit2gtk 2.42+ composites through DMABUF, which is broken on the NVIDIA
+    // proprietary driver (blank/garbled window and failed WebGL context creation;
+    // the most-reported Tauri-on-Linux failure class). Opt out before the webview
+    // initializes when that driver is present; an explicit user setting wins.
+    #[cfg(target_os = "linux")]
+    if std::path::Path::new("/proc/driver/nvidia").exists()
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     let instances = Arc::new(Instances::default());
 
     let mut builder = tauri::Builder::default()

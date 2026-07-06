@@ -86,8 +86,8 @@ pub async fn download_and_install(app: AppHandle, channel: Channel) -> Result<()
     let downloaded = Arc::new(AtomicU64::new(0));
     let app2 = app.clone();
     let dl = downloaded.clone();
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk_length, content_length| {
                 let total =
                     dl.fetch_add(chunk_length as u64, Ordering::Relaxed) + chunk_length as u64;
@@ -100,7 +100,29 @@ pub async fn download_and_install(app: AppHandle, channel: Channel) -> Result<()
         )
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    // On Windows the plugin's install path launches the NSIS installer and then
+    // terminates this process via std::process::exit(0) WITHOUT dispatching
+    // RunEvent::Exit, so lib.rs's shutdown() would never run. Kill the workspace
+    // engines + PTY agent shells here so the installer handoff can't orphan them.
+    // If the handoff itself fails, everything is already dead (kill_all drained
+    // the instance registry), so a plain Err would leave a zombie app whose UI
+    // still says "ready". Relaunch instead: the user opted into close-and-update,
+    // and this gives them back a working (un-updated) app; the failure is in the
+    // rolling log and the update pill resurfaces on the next check.
+    #[cfg(windows)]
+    {
+        crate::shutdown(&app);
+        if let Err(e) = update.install(bytes) {
+            tracing::error!("update install failed after engine shutdown; relaunching: {e}");
+            app.restart();
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        update.install(bytes).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
