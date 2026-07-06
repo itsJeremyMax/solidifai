@@ -7,6 +7,16 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom";
 // only verifies that a matched route renders inside AppLayout's outlet.
 vi.mock("./state/updater", () => ({
   UpdaterProvider: ({ children }: { children: React.ReactNode }) => children,
+  // AppHeader renders the global UpdateIndicator, which consumes this hook.
+  useUpdater: () => ({
+    status: "idle",
+    version: null,
+    progress: null,
+    error: null,
+    startDownload: () => {},
+    restart: () => {},
+    checkNow: async () => ({ available: false, version: null, error: null }),
+  }),
 }));
 vi.mock("./components/WhatsNewModal", () => ({ default: () => null }));
 

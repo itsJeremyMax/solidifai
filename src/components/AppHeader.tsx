@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { HeaderSlotOutlet } from "../state/headerSlot";
+import UpdateIndicator from "./UpdateIndicator";
 import { WorkspaceSwitcherBar } from "./WorkspaceSwitcher";
 
 /**
@@ -59,8 +60,12 @@ export default function AppHeader() {
 
       {/* Right-side actions published by the current page. Pinned (shrink-0) so the
           cluster keeps its intrinsic width and never compresses its pills into a
-          wrapped, ragged block; the centered region above absorbs any squeeze instead. */}
+          wrapped, ragged block; the centered region above absorbs any squeeze instead.
+          The update indicator lives here, not in any page's chrome: an available
+          update must be actionable from every surface (home, settings, editor),
+          and it renders null while idle. */}
       <div className="flex shrink-0 items-center gap-2.5">
+        <UpdateIndicator />
         <HeaderSlotOutlet which="actions" />
       </div>
     </header>

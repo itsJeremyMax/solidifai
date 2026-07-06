@@ -1,9 +1,24 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { HeaderSlotProvider, useHeaderSlot } from "../state/headerSlot";
 import { WorkspaceSessionsProvider } from "../state/workspaceSessions";
+
+// The header hosts the global UpdateIndicator, which needs the Tauri-backed
+// UpdaterProvider; stub the hook so these layout tests stay provider-free.
+vi.mock("../state/updater", () => ({
+  useUpdater: () => ({
+    status: "idle",
+    version: null,
+    progress: null,
+    error: null,
+    startDownload: () => {},
+    restart: () => {},
+    checkNow: async () => ({ available: false, version: null, error: null }),
+  }),
+}));
+
 import AppHeader from "./AppHeader";
 
 afterEach(cleanup);

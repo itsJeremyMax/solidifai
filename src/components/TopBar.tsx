@@ -1,7 +1,6 @@
 import { Factory, Settings as SettingsIcon, SwatchBook } from "lucide-react";
 
 import EngineStatusPill from "./EngineStatusPill";
-import UpdateIndicator from "./UpdateIndicator";
 import { useHeaderSlot } from "../state/headerSlot";
 
 /** Shared lucide stroke weight to match the design language. */
@@ -56,7 +55,6 @@ export default function TopBar({ onOpenSettings, onOpenMaterials, onOpenFactory 
   useHeaderSlot({
     actions: (
       <>
-        <UpdateIndicator />
         <EngineStatusPill />
 
         {/* Hairline that separates the status zone from the controls. */}
