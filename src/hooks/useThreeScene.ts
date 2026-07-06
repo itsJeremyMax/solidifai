@@ -28,6 +28,7 @@ import { buildGrid, type GridHandle } from "./scene/grid";
 import { placeIsoCamera } from "./scene/isoFit";
 import { refreshClipPlanes } from "./scene/camera";
 import { createSelectionHighlight, type SelectionHighlight } from "./scene/highlight";
+import { isWebGLReadback, packReadbackRows } from "./scene/readback";
 import { captureExplodeBasis, applyExplode, type ExplodeBasis } from "./scene/explode";
 import {
   ACCENT,
@@ -163,6 +164,12 @@ export interface UseThreeScene {
   /** True once a model has been loaded into the scene. */
   hasModel: boolean;
   /**
+   * True after the GPU device/context is lost (sleep/wake, GPU reset). The
+   * pipeline can't recover in place; the loop is stopped and the caller should
+   * surface a reload affordance.
+   */
+  gpuLost: boolean;
+  /**
    * Enable/disable click-to-measure. Disabling also clears any in-progress
    * measurement. Safe to call before the scene mounts (idempotent).
    */
@@ -220,6 +227,7 @@ export function useThreeScene(
   // StrictMode runs effects twice in dev; we only ever build one renderer.
   const initedRef = useRef(false);
   const [hasModel, setHasModel] = useState(false);
+  const [gpuLost, setGpuLost] = useState(false);
 
   // Latest per-object appearance, read inside the GLB onLoad callback. Kept in a
   // ref so appearance updates don't retrigger the load effect (which keys on
@@ -471,6 +479,19 @@ export function useThreeScene(
 
     // WebGPURenderer needs async init before the first render.
     let disposed = false;
+
+    // GPU loss (webglcontextlost on the WebGL fallback, device.lost on WebGPU —
+    // three routes both here after preventDefault-ing the WebGL event) is not
+    // recoverable in place: stop the loop instead of pushing frames into a dead
+    // context, and surface the reload overlay via gpuLost.
+    const defaultOnDeviceLost = renderer.onDeviceLost.bind(renderer);
+    renderer.onDeviceLost = (info) => {
+      defaultOnDeviceLost(info); // logs + marks the renderer dead
+      if (disposed) return;
+      renderer.setAnimationLoop(null);
+      setGpuLost(true);
+    };
+
     renderer.init().then(() => {
       if (disposed) return;
       env = setupEnvironment(scene, renderer);
@@ -485,6 +506,10 @@ export function useThreeScene(
     const applyResize = () => {
       const w = container.clientWidth || 1;
       const h = container.clientHeight || 1;
+      // Re-read DPR: dragging the window to a display with a different scale
+      // factor changes devicePixelRatio without touching the container's CSS
+      // size (the matchMedia watcher below funnels through this same path).
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
@@ -504,8 +529,25 @@ export function useThreeScene(
     const observer = new ResizeObserver(onResize);
     observer.observe(container);
 
+    // DPR changes never fire the ResizeObserver (the container's CSS size is
+    // unchanged), so watch them with the standard one-shot matchMedia loop:
+    // each query matches only the current DPR, so its 'change' fires once on a
+    // display switch and must be re-armed against the new value.
+    let dprQuery: MediaQueryList | null = null;
+    function onDprChange() {
+      armDprQuery();
+      onResize(); // settle-debounced; applyResize re-reads the live DPR
+    }
+    function armDprQuery() {
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+    }
+    armDprQuery();
+
     return () => {
       observer.disconnect();
+      dprQuery?.removeEventListener("change", onDprChange);
       if (resizeTimer) window.clearTimeout(resizeTimer);
       disposed = true;
       renderer.setAnimationLoop(null);
@@ -665,7 +707,7 @@ export function useThreeScene(
         pw,
         ph,
       )) as Uint8Array;
-      return await pngFromPixels(buf, pw, ph);
+      return await pngFromPixels(buf, pw, ph, isWebGLReadback(handle.renderer));
     } catch (e) {
       console.warn("thumbnail capture failed", e);
       return null;
@@ -851,6 +893,7 @@ export function useThreeScene(
     containerRef,
     fit,
     hasModel,
+    gpuLost,
     setMeasureEnabled,
     clearMeasure,
     setOnPick,
@@ -1009,12 +1052,17 @@ function frameToObject(handle: SceneRefs): void {
 /**
  * Encode a raw RGBA byte buffer (one `w`×`h` frame, 4 bytes/pixel) to a PNG blob.
  *
- * GPU pixel readback comes back bottom-up (origin at the lower-left), while a 2D
- * canvas' ImageData is top-down, so we copy source row `y` into destination row
- * `h-1-y` to flip vertically. Resolves `null` if a canvas isn't available or PNG
- * encoding fails, so the capture path always degrades to a placeholder.
+ * `flipY` must be true on the WebGL fallback backend, whose readback rows come
+ * back bottom-up; WebGPU readback is already top-down (see scene/readback.ts).
+ * Resolves `null` if a canvas isn't available or PNG encoding fails, so the
+ * capture path always degrades to a placeholder.
  */
-function pngFromPixels(buf: Uint8Array, w: number, h: number): Promise<Blob | null> {
+function pngFromPixels(
+  buf: Uint8Array,
+  w: number,
+  h: number,
+  flipY: boolean,
+): Promise<Blob | null> {
   return new Promise((resolve) => {
     try {
       const canvas = document.createElement("canvas");
@@ -1023,19 +1071,8 @@ function pngFromPixels(buf: Uint8Array, w: number, h: number): Promise<Blob | nu
       const ctx = canvas.getContext("2d");
       if (!ctx) return resolve(null);
 
-      // WebGPU readback rows are padded to a 256-byte stride; derive the real
-      // stride from the buffer so non-64-aligned widths don't shear. (Packed
-      // buffers reduce to w*4 naturally.) three's WebGPU copyTextureToBuffer
-      // returns rows top-down (row 0 = top), matching the canvas, so copy each
-      // row straight across with no vertical flip.
       const out = ctx.createImageData(w, h);
-      const dstRowBytes = w * 4;
-      const srcRowBytes = Math.floor(buf.length / h); // == aligned stride (or w*4 if packed)
-      for (let y = 0; y < h; y++) {
-        const srcStart = y * srcRowBytes;
-        const dstStart = y * dstRowBytes;
-        out.data.set(buf.subarray(srcStart, srcStart + dstRowBytes), dstStart);
-      }
+      out.data.set(packReadbackRows(buf, w, h, flipY));
       ctx.putImageData(out, 0, 0);
       canvas.toBlob((blob) => resolve(blob), "image/png");
     } catch {

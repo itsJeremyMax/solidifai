@@ -34,6 +34,7 @@ import * as THREE from "three/webgpu";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { appearanceFor, appearanceHash } from "../lib/materialAppearance";
 import type { Material } from "../lib/materials";
+import { isWebGLReadback, packReadbackRows } from "./scene/readback";
 
 /** Device-px square render size; cards downscale via CSS for crispness. */
 const SIZE = 192;
@@ -163,8 +164,14 @@ async function renderThumbnail(m: Material): Promise<string> {
     await c.renderer.renderAsync(c.scene, c.camera);
     c.renderer.setOutputRenderTarget(null);
 
-    const pixels = await c.renderer.readRenderTargetPixelsAsync(c.target, 0, 0, SIZE, SIZE);
-    const url = pixelsToDataURL(c.canvas, pixels);
+    const pixels = (await c.renderer.readRenderTargetPixelsAsync(
+      c.target,
+      0,
+      0,
+      SIZE,
+      SIZE,
+    )) as Uint8Array;
+    const url = pixelsToDataURL(c.canvas, pixels, isWebGLReadback(c.renderer));
     cachePut(key, url);
     return url;
   });
@@ -175,12 +182,15 @@ async function renderThumbnail(m: Material): Promise<string> {
   return run;
 }
 
-/** Blit RGBA8 read-back bytes into the 2D canvas and return a PNG data URL. */
-function pixelsToDataURL(canvas: HTMLCanvasElement, pixels: ArrayLike<number>): string {
+/**
+ * Blit RGBA8 read-back bytes into the 2D canvas and return a PNG data URL.
+ * `flipY` on the WebGL fallback backend, whose readback rows come back
+ * bottom-up (see scene/readback.ts).
+ */
+function pixelsToDataURL(canvas: HTMLCanvasElement, pixels: Uint8Array, flipY: boolean): string {
   const c2d = canvas.getContext("2d");
   if (!c2d) return "";
-  const data = new Uint8ClampedArray(SIZE * SIZE * 4);
-  data.set(pixels as Uint8Array);
+  const data = packReadbackRows(pixels, SIZE, SIZE, flipY);
   c2d.putImageData(new ImageData(data, SIZE, SIZE), 0, 0);
   return canvas.toDataURL("image/png");
 }

@@ -11,7 +11,17 @@
  * on-brand with the original placeholder.
  */
 import { forwardRef, memo, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Box, Loader2, Maximize, Move, Rotate3d, Ruler, Upload } from "lucide-react";
+import {
+  Box,
+  Loader2,
+  Maximize,
+  Move,
+  RotateCw,
+  Rotate3d,
+  Ruler,
+  TriangleAlert,
+  Upload,
+} from "lucide-react";
 
 import type { ArtifactsState } from "../hooks/useArtifacts";
 import type { Appearance } from "../lib/artifacts";
@@ -136,6 +146,7 @@ function Viewport(
     containerRef,
     fit,
     hasModel,
+    gpuLost,
     captureThumbnail,
     setMeasureEnabled,
     setOnPick,
@@ -502,6 +513,31 @@ function Viewport(
           <span className="opacity-60">no model</span>
         )}
       </div>
+
+      {/* GPU device lost (sleep/wake, GPU reset): the scene can't recover in
+          place, so cover the dead canvas and offer a full reload. Above every
+          other overlay — nothing beneath is interactive anymore. */}
+      {gpuLost && (
+        <div className="absolute inset-0 z-40 grid place-items-center bg-[rgba(13,15,20,.72)] backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-term-line bg-[rgba(20,23,30,.6)] px-9 py-7 text-center">
+            <span className="grid h-12 w-12 place-items-center rounded-xl border border-[rgba(255,255,255,.1)] bg-[rgba(20,23,30,.4)] text-term-ink-dim">
+              <TriangleAlert size={24} strokeWidth={1.5} />
+            </span>
+            <div className="text-body font-medium text-term-ink">Viewport stopped rendering</div>
+            <div className="font-mono text-caption text-[#6B7280]">
+              the graphics device was lost, usually after sleep or a driver reset
+            </div>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-1 inline-flex h-8 items-center gap-1.75 rounded-lg border border-[rgba(255,255,255,.14)] bg-[rgba(20,23,30,.5)] px-3 text-body font-medium text-term-ink transition-colors duration-150 hover:border-[rgba(255,255,255,.28)]"
+            >
+              <RotateCw size={14} strokeWidth={1.8} />
+              Reload app
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* right-click feature menu — anchored at the pick point, clamps itself
           against this <section> (its offset parent). Outside-click + Esc are
