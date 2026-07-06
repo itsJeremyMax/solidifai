@@ -12,7 +12,8 @@ vi.mock("../lib/openTabs", () => ({
   readOpenTabs: () => ({ open: ["/ws/a", "/ws/b"], focused: "/ws/a" }),
   saveOpenTabs: vi.fn(),
 }));
-vi.mock("../lib/workspaces", () => ({
+vi.mock("../lib/workspaces", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/workspaces")>()), // keep the pure helpers (basename)
   listWorkspaces: async () => [
     { path: "/ws/a", name: "Alpha" },
     { path: "/ws/b", name: "Beta" },

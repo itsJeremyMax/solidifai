@@ -386,11 +386,21 @@ export async function storeWorkspaceThumbnail(
 /* ──────────────────────────── presentation ────────────────────────────── */
 
 /**
- * Collapse a leading `/Users/<name>` or `/home/<name>` to `~` for display.
+ * Last path segment for display fallbacks (workspace tab/title names).
+ * Separator-blind: registry paths are native, so Windows hands us backslashes
+ * where a bare split("/") would return the entire absolute path.
+ */
+export function basename(path: string): string {
+  return path.split(/[\\/]/).pop() ?? "";
+}
+
+/**
+ * Collapse a leading home directory to `~` for display: `/Users/<name>` or
+ * `/home/<name>` on POSIX, `C:\Users\<name>` (any drive letter) on Windows.
  * Matches the `tildePath` convention used elsewhere in the inspector.
  */
 export function tildePath(path: string): string {
-  return path.replace(/^\/(Users|home)\/[^/]+/, "~");
+  return path.replace(/^\/(Users|home)\/[^/]+/, "~").replace(/^[a-z]:\\Users\\[^\\]+/i, "~");
 }
 
 /**

@@ -32,6 +32,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 
 import { useAppConfig } from "./appConfig";
 import { checkForUpdate, downloadAndInstall } from "../lib/ipc";
+import { logError } from "../lib/logger";
 import { nextActionFor, type UpdateStatus, type UseUpdaterResult } from "../hooks/useUpdater";
 
 const UpdaterContext = createContext<UseUpdaterResult | null>(null);
@@ -81,7 +82,16 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
       setStatus(silent ? "idle" : "ready");
     } catch (e) {
       if (!mounted.current) return;
-      setError(e instanceof Error ? e.message : "Update download failed.");
+      const message =
+        e instanceof Error ? e.message : typeof e === "string" ? e : "Update download failed.";
+      // A retry after the release was pulled (or a stale indicator): nothing to
+      // download is not a failure, so clear the pill instead of looping "error".
+      if (message.includes("no update available")) {
+        setProgress(null);
+        setStatus("idle");
+        return;
+      }
+      setError(message);
       setStatus("error");
     }
   }, []);
@@ -99,9 +109,10 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
       try {
         res = await checkForUpdate(channelRef.current);
       } catch (e) {
-        if (!mounted.current) return;
-        setError(e instanceof Error ? e.message : "Update check failed.");
-        setStatus("error");
+        // A failed launch check (offline, captive portal, DNS) is routine for a
+        // desktop app: log it and stay idle. The red "Update failed" pill is
+        // reserved for failures of an actual download.
+        logError("update auto-check failed", e);
         return;
       }
       if (!mounted.current) return;
@@ -145,11 +156,11 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
       }
       return { ...res, error: null };
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Update check failed.";
-      if (mounted.current) {
-        setError(message);
-        setStatus("error");
-      }
+      const message =
+        e instanceof Error ? e.message : typeof e === "string" ? e : "Update check failed.";
+      // No status change: the Settings panel shows the returned error inline,
+      // and the top-bar "Update failed" pill is for download failures only.
+      if (mounted.current) setError(message);
       // The caller must be able to tell a failed check from "up to date".
       return { available: false, version: null, error: message };
     }

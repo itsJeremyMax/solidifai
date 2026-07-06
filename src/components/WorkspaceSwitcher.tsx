@@ -25,7 +25,7 @@ import { useMatch, useNavigate } from "react-router-dom";
 import { useDismiss } from "../hooks/useDismiss";
 import { useWorkspaceStatuses } from "../hooks/useEngineStatus";
 import { useWorkspaceSessions } from "../state/workspaceSessions";
-import { listWorkspaces, closeWorkspaceTab } from "../lib/workspaces";
+import { basename, listWorkspaces, closeWorkspaceTab } from "../lib/workspaces";
 import { editorPath } from "../lib/routes";
 
 /** A tab's engine status, as carried per-`wsId` on the `engine-status` event.
@@ -463,7 +463,7 @@ export function WorkspaceSwitcherBar() {
     // that keeps the same tab count still re-resolves the display name.
   }, [openPaths]);
 
-  const nameFor = (p: string) => names[p] ?? p.split("/").pop() ?? "Workspace";
+  const nameFor = (p: string) => names[p] ?? (basename(p) || "Workspace");
   const namesResolved = Object.fromEntries(openPaths.map((p) => [p, nameFor(p)]));
 
   const onFocus = (p: string) => navigate(editorPath(p));

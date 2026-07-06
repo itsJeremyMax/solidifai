@@ -1,7 +1,8 @@
 import { ArrowLeft } from "lucide-react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet } from "react-router-dom";
 
 import { SETTINGS_SECTIONS, type SettingsSection } from "./settings/sections";
+import { useGoBack } from "../hooks/useGoBack";
 import { useHeaderSlot } from "../state/headerSlot";
 
 const ICON_STROKE = 1.7;
@@ -28,7 +29,7 @@ function groupedSections(): { label: string; items: SettingsSection[] }[] {
  * a history `Back` keep it scope-agnostic.
  */
 export default function SettingsLayout() {
-  const navigate = useNavigate();
+  const goBack = useGoBack("/");
   const groups = groupedSections();
 
   useHeaderSlot({
@@ -36,7 +37,7 @@ export default function SettingsLayout() {
       <div className="flex items-center gap-3.5">
         <button
           type="button"
-          onClick={() => navigate(-1)}
+          onClick={goBack}
           className="inline-flex h-8 items-center gap-1.75 rounded-lg border border-line-2 bg-surface pl-2 pr-3 text-body font-medium text-ink transition-colors duration-150 hover:border-line-3"
         >
           <ArrowLeft className="opacity-70" size={16} strokeWidth={ICON_STROKE} />
@@ -63,6 +64,7 @@ export default function SettingsLayout() {
               <NavLink
                 key={s.id}
                 to={s.id}
+                replace
                 className={({ isActive }) =>
                   `flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors duration-150 ${
                     isActive

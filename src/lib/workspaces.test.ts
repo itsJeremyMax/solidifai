@@ -9,6 +9,8 @@ import {
   restoreWorkspace,
   listWorkspaceThumbnails,
   storeWorkspaceThumbnail,
+  basename,
+  tildePath,
 } from "./workspaces";
 
 beforeEach(() => invoke.mockReset());
@@ -44,6 +46,37 @@ describe("archivedAt", () => {
   it("restoreWorkspace re-throws on a bad result", async () => {
     invoke.mockResolvedValueOnce(null);
     await expect(restoreWorkspace("/a")).rejects.toThrow();
+  });
+});
+
+describe("basename", () => {
+  it("takes the last segment of a POSIX path", () => {
+    expect(basename("/Users/jane/Documents/Gripper")).toBe("Gripper");
+  });
+
+  it("takes the last segment of a Windows path", () => {
+    expect(basename("C:\\Users\\jane\\Documents\\Solidifai\\workspaces\\Gripper")).toBe("Gripper");
+  });
+
+  it("returns empty for a trailing separator (callers fall back)", () => {
+    expect(basename("/Users/jane/Gripper/")).toBe("");
+  });
+});
+
+describe("tildePath", () => {
+  it("collapses /Users and /home", () => {
+    expect(tildePath("/Users/jane/Documents/w")).toBe("~/Documents/w");
+    expect(tildePath("/home/jane/w")).toBe("~/w");
+  });
+
+  it("collapses a Windows home directory, any drive letter, case-insensitive", () => {
+    expect(tildePath("C:\\Users\\jane\\Documents\\w")).toBe("~\\Documents\\w");
+    expect(tildePath("d:\\users\\jane\\w")).toBe("~\\w");
+  });
+
+  it("leaves non-home paths alone", () => {
+    expect(tildePath("/opt/solidifai")).toBe("/opt/solidifai");
+    expect(tildePath("E:\\Data\\w")).toBe("E:\\Data\\w");
   });
 });
 

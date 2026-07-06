@@ -18,7 +18,7 @@ import { SETTINGS_SECTIONS, SETTINGS_SECTION_IDS } from "./components/settings/s
 import { decodeWsPath, editorPath } from "./lib/routes";
 import { DOC_SLUGS } from "./lib/docs";
 import { useWorkspaceSessions } from "./state/workspaceSessions";
-import { type Workspace } from "./lib/workspaces";
+import { basename, type Workspace } from "./lib/workspaces";
 
 /** Material editor drawer sub-routes (new + edit), reused at every materials mount. */
 function materialsChildren() {
@@ -100,7 +100,7 @@ function MaterialsRoute({ scope }: { scope: "global" | "workspace" }) {
   const { wsPath } = useParams();
   // Workspace scope derives its name from the route; global scope has none.
   const workspaceName =
-    scope === "workspace" && wsPath ? (decodeWsPath(wsPath).split("/").pop() ?? null) : null;
+    scope === "workspace" && wsPath ? basename(decodeWsPath(wsPath)) || null : null;
   return <MaterialsView scope={scope} workspaceName={workspaceName} />;
 }
 

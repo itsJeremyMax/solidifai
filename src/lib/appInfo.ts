@@ -47,13 +47,15 @@ function osLabel(): string {
   return navigator.platform || "Unknown";
 }
 
-/** Rendering engine + version (WebKit on macOS, Chromium via WebView2 elsewhere). */
+/** Rendering engine + version (WebKit on macOS/Linux, Chromium via WebView2 on
+ *  Windows). Chrome is checked first: WebView2's UA carries both tokens, and its
+ *  AppleWebKit/537.36 is frozen compatibility boilerplate, not the real engine. */
 function webViewLabel(): string {
   const ua = navigator.userAgent;
-  const wk = ua.match(/AppleWebKit\/([\d.]+)/);
-  if (wk) return `WebKit ${wk[1]}`;
   const cr = ua.match(/Chrome\/([\d.]+)/);
   if (cr) return `Chromium ${cr[1]}`;
+  const wk = ua.match(/AppleWebKit\/([\d.]+)/);
+  if (wk) return `WebKit ${wk[1]}`;
   return "Unknown";
 }
 

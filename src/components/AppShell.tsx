@@ -6,7 +6,7 @@ import { NameSuggestionBar } from "./NameSuggestionBar";
 import InteractionPanel, { type InteractionTab } from "./InteractionPanel";
 import EditorPanes from "./EditorPanes";
 import { editorPath } from "../lib/routes";
-import { listWorkspaces } from "../lib/workspaces";
+import { basename, listWorkspaces } from "../lib/workspaces";
 
 interface AppShellProps {
   /** Absolute workspace root path — this session's identity (PTY id + cwd). */
@@ -36,7 +36,7 @@ export default function AppShell({ wsPath, active }: AppShellProps) {
 
   // Show the folder name immediately, then resolve the registered name (which can
   // differ after a rename) from the workspace registry.
-  const [name, setName] = useState(() => wsPath.split("/").pop() ?? "Workspace");
+  const [name, setName] = useState(() => basename(wsPath) || "Workspace");
   useEffect(() => {
     let live = true;
     listWorkspaces()

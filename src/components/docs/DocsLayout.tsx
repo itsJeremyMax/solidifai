@@ -51,6 +51,7 @@ export default function DocsLayout() {
                 <NavLink
                   key={page.slug}
                   to={page.slug}
+                  replace
                   className={({ isActive }) =>
                     `rounded-xl border px-3 py-2.5 text-left text-body font-medium transition-colors duration-150 ${
                       isActive
