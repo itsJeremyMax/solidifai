@@ -40,6 +40,26 @@ export function nextActionFor(behavior: UpdateBehavior, available: boolean): Upd
   }
 }
 
+/** Which single update CTA is on screen. Exactly one at a time, never stacked. */
+export type UpdateSurface = "none" | "pill" | "companion";
+
+/**
+ * Pure: which update surface shows, given the lifecycle, whether the companion
+ * was dismissed/folded, and whether the Updates settings page (its own surface)
+ * is open. This is the single source of truth both the header pill and the
+ * companion card read, so they can never both show at once: none while
+ * idle/checking or on the Updates page; the companion announces a live update;
+ * once it folds (dismissed) the header pill becomes the persistent anchor.
+ */
+export function updateSurface(
+  status: UpdateStatus,
+  dismissed: boolean,
+  onUpdatesPage: boolean,
+): UpdateSurface {
+  if (status === "idle" || status === "checking" || onUpdatesPage) return "none";
+  return dismissed ? "pill" : "companion";
+}
+
 /** How long the app waits between automatic background update checks. */
 export const PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 /** The minimum gap before a window-focus re-check runs, so tab-switching is cheap. */

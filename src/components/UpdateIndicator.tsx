@@ -14,24 +14,19 @@ import { ArrowDownToLine, RotateCw, TriangleAlert } from "lucide-react";
 
 import { useUpdater } from "../state/updater";
 import { useOnUpdatesPage } from "../hooks/useOnUpdatesPage";
+import { updateSurface } from "../hooks/useUpdater";
 import UpdateCard from "./update/UpdateCard";
 import Reveal from "./update/Reveal";
 
 const ICON_STROKE = 1.8;
 
 export default function UpdateIndicator() {
-  const { status, version, progress, dismiss } = useUpdater();
+  const { status, version, progress, dismissed } = useUpdater();
   const onUpdatesPage = useOnUpdatesPage();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // Opening the anchor's popover folds the companion toast, so the same card is
-  // never shown twice at once.
-  const toggleOpen = () =>
-    setOpen((v) => {
-      if (!v) dismiss();
-      return !v;
-    });
+  const toggleOpen = () => setOpen((v) => !v);
 
   // Close on outside click or Escape.
   useEffect(() => {
@@ -48,9 +43,9 @@ export default function UpdateIndicator() {
     };
   }, [open]);
 
-  // No anchor while idle or during a silent/manual check; and none on the Updates
-  // settings page, where the page itself is the single update surface.
-  const hidden = status === "idle" || status === "checking" || onUpdatesPage;
+  // The pill is the CTA only once the companion has folded; the shared
+  // updateSurface decision guarantees the pill and the companion are never both up.
+  const hidden = updateSurface(status, dismissed, onUpdatesPage) !== "pill";
 
   // Collapse the popover when the anchor hides, so it doesn't auto-expand if the
   // indicator later reappears for a new update.

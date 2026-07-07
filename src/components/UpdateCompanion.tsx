@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 
 import { useUpdater } from "../state/updater";
 import { useOnUpdatesPage } from "../hooks/useOnUpdatesPage";
+import { updateSurface } from "../hooks/useUpdater";
 import UpdateCard from "./update/UpdateCard";
 
 /** How long an announcement lingers before it folds into the header pill. */
@@ -25,13 +26,9 @@ export default function UpdateCompanion() {
   const { status, dismissed, dismiss } = useUpdater();
   const onUpdatesPage = useOnUpdatesPage();
 
-  const shouldShow =
-    !dismissed &&
-    !onUpdatesPage &&
-    (status === "available" ||
-      status === "downloading" ||
-      status === "ready" ||
-      status === "error");
+  // Shared decision (see updateSurface): the companion is the CTA only while a
+  // live update hasn't been folded yet; the header pill covers the folded state.
+  const shouldShow = updateSurface(status, dismissed, onUpdatesPage) === "companion";
 
   // Announce-then-fold: an available/ready card tucks into the pill after a beat.
   // Downloading/error stay put until they resolve or are dismissed.
