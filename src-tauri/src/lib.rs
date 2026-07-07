@@ -252,6 +252,7 @@ pub fn run() {
             workspaces::pick_cad_file,
             updater::check_for_update,
             updater::download_and_install,
+            updater::relaunch_for_update,
             // Reference library (verified real-world dims Sol learns during grounding).
             reference_library::get_reference_library,
             reference_library::save_reference_entry,

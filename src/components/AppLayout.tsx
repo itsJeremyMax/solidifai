@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import AppHeader from "./AppHeader";
 import ErrorBoundary from "./ErrorBoundary";
+import UpdateCompanion from "./UpdateCompanion";
 import WhatsNewModal from "./WhatsNewModal";
 import WorkspaceSessions from "./WorkspaceSessions";
 import { AppConfigProvider } from "../state/appConfig";
@@ -43,6 +44,7 @@ export default function AppLayout() {
               </div>
             </div>
             <WhatsNewModal />
+            <UpdateCompanion />
           </WorkspaceSessionsProvider>
         </HeaderSlotProvider>
       </UpdaterProvider>

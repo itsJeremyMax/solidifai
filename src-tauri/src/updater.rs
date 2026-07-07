@@ -49,6 +49,9 @@ fn build_updater(
 pub struct UpdateInfo {
     pub available: bool,
     pub version: Option<String>,
+    /// Release notes (the manifest `notes`/GitHub release body), when the manifest
+    /// carries them. `None` for a manifest without a body or when no update exists.
+    pub notes: Option<String>,
 }
 
 #[tauri::command]
@@ -58,21 +61,35 @@ pub async fn check_for_update(app: AppHandle, channel: Channel) -> Result<Update
         Ok(Some(u)) => Ok(UpdateInfo {
             available: true,
             version: Some(u.version.clone()),
+            notes: u.body.clone(),
         }),
-        // The plugin skips ANY non-2xx endpoint response without recording an
-        // error, so ReleaseNotFound covers both a manifest that doesn't exist
-        // yet (Beta before any prerelease published beta.json) and a transient
-        // GitHub 5xx; the two are indistinguishable here. TargetNotFound is a
-        // manifest with no entry for this platform. Treat all of it as "no
-        // update" rather than flashing a failure in the top bar.
-        Ok(None)
-        | Err(
-            tauri_plugin_updater::Error::ReleaseNotFound
-            | tauri_plugin_updater::Error::TargetNotFound(_),
-        ) => Ok(UpdateInfo {
+        // Manifest fetched and parsed, but not newer than us: genuinely current.
+        // TargetNotFound is a manifest with no entry for this platform, which is
+        // also "nothing to install for you" rather than a failure.
+        Ok(None) | Err(tauri_plugin_updater::Error::TargetNotFound(_)) => Ok(UpdateInfo {
             available: false,
             version: None,
+            notes: None,
         }),
+        // The plugin collapses ANY non-2xx endpoint response into ReleaseNotFound,
+        // so it means two different things per channel:
+        //   • Beta   — a beta.json that doesn't exist yet is expected: no beta
+        //              published means the user is on the newest beta (up to date).
+        //   • Stable — latest.json is permanent, so a miss is a transient reach
+        //              failure (offline, GitHub 5xx, a stale-CDN 403). Surfacing
+        //              it as an error keeps a MANUAL check honest ("couldn't
+        //              check") instead of a false "you're up to date"; background
+        //              checks catch and swallow it, so they still stay silent.
+        Err(tauri_plugin_updater::Error::ReleaseNotFound) => match channel {
+            Channel::Beta => Ok(UpdateInfo {
+                available: false,
+                version: None,
+                notes: None,
+            }),
+            Channel::Stable => {
+                Err("Couldn't reach the update server. Check your connection and try again.".into())
+            }
+        },
         Err(e) => Err(e.to_string()),
     }
 }
@@ -123,6 +140,77 @@ pub async fn download_and_install(app: AppHandle, channel: Channel) -> Result<()
         update.install(bytes).map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// Relaunch the app after an update, working around the single-instance guard.
+///
+/// `AppHandle::restart()` spawns the new process immediately, but
+/// `tauri-plugin-single-instance` holds a lock until THIS process exits. The
+/// fresh instance would start while we're still alive, see the held lock, forward
+/// its launch to us, and exit itself — leaving nothing running (the "restart does
+/// nothing after an update" bug). Instead we spawn a detached helper that waits
+/// for this process to die (releasing the lock), then launches the freshly
+/// installed app, and we exit now. Windows relaunches via the NSIS installer, so
+/// this is a plain fallback there.
+#[tauri::command]
+pub fn relaunch_for_update(app: AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let pid = std::process::id();
+        let (launch, target) = relaunch_command()?;
+        // Poll until our PID is gone so the single-instance lock is released, then
+        // launch. `process_group(0)` detaches the helper so our exit can't signal it.
+        // The launch snippet references the target as `$1`, passed as a raw argument
+        // so `sh` never re-expands `$`/backtick/`\` etc. in an unusual install path.
+        let script = format!("while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; {launch}");
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .arg("sh") // $0
+            .arg(&target) // $1 — raw OsStr, never re-parsed by the shell
+            .process_group(0)
+            .spawn()
+            .map_err(|e| format!("failed to spawn the relauncher: {e}"))?;
+        // Exit cleanly so RunEvent::Exit reaps engines and the lock releases.
+        app.exit(0);
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        app.restart();
+    }
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
+/// The launch snippet (referencing the target as `$1`) plus the raw target path to
+/// pass as that argument, per platform. Keeping the path out of the script text
+/// avoids any shell re-expansion of characters legal in a filesystem path.
+#[cfg(target_os = "macos")]
+fn relaunch_command() -> Result<(&'static str, std::ffi::OsString), String> {
+    // current_exe is <App>.app/Contents/MacOS/<bin>; launch the .app bundle so it
+    // starts as a proper GUI app via LaunchServices, not a bare binary. `exec`
+    // replaces the shell so no stray process lingers.
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = exe
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .ok_or("could not locate the .app bundle to relaunch")?;
+    Ok(("exec open \"$1\"", bundle.as_os_str().to_os_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn relaunch_command() -> Result<(&'static str, std::ffi::OsString), String> {
+    // Prefer the outer AppImage path when packaged that way; else re-exec the binary.
+    let target = match std::env::var_os("APPIMAGE") {
+        Some(v) => v,
+        None => std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .into_os_string(),
+    };
+    Ok(("exec \"$1\"", target))
 }
 
 #[cfg(test)]

@@ -683,6 +683,8 @@ export interface AppConfig {
   softShadows: boolean;
   updateBehavior: UpdateBehavior;
   updateChannel: UpdateChannel;
+  /** Whether the app checks for updates automatically (launch, timer, focus). */
+  backgroundUpdateChecks: boolean;
   /** App version whose what's-new the user has seen; null until first dismiss. */
   lastSeenVersion: string | null;
   /** Home library view mode. */
@@ -701,6 +703,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   softShadows: true,
   updateBehavior: "notify",
   updateChannel: "stable",
+  backgroundUpdateChecks: true,
   lastSeenVersion: null,
   homeView: "grid",
   homeFilter: "all",
@@ -726,6 +729,10 @@ function toAppConfig(v: unknown): AppConfig {
     updateChannel: UPDATE_CHANNELS.includes(r.updateChannel as UpdateChannel)
       ? (r.updateChannel as UpdateChannel)
       : DEFAULT_APP_CONFIG.updateChannel,
+    backgroundUpdateChecks:
+      typeof r.backgroundUpdateChecks === "boolean"
+        ? r.backgroundUpdateChecks
+        : DEFAULT_APP_CONFIG.backgroundUpdateChecks,
     lastSeenVersion: typeof r.lastSeenVersion === "string" ? r.lastSeenVersion : null,
     homeView: r.homeView === "list" ? "list" : DEFAULT_APP_CONFIG.homeView,
     homeFilter:
@@ -762,10 +769,12 @@ export async function setAppConfig(patch: Partial<AppConfig>): Promise<AppConfig
 
 /* ─────────────────────────────── updater ──────────────────────────────── */
 
-/** Result of an update check: whether one is available and (if so) its version. */
+/** Result of an update check: availability, version, and release notes when present. */
 export interface UpdateCheck {
   available: boolean;
   version: string | null;
+  /** Release notes (markdown) for the available version, or null when unknown. */
+  notes: string | null;
 }
 
 /**
@@ -773,7 +782,8 @@ export interface UpdateCheck {
  * Re-throws on failure so the caller can surface the error state.
  */
 export async function checkForUpdate(channel: UpdateChannel): Promise<UpdateCheck> {
-  return invoke<UpdateCheck>("check_for_update", { channel });
+  const r = await invoke<Partial<UpdateCheck>>("check_for_update", { channel });
+  return { available: !!r.available, version: r.version ?? null, notes: r.notes ?? null };
 }
 
 /**
@@ -783,6 +793,16 @@ export async function checkForUpdate(channel: UpdateChannel): Promise<UpdateChec
  */
 export async function downloadAndInstall(channel: UpdateChannel): Promise<void> {
   await invoke("download_and_install", { channel });
+}
+
+/**
+ * Relaunch the app to apply an installed update (Rust `relaunch_for_update`).
+ * Uses a single-instance-safe relaunch: it waits for this process to fully exit
+ * (releasing the single-instance lock) before starting the new one, so the fresh
+ * instance isn't killed by the guard. Re-throws on failure.
+ */
+export async function relaunchForUpdate(): Promise<void> {
+  await invoke("relaunch_for_update");
 }
 
 /* ──────────────────────────── agent-config ────────────────────────────── */

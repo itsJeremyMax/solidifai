@@ -1,21 +1,33 @@
 /**
  * UpdaterProvider — a single, app-wide updater instance shared by the top-bar
- * indicator and the Settings → Updates panel.
+ * indicator, the startup companion card, and the Settings → Updates panel.
  *
  * This MUST be a provider (not a bare hook) so the auto-check runs exactly once
- * per session and both consumers observe the same status/progress. Two separate
+ * per session and every consumer observes the same status/progress. Separate
  * `useUpdater()` hook instances would each fire their own check (and could each
  * kick off a download), and their states would diverge.
  *
- * On mount (after the app-config loads) it checks the configured channel and
- * acts on `updateBehavior`:
- *   • notify       → surface the "Update available" indicator.
+ * When it checks:
+ *   • On launch, once per session (as today).
+ *   • Every 6 hours on a timer, and on window focus (throttled), so an app left
+ *     open for days still learns about a release. All background checks fail
+ *     silent — offline or a captive portal never surfaces an error.
+ *   • Manually, from Settings.
+ * The launch + background checks are gated by the `backgroundUpdateChecks` config
+ * flag; the manual check always runs.
+ *
+ * What it does with an available update follows `updateBehavior`:
+ *   • notify       → surface the "Update available" indicator + companion card.
  *   • autoDownload → download + install now, then offer a restart.
  *   • silent       → download + install in the background and stay quiet; the
  *                    update applies on the next launch (no restart prompt).
  *
- * Progress streams over the Rust `updater://progress` event; the listener is
- * cleaned up on unmount.
+ * Progress streams over the Rust `updater://progress` event.
+ *
+ * Dev note: a real check is disabled in dev (a dev build has no signed installer
+ * to apply), but a `?mockUpdate` flag routes every check/download through
+ * {@link readMockUpdateConfig}/{@link simulateMockDownload} so the whole flow is
+ * exercisable in `tauri dev`. That path is dead-code-eliminated from production.
  */
 import {
   createContext,
@@ -28,29 +40,67 @@ import {
   type ReactNode,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { relaunch } from "@tauri-apps/plugin-process";
 
 import { useAppConfig } from "./appConfig";
-import { checkForUpdate, downloadAndInstall } from "../lib/ipc";
+import { checkForUpdate, downloadAndInstall, relaunchForUpdate } from "../lib/ipc";
 import { logError } from "../lib/logger";
-import { nextActionFor, type UpdateStatus, type UseUpdaterResult } from "../hooks/useUpdater";
+import {
+  nextActionFor,
+  shouldRunPeriodicCheck,
+  PERIODIC_CHECK_INTERVAL_MS,
+  FOCUS_CHECK_THROTTLE_MS,
+  type UpdateAction,
+  type UpdateStatus,
+  type UseUpdaterResult,
+} from "../hooks/useUpdater";
+import {
+  readMockUpdateConfig,
+  simulateMockDownload,
+  mockNotesFor,
+  type MockUpdateConfig,
+} from "../lib/devMockUpdater";
 
 const UpdaterContext = createContext<UseUpdaterResult | null>(null);
 
+/** The result of a check, from the real backend or the dev mock. */
+interface CheckResult {
+  available: boolean;
+  version: string | null;
+  notes: string | null;
+  error: string | null;
+}
+
 export function UpdaterProvider({ children }: { children: ReactNode }) {
   const { config, loading } = useAppConfig();
-  const { updateBehavior } = config;
+  const { updateBehavior, backgroundUpdateChecks } = config;
 
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [version, setVersion] = useState<string | null>(null);
+  const [notes, setNotes] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
+  const [dismissed, setDismissed] = useState(false);
 
   const checkedOnce = useRef(false);
   const mounted = useRef(true);
-  // Read the live channel inside async callbacks without re-binding them.
+  // The dev mock config (null in production / when not enabled), read once.
+  const mock = useRef<MockUpdateConfig | null>(readMockUpdateConfig());
+  // Live values read inside async callbacks / listeners without re-binding them.
   const channelRef = useRef(config.updateChannel);
   channelRef.current = config.updateChannel;
+  const behaviorRef = useRef(updateBehavior);
+  behaviorRef.current = updateBehavior;
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const lastCheckedRef = useRef(lastCheckedAt);
+  lastCheckedRef.current = lastCheckedAt;
+  // The version we last surfaced a card for, so a periodic re-check of the same
+  // release doesn't re-pop a card the user already dismissed.
+  const notifiedVersion = useRef<string | null>(null);
+  // True while a manual check is in flight, so a background check that lands at the
+  // same moment can't auto-download behind the user's "just checking" action.
+  const manualCheckInFlight = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -68,18 +118,72 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Surface an available update. A new version always shows the card; a re-check
+  // of the same version respects a prior dismissal.
+  const showAvailable = useCallback((v: string | null) => {
+    if (v !== notifiedVersion.current) {
+      notifiedVersion.current = v;
+      setDismissed(false);
+    }
+    setStatus("available");
+  }, []);
+
+  // One check, from the real backend or the dev mock. Never throws.
+  const performCheck = useCallback(async (): Promise<CheckResult> => {
+    const m = mock.current;
+    if (m) {
+      // A short beat so the launch "moment" is visible, like a real network hop.
+      await new Promise((r) => setTimeout(r, 450));
+      return { available: true, version: m.version, notes: mockNotesFor(m.version), error: null };
+    }
+    try {
+      const res = await checkForUpdate(channelRef.current);
+      // In dev, a real check can find a real release but its manifest often has no
+      // notes; synthesize some so the "What's new" surfaces stay testable.
+      const notes =
+        res.notes ??
+        (import.meta.env.DEV && res.available
+          ? mockNotesFor(res.version ?? "the new version")
+          : null);
+      return { ...res, notes, error: null };
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : typeof e === "string" ? e : "Update check failed.";
+      return { available: false, version: null, notes: null, error: message };
+    }
+  }, []);
+
   // Shared download+install. `silent` keeps the user uninterrupted: on success it
   // returns to `idle` (no "Restart to update" prompt) so the update simply applies
   // on the next launch. notify/autoDownload end at `ready` and surface a restart.
   const runDownload = useCallback(async (silent: boolean) => {
     setError(null);
     setProgress(0);
+    // Silent installs must not raise the companion card; the header pill still
+    // reflects progress for anyone who looks.
+    if (silent) setDismissed(true);
     setStatus("downloading");
     try {
-      await downloadAndInstall(channelRef.current);
+      // The dev build has no signed installer to apply, so a real download+install
+      // would either error or (worse) restart the running dev app. Always simulate
+      // in dev; only a production build touches the real updater.
+      if (import.meta.env.DEV) {
+        await simulateMockDownload(
+          setProgress,
+          () => mounted.current,
+          mock.current?.scenario === "error",
+        );
+      } else {
+        await downloadAndInstall(channelRef.current);
+      }
       if (!mounted.current) return;
       setProgress(1);
-      setStatus(silent ? "idle" : "ready");
+      if (silent) {
+        setStatus("idle");
+      } else {
+        setDismissed(false); // the "ready" moment always deserves the card
+        setStatus("ready");
+      }
     } catch (e) {
       if (!mounted.current) return;
       const message =
@@ -91,36 +195,38 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
         setStatus("idle");
         return;
       }
+      setDismissed(false);
       setError(message);
       setStatus("error");
     }
   }, []);
 
-  // Auto-check once per session, only after config has loaded.
-  useEffect(() => {
-    // A dev build has no signed installer to apply, so the check can only ever
-    // error (and would flash "Update failed" in the bar). The updater is a
-    // production-only concern, so skip the auto-check entirely in dev.
-    if (import.meta.env.DEV || loading || checkedOnce.current) return;
-    checkedOnce.current = true;
+  // Decide what to do with an available update. Honors an explicit mock scenario,
+  // otherwise follows the user's update-behavior.
+  const actOnAvailable = useCallback(
+    (res: CheckResult) => {
+      setVersion(res.version);
+      setNotes(res.notes);
 
-    void (async () => {
-      let res: { available: boolean; version: string | null };
-      try {
-        res = await checkForUpdate(channelRef.current);
-      } catch (e) {
-        // A failed launch check (offline, captive portal, DNS) is routine for a
-        // desktop app: log it and stay idle. The red "Update failed" pill is
-        // reserved for failures of an actual download.
-        logError("update auto-check failed", e);
+      const m = mock.current;
+      if (m && m.scenario === "ready") {
+        setProgress(1);
+        setDismissed(false);
+        setStatus("ready");
         return;
       }
-      if (!mounted.current) return;
-      setVersion(res.version);
+      const action: UpdateAction =
+        m && m.scenario !== "behavior"
+          ? m.scenario === "available"
+            ? "show-indicator"
+            : m.scenario === "silent"
+              ? "download-silent"
+              : "download" // "download" and "error" both start a download
+          : nextActionFor(behaviorRef.current, res.available);
 
-      switch (nextActionFor(updateBehavior, res.available)) {
+      switch (action) {
         case "show-indicator":
-          setStatus("available");
+          showAvailable(res.version);
           break;
         case "download":
           void runDownload(false);
@@ -131,46 +237,150 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
         case "idle":
           break;
       }
-    })();
-  }, [loading, updateBehavior, runDownload]);
+    },
+    [runDownload, showAvailable],
+  );
 
-  // Indicator "Download" (notify flow) always wants the restart prompt at the end.
+  // A silent background check (launch / timer / focus). Never sets "checking",
+  // never surfaces a check error, and won't disturb an in-flight download.
+  const runBackgroundCheck = useCallback(async () => {
+    const s = statusRef.current;
+    if (s === "downloading" || s === "ready") return; // already handling an update
+    if (manualCheckInFlight.current) return; // don't auto-download under a manual check
+    const res = await performCheck();
+    if (!mounted.current) return;
+    setLastCheckedAt(Date.now());
+    if (res.error) {
+      logError("update background check failed", res.error);
+      return;
+    }
+    if (res.available) actOnAvailable(res);
+  }, [performCheck, actOnAvailable]);
+
+  // Auto-check once per session on launch, after config settles.
+  useEffect(() => {
+    if (loading || checkedOnce.current) return;
+    // Real updater is production-only; in dev only the mock drives it.
+    if (import.meta.env.DEV && !mock.current) return;
+    if (!backgroundUpdateChecks) return; // user turned automatic checks off
+    checkedOnce.current = true;
+    void runBackgroundCheck();
+  }, [loading, backgroundUpdateChecks, runBackgroundCheck]);
+
+  // Periodic timer + throttled window-focus re-checks.
+  useEffect(() => {
+    if (loading) return;
+    if (import.meta.env.DEV && !mock.current) return;
+    if (!backgroundUpdateChecks) return;
+
+    const maybeCheck = (throttleMs: number) => {
+      if (!shouldRunPeriodicCheck(lastCheckedRef.current, Date.now(), throttleMs)) return;
+      void runBackgroundCheck();
+    };
+    const timer = window.setInterval(() => maybeCheck(0), PERIODIC_CHECK_INTERVAL_MS);
+    const onFocus = () => maybeCheck(FOCUS_CHECK_THROTTLE_MS);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [loading, backgroundUpdateChecks, runBackgroundCheck]);
+
+  // Indicator/card "Install" (notify flow) always wants the restart prompt at the end.
   const startDownload = useCallback(() => {
     void runDownload(false);
   }, [runDownload]);
 
   const restart = useCallback(() => {
-    void relaunch();
+    // Never relaunch the dev app: there's no installed update to apply, and killing
+    // `tauri dev` just closes the window. Reset so the flow stays replayable.
+    if (import.meta.env.DEV) {
+      console.info("[updater] restart requested; a production build would relaunch here.");
+      setStatus("idle");
+      setProgress(null);
+      setDismissed(false);
+      notifiedVersion.current = null;
+      return;
+    }
+    // Single-instance-safe relaunch (waits for this process to exit and release
+    // the lock before starting the new instance). Surface a failure instead of
+    // leaving the user on a dead "Restart" click.
+    void relaunchForUpdate().catch((e) => {
+      if (!mounted.current) return;
+      setError(e instanceof Error ? e.message : "Couldn't restart to apply the update.");
+      setStatus("error");
+    });
   }, []);
+
+  const dismiss = useCallback(() => setDismissed(true), []);
 
   const checkNow = useCallback(async () => {
-    setError(null);
+    // Held for the whole call so a concurrent background check can't auto-download.
+    manualCheckInFlight.current = true;
     try {
-      const res = await checkForUpdate(channelRef.current);
-      if (mounted.current) {
-        setVersion(res.version);
-        // Reveal the indicator on a manual hit too, unless we're mid/post download.
-        setStatus((s) =>
-          s === "downloading" || s === "ready" ? s : res.available ? "available" : "idle",
-        );
+      setError(null);
+      // Show "checking" unless we'd stomp an in-flight/finished download.
+      setStatus((s) => (s === "downloading" || s === "ready" ? s : "checking"));
+      const res = await performCheck();
+      if (!mounted.current) return { available: false, version: null, error: "unmounted" };
+      setLastCheckedAt(Date.now());
+      if (res.error) {
+        // No status change beyond leaving "checking": the Settings panel shows the
+        // returned error inline; the top-bar "Update failed" pill is for downloads.
+        setError(res.error);
+        setStatus((s) => (s === "checking" ? "idle" : s));
+        return { available: false, version: null, error: res.error };
       }
-      return { ...res, error: null };
-    } catch (e) {
-      const message =
-        e instanceof Error ? e.message : typeof e === "string" ? e : "Update check failed.";
-      // No status change: the Settings panel shows the returned error inline,
-      // and the top-bar "Update failed" pill is for download failures only.
-      if (mounted.current) setError(message);
-      // The caller must be able to tell a failed check from "up to date".
-      return { available: false, version: null, error: message };
+      setVersion(res.version);
+      setNotes(res.notes);
+      // A manual check reveals the indicator but never auto-downloads, even under
+      // autoDownload/silent — the user asked to look, not to install.
+      setStatus((s) => {
+        if (s === "downloading" || s === "ready") return s;
+        if (res.available) {
+          if (res.version !== notifiedVersion.current) {
+            notifiedVersion.current = res.version;
+            setDismissed(false);
+          }
+          return "available";
+        }
+        return "idle";
+      });
+      return { available: res.available, version: res.version, error: null };
+    } finally {
+      manualCheckInFlight.current = false;
     }
-  }, []);
+  }, [performCheck]);
 
-  // Memoize so consumers don't re-render on every provider render (the three
-  // callbacks are already stable via useCallback).
+  // Memoize so consumers don't re-render on every provider render (the callbacks
+  // are already stable via useCallback).
   const value = useMemo(
-    () => ({ status, version, progress, error, startDownload, restart, checkNow }),
-    [status, version, progress, error, startDownload, restart, checkNow],
+    () => ({
+      status,
+      version,
+      notes,
+      progress,
+      error,
+      lastCheckedAt,
+      dismissed,
+      startDownload,
+      restart,
+      dismiss,
+      checkNow,
+    }),
+    [
+      status,
+      version,
+      notes,
+      progress,
+      error,
+      lastCheckedAt,
+      dismissed,
+      startDownload,
+      restart,
+      dismiss,
+      checkNow,
+    ],
   );
 
   return <UpdaterContext.Provider value={value}>{children}</UpdaterContext.Provider>;

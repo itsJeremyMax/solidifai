@@ -40,6 +40,17 @@ export default function AppHeader() {
         solidifai
       </NavLink>
 
+      {/* Dev-build marker: only in `pnpm tauri dev`, so an installed release and a
+          local dev window are never confused at a glance. Tree-shaken out of prod. */}
+      {import.meta.env.DEV && (
+        <span
+          title="Running from pnpm tauri dev, not an installed release"
+          className="-ml-1.5 select-none rounded border border-amber/30 bg-amber/10 px-1.5 py-0.5 text-micro font-semibold uppercase tracking-eyebrow text-amber"
+        >
+          Dev build
+        </span>
+      )}
+
       {/* Contextual crumb (back + page title), published by non-editor pages.
           Sits right after the brand so it reads as a breadcrumb, solidifai / Page;
           the editor viewport publishes none. */}

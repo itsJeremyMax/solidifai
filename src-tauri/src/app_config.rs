@@ -36,6 +36,10 @@ pub struct AppConfig {
     /// Update channel: "stable" (default) or "beta" (opt-in pre-releases).
     #[serde(default = "default_update_channel")]
     pub update_channel: String,
+    /// Whether the app checks for updates automatically (on launch, on a timer,
+    /// and on window focus). `true` by default; the manual check always works.
+    #[serde(default = "default_true")]
+    pub background_update_checks: bool,
     /// The app version whose what's-new the user has already seen. `None` until
     /// the first post-update modal is dismissed; omitted from the file when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,6 +73,11 @@ fn default_update_channel() -> String {
     "stable".to_string()
 }
 
+/// Default for opt-out bool flags that ship enabled (background update checks).
+fn default_true() -> bool {
+    true
+}
+
 fn default_home_view() -> String {
     "grid".to_string()
 }
@@ -89,6 +98,7 @@ impl Default for AppConfig {
             soft_shadows: true,
             update_behavior: default_update_behavior(),
             update_channel: default_update_channel(),
+            background_update_checks: default_true(),
             last_seen_version: None,
             last_workspace_parent_dir: None,
             home_view: default_home_view(),
@@ -301,7 +311,13 @@ mod tests {
         let cfg = load(&dir);
         assert_eq!(cfg.update_behavior, "notify");
         assert_eq!(cfg.update_channel, "stable");
+        assert!(
+            cfg.background_update_checks,
+            "background checks ship enabled"
+        );
         assert_eq!(cfg.last_seen_version, None);
+        let off = apply_patch(&dir, &json!({ "backgroundUpdateChecks": false })).unwrap();
+        assert!(!off.background_update_checks, "flag round-trips off");
         let merged = apply_patch(
             &dir,
             &json!({ "updateBehavior": "silent", "updateChannel": "beta" }),
