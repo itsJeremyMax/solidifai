@@ -155,9 +155,8 @@ export default function Slicers() {
     <div className="mx-auto max-w-160 py-6.5">
       <h2 className="text-base font-bold tracking-snug text-ink">Slicers</h2>
       <p className="mt-1.25 text-body leading-normal text-ink-2">
-        Connect a slicer so solidifai can read your printer and filament profiles, estimate prints,
-        and open models for slicing. Point to a custom binary if yours is installed somewhere
-        unusual.
+        Connect a slicer to use your printer and filament profiles, estimate prints, and open models
+        for slicing. Set a custom path if yours isn't detected.
       </p>
 
       {slicers === null ? (

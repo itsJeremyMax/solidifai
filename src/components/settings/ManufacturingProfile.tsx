@@ -166,8 +166,7 @@ function Panel({ scope }: { scope: Scope }) {
             </section>
           ))}
           <p className="mt-3 text-caption text-ink-3">
-            Changes save automatically. Reset drops an override and falls back to the inherited
-            value.
+            Changes save automatically. Reset a field to fall back to the inherited value.
           </p>
         </>
       )}

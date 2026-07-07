@@ -22,7 +22,7 @@ const FEATURES: FeatureRow[] = [
   {
     key: "gtao",
     label: "Ambient occlusion",
-    desc: "Screen-space contact shading (GTAO). Adds depth at crevices; weakest at grazing angles.",
+    desc: "Soft shading where surfaces meet, for a sense of depth.",
   },
   {
     key: "grid",
@@ -32,12 +32,12 @@ const FEATURES: FeatureRow[] = [
   {
     key: "smaa",
     label: "Anti-aliasing",
-    desc: "Temporal anti-aliasing (TRAA) over the rendered part.",
+    desc: "Smooths jagged edges on the rendered part.",
   },
   {
     key: "softShadows",
     label: "Soft shadows",
-    desc: "Blurred contact shadow under the part (vs a crisp hard edge).",
+    desc: "A soft shadow under the part instead of a hard edge.",
   },
 ];
 
@@ -82,7 +82,7 @@ export default function ViewportFeatures() {
     <div className="mx-auto max-w-160 py-6.5">
       <h2 className="text-base font-bold tracking-snug text-ink">Viewport / Features</h2>
       <p className="mt-1.25 text-body leading-normal text-ink-2">
-        Real-time Preview rendering effects. Changes apply live and persist across workspaces.
+        Rendering effects for the Preview, shared across every workspace.
       </p>
 
       {error && (

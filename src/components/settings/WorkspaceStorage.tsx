@@ -87,7 +87,7 @@ export default function WorkspaceStorage() {
     <div className="mx-auto max-w-160 py-6.5">
       <h2 className="text-base font-bold tracking-snug text-ink">Workspace &amp; storage</h2>
       <p className="mt-1.25 text-body leading-normal text-ink-2">
-        Where the active workspace lives on disk, and where exports are written.
+        Where this workspace and its exports live on disk.
       </p>
 
       {loaded === null ? (

@@ -111,10 +111,10 @@ export default function AgentConfig() {
 
   return (
     <div className="mx-auto max-w-160 py-6.5">
-      <h2 className="text-base font-bold tracking-snug text-ink">Agent</h2>
+      <h2 className="text-base font-bold tracking-snug text-ink">Agent skills</h2>
       <p className="mt-1.25 text-body leading-normal text-ink-2">
         Which skills the coding agent uses in this workspace. Changes apply the next time you open
-        the workspace.
+        it.
       </p>
 
       {error && (
@@ -168,11 +168,6 @@ export default function AgentConfig() {
               </label>
             ))}
           </div>
-
-          <p className="mt-3 text-xs leading-normal text-ink-3">
-            Applies on the next workspace open — the provisioner re-runs and writes only the enabled
-            skills.
-          </p>
         </>
       )}
     </div>

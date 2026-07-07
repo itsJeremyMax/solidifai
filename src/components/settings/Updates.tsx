@@ -102,8 +102,7 @@ export default function Updates() {
     <div className="mx-auto max-w-160 py-6.5">
       <h2 className="text-base font-bold tracking-snug text-ink">Updates</h2>
       <p className="mt-1.25 text-body leading-normal text-ink-2">
-        How solidifai keeps itself current. It checks on launch, every few hours, and when you
-        return to the app.
+        Check for updates and choose how they install.
       </p>
 
       {error && (

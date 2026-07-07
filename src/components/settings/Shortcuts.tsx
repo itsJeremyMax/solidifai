@@ -53,9 +53,7 @@ export default function Shortcuts() {
   return (
     <div className="mx-auto max-w-160 py-6.5">
       <h2 className="text-base font-bold tracking-snug text-ink">Keyboard shortcuts</h2>
-      <p className="mt-1.25 text-body leading-normal text-ink-2">
-        The bindings available across the app. Rebinding is not supported yet.
-      </p>
+      <p className="mt-1.25 text-body leading-normal text-ink-2">Rebinding isn't available yet.</p>
 
       <div className="mt-4.5 flex flex-col gap-5">
         {GROUPS.map((group) => (
