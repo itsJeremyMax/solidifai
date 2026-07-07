@@ -19,7 +19,7 @@ import { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ModelObject } from "../lib/artifacts";
-import { glbWorldToEngineMm, engineMmToGlbWorld } from "../lib/coords";
+import { engineMmToGlbWorld } from "../lib/coords";
 import { materialFromAppearance } from "./scene/materials";
 import { setupEnvironment, type EnvHandle } from "./scene/environment";
 import { buildLightRig, type LightRig } from "./scene/lighting";
@@ -29,13 +29,7 @@ import { refreshClipPlanes } from "./scene/camera";
 import { createSelectionHighlight, type SelectionHighlight } from "./scene/highlight";
 import { captureExplodeBasis, applyExplode, type ExplodeBasis } from "./scene/explode";
 import { FLOOR_LAYER, captureThumbnail as captureThumbnailImpl } from "./scene/thumbnail";
-import {
-  ACCENT,
-  clearMeasurement,
-  handleMeasureClick,
-  markerRadius,
-  updateMeasureLabel,
-} from "./scene/measure";
+import { ACCENT, clearMeasurement, markerRadius, updateMeasureLabel } from "./scene/measure";
 import {
   objectSubtrees,
   subtreeIndexForId,
@@ -44,6 +38,7 @@ import {
   frameToObject,
 } from "./scene/sceneGraph";
 import { disposeObject, disposeMaterial } from "./scene/dispose";
+import { attachInteraction } from "./scene/interaction";
 
 export { subtreeIndexForId, subtreeIndicesForId, applyVisibility };
 
@@ -54,9 +49,6 @@ export interface SceneSelection {
 }
 
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
-
-/** Max pointer travel (px²) between down/up that still counts as a "click". */
-const CLICK_SLOP_SQ = 5 * 5;
 
 /**
  * Quiet window (ms) a resize must hold before we re-`setSize` the renderer. On
@@ -394,67 +386,12 @@ export function useThreeScene(
     };
     refs.current = handle;
 
-    // ── measure pointer handlers (click = non-drag pointerdown→up) ──
-    const onPointerDown = (e: PointerEvent) => {
-      if (!measure.enabled || e.button !== 0) return;
-      measure.downX = e.clientX;
-      measure.downY = e.clientY;
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      if (!measure.enabled || e.button !== 0) return;
-      const dx = e.clientX - measure.downX;
-      const dy = e.clientY - measure.downY;
-      // A drag (orbit) moves the pointer; only a near-stationary click picks.
-      if (dx * dx + dy * dy > CLICK_SLOP_SQ) return;
-      handleMeasureClick(handle, e);
-      requestRender();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && measure.enabled) {
-        clearMeasurement(measure);
-        requestRender();
-      }
-    };
-    // Right-click context menu: raycast and fire the pick callback if registered.
-    const onContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      if (!pick.onPick) return;
-      const screenX = e.clientX;
-      const screenY = e.clientY;
-      if (modelGroup.children.length === 0) {
-        pick.onPick({ pointMm: null, screenX, screenY });
-        return;
-      }
-      const rect = renderer.domElement.getBoundingClientRect();
-      measure.pointer.set(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1,
-      );
-      measure.raycaster.setFromCamera(measure.pointer, camera);
-      const hits = measure.raycaster.intersectObject(modelGroup, true);
-      pick.onPick({
-        pointMm: hits.length ? glbWorldToEngineMm(hits[0].point, modelGroup) : null,
-        screenX,
-        screenY,
-      });
-    };
-    renderer.domElement.addEventListener("pointerdown", onPointerDown);
-    renderer.domElement.addEventListener("pointerup", onPointerUp);
-    renderer.domElement.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("keydown", onKeyDown);
-
     // Camera moved — user input or damping decay — so render.
     controls.addEventListener("change", requestRender);
 
-    // Self-heal: any pointer over the viewport, or a window refocus / tab return,
-    // repaints — so a missed trigger can't leave a stale frame on screen for long.
-    // No periodic tick: cursor away + nothing changing ⇒ zero GPU frames.
-    const onPointerMove = () => requestRender();
-    const onFocus = () => requestRender();
-    renderer.domElement.addEventListener("pointermove", onPointerMove);
-    renderer.domElement.addEventListener("pointerenter", onPointerMove);
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
+    // Pointer/keyboard/context-menu/pick/focus wiring lives in its own module
+    // (see scene/interaction.ts) so this effect stays about scene construction.
+    const detachInteraction = attachInteraction(handle);
 
     const animate = () => {
       // Always apply damping (cheap). This also fires controls' 'change' event
@@ -556,15 +493,8 @@ export function useThreeScene(
       if (resizeTimer) window.clearTimeout(resizeTimer);
       disposed = true;
       renderer.setAnimationLoop(null);
-      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
-      renderer.domElement.removeEventListener("pointerup", onPointerUp);
-      renderer.domElement.removeEventListener("contextmenu", onContextMenu);
-      window.removeEventListener("keydown", onKeyDown);
+      detachInteraction();
       controls.removeEventListener("change", requestRender);
-      renderer.domElement.removeEventListener("pointermove", onPointerMove);
-      renderer.domElement.removeEventListener("pointerenter", onPointerMove);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
       controls.dispose();
       disposeObject(modelGroup);
       ground.geometry.dispose();
