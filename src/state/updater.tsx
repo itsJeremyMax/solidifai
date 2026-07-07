@@ -131,21 +131,20 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
   // One check, from the real backend or the dev mock. Never throws.
   const performCheck = useCallback(async (): Promise<CheckResult> => {
     const m = mock.current;
-    if (m) {
-      // A short beat so the launch "moment" is visible, like a real network hop.
-      await new Promise((r) => setTimeout(r, 450));
-      return { available: true, version: m.version, notes: mockNotesFor(m.version), error: null };
+    // A short beat so the check "moment" is visible, like a real network hop.
+    const beat = () => new Promise((r) => setTimeout(r, 450));
+    // An explicit ?mockUpdate scenario picks the version; otherwise, in dev, we
+    // still simulate an available update so "Check now" exercises the whole update
+    // UI with no flag needed (a dev build has no signed release to find, so a real
+    // check can only ever come back empty). Production never takes either path.
+    if (m || import.meta.env.DEV) {
+      await beat();
+      const version = m?.version ?? "1.4.0";
+      return { available: true, version, notes: mockNotesFor(version), error: null };
     }
     try {
       const res = await checkForUpdate(channelRef.current);
-      // In dev, a real check can find a real release but its manifest often has no
-      // notes; synthesize some so the "What's new" surfaces stay testable.
-      const notes =
-        res.notes ??
-        (import.meta.env.DEV && res.available
-          ? mockNotesFor(res.version ?? "the new version")
-          : null);
-      return { ...res, notes, error: null };
+      return { ...res, notes: res.notes ?? null, error: null };
     } catch (e) {
       const message =
         e instanceof Error ? e.message : typeof e === "string" ? e : "Update check failed.";
