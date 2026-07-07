@@ -42,7 +42,7 @@ describe("WorkspaceGallery", () => {
     );
     expect(screen.getByText("alpha")).toBeTruthy();
     expect(screen.getByText("beta")).toBeTruthy();
-    await userEvent.click(screen.getByText("beta"));
+    await userEvent.click(screen.getByRole("button", { name: /open beta/i }));
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen.mock.calls[0][0].name).toBe("beta");
   });

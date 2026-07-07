@@ -92,51 +92,64 @@ export function WorkspaceGridCard({
         </div>
       </div>
 
-      {/* Card body — the open affordance */}
-      <button
-        type="button"
-        onClick={onOpen}
-        disabled={disabled}
-        className={`w-full px-3.5 pt-2.75 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-line ${
+      {/* Card body — the open affordance. A stretched button covers the body and
+          sits beneath the tag chips, so the (interactive) chips are siblings of the
+          open button rather than nested inside it (invalid, and a React warning). */}
+      <div
+        className={`relative px-3.5 pt-2.75 ${
           !archived && ws.proposedName ? "pb-2" : "rounded-b-[13px] pb-3.5"
         }`}
       >
-        {/* Name + spinner */}
-        <div className="flex items-center gap-2">
-          <span className="flex-1 truncate text-sm font-bold leading-snug tracking-snug text-ink">
-            {ws.name}
-          </span>
-          {busy && <Spinner size={13} className="shrink-0 text-ink-3" />}
-        </div>
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={disabled}
+          aria-label={`Open ${ws.name}`}
+          className={`absolute inset-0 z-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-line ${
+            !archived && ws.proposedName ? "" : "rounded-b-[13px]"
+          }`}
+        />
 
-        {/* Description (2-line clamp) or path fallback when no description+tags */}
-        {ws.description ? (
-          <p className="mt-1 line-clamp-2 text-caption leading-relaxed text-ink-2">
-            {ws.description}
-          </p>
-        ) : ws.tags.length === 0 ? (
-          <p className="mt-0.75 truncate font-mono text-micro text-ink-3">{tildePath(ws.path)}</p>
-        ) : null}
-
-        {ws.tags.length > 0 && (
-          <div className="mt-1.75">
-            <TagChips tags={ws.tags} onTagClick={onTagClick} />
+        {/* Text passes clicks through to the button beneath; only the tag chips
+            re-enable pointer events (and stack above it) so they stay clickable. */}
+        <div className="pointer-events-none relative z-10">
+          {/* Name + spinner */}
+          <div className="flex items-center gap-2">
+            <span className="flex-1 truncate text-sm font-bold leading-snug tracking-snug text-ink">
+              {ws.name}
+            </span>
+            {busy && <Spinner size={13} className="shrink-0 text-ink-3" />}
           </div>
-        )}
 
-        {/* Footer: edited time + optional part count */}
-        <div className="mt-2.25 flex items-center gap-1.75 text-caption text-ink-3">
-          <span>{timeLabel}</span>
-          {thumb != null && (
-            <>
-              <span className="h-1 w-1 rounded-full bg-ink-3" aria-hidden />
-              <span>
-                {thumb.partCount} {thumb.partCount === 1 ? "part" : "parts"}
-              </span>
-            </>
+          {/* Description (2-line clamp) or path fallback when no description+tags */}
+          {ws.description ? (
+            <p className="mt-1 line-clamp-2 text-caption leading-relaxed text-ink-2">
+              {ws.description}
+            </p>
+          ) : ws.tags.length === 0 ? (
+            <p className="mt-0.75 truncate font-mono text-micro text-ink-3">{tildePath(ws.path)}</p>
+          ) : null}
+
+          {ws.tags.length > 0 && (
+            <div className="pointer-events-auto mt-1.75">
+              <TagChips tags={ws.tags} onTagClick={onTagClick} />
+            </div>
           )}
+
+          {/* Footer: edited time + optional part count */}
+          <div className="mt-2.25 flex items-center gap-1.75 text-caption text-ink-3">
+            <span>{timeLabel}</span>
+            {thumb != null && (
+              <>
+                <span className="h-1 w-1 rounded-full bg-ink-3" aria-hidden />
+                <span>
+                  {thumb.partCount} {thumb.partCount === 1 ? "part" : "parts"}
+                </span>
+              </>
+            )}
+          </div>
         </div>
-      </button>
+      </div>
 
       {/* Sol name suggestion — outside the open button to avoid nested interactive elements */}
       {!archived && ws.proposedName && (

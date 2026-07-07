@@ -36,7 +36,7 @@ describe("WorkspaceGridCard", () => {
   it("opens on body click", async () => {
     const onOpen = vi.fn();
     render(<WorkspaceGridCard {...base} onOpen={onOpen} />);
-    await userEvent.click(screen.getByText("vesa-mount"));
+    await userEvent.click(screen.getByRole("button", { name: /open vesa-mount/i }));
     expect(onOpen).toHaveBeenCalled();
   });
   it("archived card offers Restore not Archive", async () => {
