@@ -7,7 +7,7 @@ import { useCallback, useState } from "react";
 
 import { useEngineStatus } from "../hooks/useEngineStatus";
 import { useDismiss } from "../hooks/useDismiss";
-import type { EngineStatus } from "../lib/ipc";
+import type { EngineStatus } from "../lib/ipc/status";
 
 /** Tailwind dot color per engine status. */
 const DOT_COLOR: Record<EngineStatus, string> = {

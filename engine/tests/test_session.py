@@ -755,3 +755,64 @@ def test_analyze_import_reports_features(tmp_path):
 
 def test_analyze_import_no_model_errors(tmp_path):
     assert Session(str(tmp_path)).analyze_import()["ok"] is False
+
+
+def test_render_after_set_params_reuses_pipeline(tmp_path):
+    s = Session(str(tmp_path))
+    assert s.execute_script(
+        "from build123d import Box\n"
+        "from solidifai import show\n"
+        "PARAMS = {'w': {'min': 5, 'max': 40, 'default': 20}}\n"
+        "def build(w):\n"
+        "    show(Box(w, w, w), name='b')\n"
+        "build(20)\n"
+    )["ok"]
+    b0 = s.build_id
+    assert s.set_params({"w": 30})["ok"]
+    assert s.build_id == b0 + 1
+    assert s.render()["ok"]
+    assert s.build_id == b0 + 2  # render bumps exactly one build via the shared pipeline
+
+
+def test_render_does_not_commit_or_apply_references(tmp_path, monkeypatch):
+    # A pure re-render must not re-apply reference fixtures nor auto-commit;
+    # both are build-time side effects that only execute_script/set_params
+    # should trigger. Regression guard for the A3 _run_build unification bug.
+    sess = Session(str(tmp_path))
+    assert sess.execute_script(GOOD_SCRIPT)["ok"] is True
+
+    counts = {"apply_references": 0, "after_build": 0}
+
+    def bump(key):
+        counts[key] += 1
+
+    monkeypatch.setattr(sess, "_apply_references", lambda: bump("apply_references"))
+    monkeypatch.setattr(sess, "_after_build", lambda **kwargs: bump("after_build"))
+
+    res = sess.render()
+
+    assert res["ok"] is True
+    assert counts["apply_references"] == 0
+    assert counts["after_build"] == 0
+
+
+def test_execute_script_persist_failure_leaves_build_unbumped(tmp_path, monkeypatch):
+    # A _persist_model OSError must leave build_id/last_ok exactly as they
+    # were before this call -- the original ordering persisted the durable
+    # model BEFORE bumping build_id, so a persist failure never bumped it.
+    model_path = tmp_path / "model.py"
+    artifacts = tmp_path / "artifacts"
+    sess = Session(str(artifacts), model_path=str(model_path))
+
+    build_id_before = sess.build_id
+
+    def boom(code):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sess, "_persist_model", boom)
+
+    res = sess.execute_script(GOOD_SCRIPT)
+
+    assert res["ok"] is False
+    assert sess.build_id == build_id_before
+    assert sess.last_ok is False

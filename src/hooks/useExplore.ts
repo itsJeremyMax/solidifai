@@ -5,7 +5,7 @@
  */
 import { useCallback, useState } from "react";
 
-import { engineOptimize, engineSweep } from "../lib/ipc";
+import { engineOptimize, engineSweep } from "../lib/ipc/engine";
 import {
   parseOptimizeResult,
   parseSweepReport,

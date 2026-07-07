@@ -4,12 +4,12 @@
  * math + in-scene overlay (marker spheres, the A–B line, the DOM distance pill).
  *
  * Kept entirely off React state — the functions mutate the shared `MeasureState`
- * the hook allocates. Types are imported type-only from the hook, so this module
- * has no runtime dependency back on it (no import cycle).
+ * the hook allocates. Types are imported from the shared `scene/types` module, so
+ * this module has no runtime (or type) dependency back on the hook.
  */
 import * as THREE from "three";
 
-import type { MeasureState, SceneRefs } from "../useThreeScene";
+import type { MeasureState, SceneRefs } from "./types";
 
 /** Cobalt accent (#2B6CFF) used for measure markers, the A–B line, and label. */
 export const ACCENT = 0x2b6cff;

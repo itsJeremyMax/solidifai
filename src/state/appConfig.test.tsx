@@ -9,8 +9,8 @@ import { AppConfigProvider, useAppConfig } from "./appConfig";
 
 // Mock the ipc boundary so no real Tauri command runs. getAppConfig resolves a
 // known config; setAppConfig is wired per-test to resolve or reject.
-vi.mock("../lib/ipc", async () => {
-  const actual = await vi.importActual<typeof import("../lib/ipc")>("../lib/ipc");
+vi.mock("../lib/ipc/config", async () => {
+  const actual = await vi.importActual<typeof import("../lib/ipc/config")>("../lib/ipc/config");
   return {
     ...actual, // keep DEFAULT_APP_CONFIG + the AppConfig type re-export
     getAppConfig: vi.fn(),
@@ -18,7 +18,7 @@ vi.mock("../lib/ipc", async () => {
   };
 });
 
-import { getAppConfig, setAppConfig, DEFAULT_APP_CONFIG } from "../lib/ipc";
+import { getAppConfig, setAppConfig, DEFAULT_APP_CONFIG } from "../lib/ipc/config";
 
 const getAppConfigMock = vi.mocked(getAppConfig);
 const setAppConfigMock = vi.mocked(setAppConfig);

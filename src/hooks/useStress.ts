@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { engineStressCheck } from "../lib/ipc";
+import { engineStressCheck } from "../lib/ipc/engine";
 import { parseStressReport, type StressReport } from "../lib/validation";
 
 export interface StressState {

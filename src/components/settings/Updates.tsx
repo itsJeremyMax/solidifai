@@ -18,7 +18,7 @@ import { useAppConfig } from "../../state/appConfig";
 import { useUpdater } from "../../state/updater";
 import ReleaseNotes from "../update/ReleaseNotes";
 import type { UpdateStatus } from "../../hooks/useUpdater";
-import type { UpdateBehavior, UpdateChannel } from "../../lib/ipc";
+import type { UpdateBehavior, UpdateChannel } from "../../lib/ipc/config";
 
 /** Update-behavior choices, in the order they read top-to-bottom. */
 const BEHAVIORS: { value: UpdateBehavior; label: string; desc: string }[] = [

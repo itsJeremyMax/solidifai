@@ -26,7 +26,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { getAppConfig, setAppConfig, DEFAULT_APP_CONFIG, type AppConfig } from "../lib/ipc";
+import { getAppConfig, setAppConfig, DEFAULT_APP_CONFIG, type AppConfig } from "../lib/ipc/config";
 
 interface AppConfigContextValue {
   /** The current flags. Starts at the shipped defaults until the load resolves. */

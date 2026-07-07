@@ -35,7 +35,7 @@ import {
   TextField,
   QualityPreset,
 } from "./export/fields";
-import { getWorkspaceDir } from "../lib/ipc";
+import { getWorkspaceDir } from "../lib/ipc/workspace";
 import { tildePath } from "../lib/workspaces";
 
 const GLYPH: Record<string, React.ReactNode> = {

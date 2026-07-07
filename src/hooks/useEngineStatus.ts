@@ -23,7 +23,7 @@ import {
   onEngineStatus,
   type EngineStatus,
   type EngineStatusEvent,
-} from "../lib/ipc";
+} from "../lib/ipc/status";
 
 /** Presentation-ready engine state for the status pill. */
 export interface EngineStatusView {

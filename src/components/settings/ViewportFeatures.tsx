@@ -6,7 +6,7 @@
  * workspace's Preview.
  */
 import { useAppConfig } from "../../state/appConfig";
-import type { AppConfig } from "../../lib/ipc";
+import type { AppConfig } from "../../lib/ipc/config";
 
 /** One viewport feature flag row (a boolean key of AppConfig). */
 type FlagKey = "gtao" | "grid" | "smaa" | "softShadows";

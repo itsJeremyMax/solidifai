@@ -18,7 +18,7 @@ import CollapsibleSection from "./CollapsibleSection";
 import Select from "../ui/Select";
 import { useMeasure } from "../../hooks/useMeasure";
 import { useStress } from "../../hooks/useStress";
-import { engineToleranceStack } from "../../lib/ipc";
+import { engineToleranceStack } from "../../lib/ipc/engine";
 import {
   STRESS_SEVERITIES,
   isSolidPart,

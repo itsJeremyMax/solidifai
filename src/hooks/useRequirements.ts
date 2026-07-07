@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { engineCheckRequirements, engineSetRequirements } from "../lib/ipc";
+import { engineCheckRequirements, engineSetRequirements } from "../lib/ipc/engine";
 import {
   parseRequirementsReport,
   type Requirement,

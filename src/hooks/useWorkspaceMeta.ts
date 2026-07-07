@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getWorkspaceMeta, onWorkspaceMetaUpdated } from "../lib/ipc";
+import { getWorkspaceMeta, onWorkspaceMetaUpdated } from "../lib/ipc/workspace";
 
 export interface WorkspaceMeta {
   name: string;

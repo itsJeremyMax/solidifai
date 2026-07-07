@@ -18,7 +18,7 @@ import {
   setAgentConfig,
   type SkillInfo,
   type AgentConfig as AgentConfigData,
-} from "../../lib/ipc";
+} from "../../lib/ipc/config";
 
 /**
  * A small accessible pill toggle — same graphite idiom as ViewportFeatures,

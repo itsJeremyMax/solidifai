@@ -5,7 +5,7 @@ import {
   onReferenceLibraryUpdated,
   saveReferenceEntry,
   type ReferenceEntry,
-} from "../lib/ipc";
+} from "../lib/ipc/references";
 
 /** A reference entry augmented with merge-layer flags for UI presentation. */
 export interface ReferenceRow extends ReferenceEntry {

@@ -7,7 +7,7 @@
  * there. This module holds only the pure decisions (tested in useUpdater.test.ts)
  * and the types both sides share.
  */
-import type { UpdateBehavior } from "../lib/ipc";
+import type { UpdateBehavior } from "../lib/ipc/config";
 
 /** What to do once a check resolves, given the user's behavior. */
 export type UpdateAction = "idle" | "show-indicator" | "download" | "download-silent";

@@ -8,13 +8,16 @@ import { useArtifacts, clearArtifactCache } from "./useArtifacts";
 // Mock the ipc boundary. parseModelInfo (from ../lib/artifacts) is NOT mocked, so
 // readModelJson must return a real, valid manifest string for the parse to land a
 // model. onModelUpdated returns an unlisten fn so the effect cleanup is a no-op.
-vi.mock("../lib/ipc", () => ({
+vi.mock("../lib/ipc/workspace", () => ({
   readModelJson: vi.fn(),
   readModelGlb: vi.fn(),
+}));
+vi.mock("../lib/ipc/status", () => ({
   onModelUpdated: vi.fn(),
 }));
 
-import { readModelJson, readModelGlb, onModelUpdated } from "../lib/ipc";
+import { readModelJson, readModelGlb } from "../lib/ipc/workspace";
+import { onModelUpdated } from "../lib/ipc/status";
 
 const readModelJsonMock = vi.mocked(readModelJson);
 const readModelGlbMock = vi.mocked(readModelGlb);

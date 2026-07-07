@@ -6,7 +6,7 @@
  */
 import { useEffect } from "react";
 
-import { engineRedo, engineUndo } from "../lib/ipc";
+import { engineRedo, engineUndo } from "../lib/ipc/history";
 
 function isTextEntry(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;

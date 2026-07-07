@@ -1,4 +1,4 @@
-import type { ReferenceEntry } from "../../lib/ipc";
+import type { ReferenceEntry } from "../../lib/ipc/references";
 import type { ReferenceRow } from "../../hooks/useReferences";
 
 /**

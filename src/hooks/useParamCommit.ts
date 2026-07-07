@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
-import { engineSetParams, onEngineStatus } from "../lib/ipc";
+import { engineSetParams } from "../lib/ipc/engine";
+import { onEngineStatus } from "../lib/ipc/status";
 import { createParamCommitScheduler } from "../lib/paramCommit";
 
 /**

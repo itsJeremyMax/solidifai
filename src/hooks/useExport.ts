@@ -20,7 +20,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 
-import { engineExport, getExportDir } from "../lib/ipc";
+import { engineExport } from "../lib/ipc/engine";
+import { getExportDir } from "../lib/ipc/workspace";
 import { tildePath } from "../lib/workspaces";
 
 /** A transient export result note (success or failure), shown briefly inline. */

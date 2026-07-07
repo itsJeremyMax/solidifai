@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { Eye, EyeOff, Trash2 } from "lucide-react";
 import type { ModelObject } from "../../lib/artifacts";
-import { engineRemoveImport } from "../../lib/ipc";
+import { engineRemoveImport } from "../../lib/ipc/engine";
 import PartMaterialPicker from "./PartMaterialPicker";
 
 /** sRGB gamma encode a single linear channel (0..1). */

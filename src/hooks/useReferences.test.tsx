@@ -2,14 +2,14 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/ipc", () => ({
+vi.mock("../lib/ipc/references", () => ({
   getReferenceLibrary: vi.fn(),
   saveReferenceEntry: vi.fn(),
   deleteReferenceEntry: vi.fn(),
   onReferenceLibraryUpdated: vi.fn(async () => () => {}),
 }));
 
-import * as ipc from "../lib/ipc";
+import * as ipc from "../lib/ipc/references";
 import { useReferences } from "./useReferences";
 
 const SEED = [

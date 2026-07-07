@@ -19,24 +19,39 @@ import { WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { ModelObject } from "../lib/artifacts";
-import { glbWorldToEngineMm, engineMmToGlbWorld } from "../lib/coords";
+import { engineMmToGlbWorld } from "../lib/coords";
 import { materialFromAppearance } from "./scene/materials";
 import { setupEnvironment, type EnvHandle } from "./scene/environment";
-import { buildLightRig, type LightRig } from "./scene/lighting";
-import { buildComposer, type ComposerHandle } from "./scene/postprocessing";
-import { buildGrid, type GridHandle } from "./scene/grid";
-import { placeIsoCamera } from "./scene/isoFit";
+import { buildLightRig } from "./scene/lighting";
+import { buildComposer } from "./scene/postprocessing";
+import { buildGrid } from "./scene/grid";
 import { refreshClipPlanes } from "./scene/camera";
 import { createSelectionHighlight, type SelectionHighlight } from "./scene/highlight";
-import { isWebGLReadback, packReadbackRows } from "./scene/readback";
 import { captureExplodeBasis, applyExplode, type ExplodeBasis } from "./scene/explode";
+import { captureThumbnail as captureThumbnailImpl } from "./scene/thumbnail";
+import { ACCENT, clearMeasurement, markerRadius, updateMeasureLabel } from "./scene/measure";
 import {
-  ACCENT,
-  clearMeasurement,
-  handleMeasureClick,
-  markerRadius,
-  updateMeasureLabel,
-} from "./scene/measure";
+  objectSubtrees,
+  subtreeIndexForId,
+  subtreeIndicesForId,
+  applyVisibility,
+  frameToObject,
+} from "./scene/sceneGraph";
+import { disposeObject, disposeMaterial } from "./scene/dispose";
+import { attachInteraction } from "./scene/interaction";
+import {
+  FLOOR_LAYER,
+  GRID_LAYER,
+  type MeasureState,
+  type PickEvent,
+  type PickState,
+  type SceneRefs,
+} from "./scene/types";
+
+export { subtreeIndexForId, subtreeIndicesForId, applyVisibility };
+// Re-exported so any consumer that imported these from the hub before the C5
+// hoist (see scene/types.ts) keeps working unchanged.
+export type { SceneRefs, MeasureState, PickEvent };
 
 /** Optional per-part selection/visibility inputs (default = none). */
 export interface SceneSelection {
@@ -45,9 +60,6 @@ export interface SceneSelection {
 }
 
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
-
-/** Max pointer travel (px²) between down/up that still counts as a "click". */
-const CLICK_SLOP_SQ = 5 * 5;
 
 /**
  * Quiet window (ms) a resize must hold before we re-`setSize` the renderer. On
@@ -69,92 +81,6 @@ const RESIZE_SETTLE_MS = 100;
  * lower for more savings if convergence proves faster.
  */
 const CONVERGENCE_FRAMES = 60;
-
-/** The contact-shadow ground lives here so the AO input pass, whose camera
- *  disables this layer, never samples it as an occluder. The main camera enables
- *  this layer so the ground still renders into the beauty pass. */
-const FLOOR_LAYER = 1;
-/** The work-plane grid lives here, alone, so it renders in its own pass (the
- *  grid camera sees ONLY this layer) and never enters the TRAA-jittered scene
- *  pass — temporal AA dissolves its fine minor lines. Composited back over the
- *  beauty with a model-depth occlusion test (see buildComposer). */
-const GRID_LAYER = 2;
-
-/**
- * A right-click pick event: the hit point in engine (build123d Z-up mm) space,
- * or null if the ray missed the model (or no model is loaded). Screen coords are
- * always present so callers can anchor a context menu to the cursor.
- */
-export interface PickEvent {
-  pointMm: [number, number, number] | null;
-  screenX: number;
-  screenY: number;
-}
-
-/**
- * Imperatively-driven measure state, kept entirely off React. The label is a
- * single absolutely-positioned <div> the hook owns: its world-space anchor is
- * the A–B midpoint, re-projected to screen every RAF frame (no per-frame React
- * state). Markers + line are three.js objects parented to a dedicated group so
- * they orbit with the model and dispose cleanly.
- */
-export interface MeasureState {
-  /** Container for marker spheres + the A–B line; child of the scene. */
-  group: THREE.Group;
-  /** Frosted distance pill, appended to the canvas container. */
-  label: HTMLDivElement;
-  /** Placed world-space hit points (0, 1, or 2). */
-  points: THREE.Vector3[];
-  /** Marker spheres, parallel to `points`. */
-  markers: THREE.Mesh[];
-  /** The A–B line, present only once two points exist. */
-  line: THREE.Line | null;
-  /** Whether measure mode is active (pointer handlers raycast when true). */
-  enabled: boolean;
-  /** Reusable raycaster + pointer NDC, allocated once. */
-  raycaster: THREE.Raycaster;
-  pointer: THREE.Vector2;
-  /** Pointerdown bookkeeping for click-vs-drag discrimination. */
-  downX: number;
-  downY: number;
-  /** Shared sphere geometry for markers (disposed on teardown). */
-  markerGeo: THREE.SphereGeometry;
-}
-
-/** Right-click pick callback registry, kept off React state. */
-interface PickState {
-  onPick: ((p: PickEvent) => void) | null;
-}
-
-/** Internal mutable scene handle kept off React state (refs only). */
-export interface SceneRefs {
-  renderer: WebGPURenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  /** Model-only camera (FLOOR_LAYER disabled) feeding the GTAO input pass. */
-  aoCamera: THREE.PerspectiveCamera;
-  /** Grid-only camera (GRID_LAYER) feeding the separate, un-jittered grid pass. */
-  gridCamera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
-  /** Group holding the current model; cleared + repopulated on each GLB load. */
-  modelGroup: THREE.Group;
-  /** Largest dimension of the framed model. Set by frameToObject; lets the
-   *  render loop re-bracket near/far against the live zoom without a per-frame
-   *  bounding-box traversal. */
-  frameMaxDim: number;
-  /** Contact-shadow ground disc, repositioned under each loaded model. */
-  ground: THREE.Mesh;
-  /** Click-to-measure overlay state (markers, line, label). */
-  measure: MeasureState;
-  /** Right-click pick callback registry. */
-  pick: PickState;
-  lights: LightRig;
-  composer: ComposerHandle;
-  grid: GridHandle;
-  /** Refill the on-demand render budget. Called by every scene mutation so the
-   *  gated loop wakes and renders a convergence burst, then sleeps. */
-  requestRender: () => void;
-}
 
 export interface UseThreeScene {
   /** Attach to the element that should host the <canvas>. */
@@ -389,67 +315,12 @@ export function useThreeScene(
     };
     refs.current = handle;
 
-    // ── measure pointer handlers (click = non-drag pointerdown→up) ──
-    const onPointerDown = (e: PointerEvent) => {
-      if (!measure.enabled || e.button !== 0) return;
-      measure.downX = e.clientX;
-      measure.downY = e.clientY;
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      if (!measure.enabled || e.button !== 0) return;
-      const dx = e.clientX - measure.downX;
-      const dy = e.clientY - measure.downY;
-      // A drag (orbit) moves the pointer; only a near-stationary click picks.
-      if (dx * dx + dy * dy > CLICK_SLOP_SQ) return;
-      handleMeasureClick(handle, e);
-      requestRender();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && measure.enabled) {
-        clearMeasurement(measure);
-        requestRender();
-      }
-    };
-    // Right-click context menu: raycast and fire the pick callback if registered.
-    const onContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      if (!pick.onPick) return;
-      const screenX = e.clientX;
-      const screenY = e.clientY;
-      if (modelGroup.children.length === 0) {
-        pick.onPick({ pointMm: null, screenX, screenY });
-        return;
-      }
-      const rect = renderer.domElement.getBoundingClientRect();
-      measure.pointer.set(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1,
-      );
-      measure.raycaster.setFromCamera(measure.pointer, camera);
-      const hits = measure.raycaster.intersectObject(modelGroup, true);
-      pick.onPick({
-        pointMm: hits.length ? glbWorldToEngineMm(hits[0].point, modelGroup) : null,
-        screenX,
-        screenY,
-      });
-    };
-    renderer.domElement.addEventListener("pointerdown", onPointerDown);
-    renderer.domElement.addEventListener("pointerup", onPointerUp);
-    renderer.domElement.addEventListener("contextmenu", onContextMenu);
-    window.addEventListener("keydown", onKeyDown);
-
     // Camera moved — user input or damping decay — so render.
     controls.addEventListener("change", requestRender);
 
-    // Self-heal: any pointer over the viewport, or a window refocus / tab return,
-    // repaints — so a missed trigger can't leave a stale frame on screen for long.
-    // No periodic tick: cursor away + nothing changing ⇒ zero GPU frames.
-    const onPointerMove = () => requestRender();
-    const onFocus = () => requestRender();
-    renderer.domElement.addEventListener("pointermove", onPointerMove);
-    renderer.domElement.addEventListener("pointerenter", onPointerMove);
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
+    // Pointer/keyboard/context-menu/pick/focus wiring lives in its own module
+    // (see scene/interaction.ts) so this effect stays about scene construction.
+    const detachInteraction = attachInteraction(handle);
 
     const animate = () => {
       // Always apply damping (cheap). This also fires controls' 'change' event
@@ -551,19 +422,11 @@ export function useThreeScene(
       if (resizeTimer) window.clearTimeout(resizeTimer);
       disposed = true;
       renderer.setAnimationLoop(null);
-      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
-      renderer.domElement.removeEventListener("pointerup", onPointerUp);
-      renderer.domElement.removeEventListener("contextmenu", onContextMenu);
-      window.removeEventListener("keydown", onKeyDown);
+      detachInteraction();
       controls.removeEventListener("change", requestRender);
-      renderer.domElement.removeEventListener("pointermove", onPointerMove);
-      renderer.domElement.removeEventListener("pointerenter", onPointerMove);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
       controls.dispose();
       disposeObject(modelGroup);
-      ground.geometry.dispose();
-      (ground.material as THREE.Material).dispose();
+      disposeObject(ground);
       // Measure overlay: clear in-progress geometry, then free shared resources.
       clearMeasurement(measure);
       measure.markerGeo.dispose();
@@ -672,50 +535,8 @@ export function useThreeScene(
   /* ── thumbnail capture (off-screen, leaves the live view untouched) ──── */
   const captureThumbnail = useCallback(async (w = 768, h = 576): Promise<Blob | null> => {
     const handle = refs.current;
-    if (!handle || handle.modelGroup.children.length === 0) return null;
-    const box = new THREE.Box3().setFromObject(handle.modelGroup);
-    if (box.isEmpty()) return null;
-
-    // Throwaway camera: never touches handle.camera/controls. Enable FLOOR_LAYER
-    // for the contact-shadow ground; GRID_LAYER stays off so no work-plane grid.
-    const cam = new THREE.PerspectiveCamera(handle.camera.fov, w / h, 0.1, 100000);
-    cam.layers.enable(FLOOR_LAYER);
-    placeIsoCamera(cam, box);
-
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const pw = Math.round(w * dpr);
-    const ph = Math.round(h * dpr);
-    // Plain color+depth target (no MSAA): readback reads texture[0]; multisampled
-    // attachments aren't readable, so we keep samples at the default 0.
-    const rt = new THREE.RenderTarget(pw, ph, { depthBuffer: true });
-    const prev = handle.renderer.getRenderTarget();
-    try {
-      handle.renderer.setRenderTarget(rt);
-      // Plain render bypasses the node composer (TRAA/GTAO) — a single clean
-      // beauty frame is plenty for a static iso card, and the composer's
-      // temporal targets are sized to the live canvas, not this thumbnail.
-      // Synchronous render() (not the r181-deprecated renderAsync): the renderer
-      // is already init'd, and the readback's copyTextureToBuffer queues after
-      // this render on the same GPU queue, so ordering is preserved.
-      handle.renderer.render(handle.scene, cam);
-      // three@0.184: readRenderTargetPixelsAsync RETURNS the pixel buffer (it
-      // does not fill a passed-in array); for an RGBA8 target that's a Uint8Array.
-      const buf = (await handle.renderer.readRenderTargetPixelsAsync(
-        rt,
-        0,
-        0,
-        pw,
-        ph,
-      )) as Uint8Array;
-      return await pngFromPixels(buf, pw, ph, isWebGLReadback(handle.renderer));
-    } catch (e) {
-      console.warn("thumbnail capture failed", e);
-      return null;
-    } finally {
-      handle.renderer.setRenderTarget(prev);
-      rt.dispose();
-      handle.requestRender(); // repaint the live view (which we never moved)
-    }
+    if (!handle) return null;
+    return await captureThumbnailImpl(handle, w, h);
   }, []);
 
   /* ── GLB load on new buildId ────────────────────────────────────────── */
@@ -907,85 +728,6 @@ export function useThreeScene(
 }
 
 /**
- * The per-object subtrees of a loaded GLB, in show()/registry order. The
- * exporter nests all shown objects under one wrapper node whose children are the
- * per-object nodes; that wrapper is the shallowest node with exactly `n`
- * children (BFS). For n ≤ 1 the scene itself is returned as the single subtree.
- * Verified against build123d 0.10 export_gltf for n = 1, 2, 3.
- */
-function objectSubtrees(scene: THREE.Object3D, n: number): THREE.Object3D[] {
-  if (n <= 1) return [scene];
-  const queue: THREE.Object3D[] = [scene];
-  while (queue.length > 0) {
-    const node = queue.shift() as THREE.Object3D;
-    if (node.children.length === n) return node.children;
-    queue.push(...node.children);
-  }
-  return scene.children; // fallback: never expected for a well-formed GLB
-}
-
-/** Index of the subtree whose object id matches `id` (−1 if none / no id). */
-export function subtreeIndexForId(objects: ModelObject[] | undefined, id: string | null): number {
-  if (!objects || id == null) return -1;
-  return objects.findIndex((o) => o.id === id);
-}
-
-/**
- * Indices of every subtree the selection `id` resolves to: the exact leaf, or —
- * when `id` is an assembly-node prefix — all descendant leaves (path id starts
- * with `id + "/"`). The "/" guard stops "hinge" matching "hingeplate". Selecting
- * a group thus highlights every child mesh.
- */
-export function subtreeIndicesForId(
-  objects: ModelObject[] | undefined,
-  id: string | null,
-): number[] {
-  if (!objects || id == null) return [];
-  const prefix = id + "/";
-  const out: number[] = [];
-  objects.forEach((o, i) => {
-    if (o.id === id || o.id.startsWith(prefix)) out.push(i);
-  });
-  return out;
-}
-
-/** Apply a hidden-id set to per-object subtrees (objects[i] ↔ subtrees[i]). */
-export function applyVisibility(
-  subtrees: THREE.Object3D[],
-  objects: ModelObject[] | undefined,
-  hiddenIds: ReadonlySet<string>,
-): void {
-  const objs = objects ?? [];
-  subtrees.forEach((root, i) => {
-    const id = objs[i]?.id;
-    root.visible = id == null ? true : !hiddenIds.has(id);
-  });
-}
-
-/** Dispose all geometries/materials/textures under `object`. */
-function disposeObject(object: THREE.Object3D): void {
-  object.traverse((node) => {
-    const mesh = node as THREE.Mesh;
-    if (mesh.isMesh) {
-      mesh.geometry?.dispose();
-      const mat = mesh.material;
-      if (Array.isArray(mat)) mat.forEach((m) => disposeMaterial(m));
-      else if (mat) disposeMaterial(mat);
-    }
-  });
-}
-
-function disposeMaterial(mat: THREE.Material): void {
-  // Free any textures the material references before disposing it.
-  for (const value of Object.values(mat as unknown as Record<string, unknown>)) {
-    if (value && (value as THREE.Texture).isTexture) {
-      (value as THREE.Texture).dispose();
-    }
-  }
-  mat.dispose();
-}
-
-/**
  * Tailwind classes for the frosted distance pill — matches the viewport's other
  * floating overlays (dock / HUD): dark glassy panel, hairline border, IBM Plex
  * Mono numerics. Centered on its anchor via the -50% transform set per frame.
@@ -995,88 +737,3 @@ const MEASURE_LABEL_CLASS =
   "bg-[rgba(20,23,30,.72)] px-2 py-0.75 font-mono text-caption " +
   "font-medium leading-none text-white shadow-[0_2px_10px_rgba(0,0,0,.35)] " +
   "backdrop-blur-md";
-
-/**
- * Frame the camera so the model fills the view, then re-center the orbit target
- * + ground plane on it. Preserves the current viewing direction.
- *
- * Caches the model's largest dimension on `handle.frameMaxDim` so the render
- * loop can re-bracket near/far against the live zoom (see refreshClipPlanes) and
- * callers (GTAO / grid / ground sizing) can scale to the part without a second
- * `setFromObject` traversal. No-op when the model has no renderable geometry.
- */
-function frameToObject(handle: SceneRefs): void {
-  const { modelGroup: target, camera, controls } = handle;
-  const box = new THREE.Box3().setFromObject(target);
-  if (box.isEmpty()) return;
-
-  const size = box.getSize(new THREE.Vector3());
-  const center = box.getCenter(new THREE.Vector3());
-
-  // Seat the model in CAD fashion: tuck the part's corner right up against the
-  // 0,0 origin cross so the whole body sits in ONE quadrant — the top-right of
-  // the "+" — and never crosses the two major axis lines, rather than straddling
-  // the origin. Each horizontal face is pushed flush to an axis:
-  //   • X: min-X face → x=0, so the part lives in +X (screen right).
-  //   • Z: max-Z face → z=0, so the part lives in −Z (screen "up"/away from the
-  //     camera); together with +X that reads as the top-right quadrant.
-  //   • Y (height): base → y=0 (the floor, where the contact shadow + grid live).
-  // Then re-measure around the new bounds. modelGroup.position carries the full
-  // offset, so the measure/pick coord transforms in coords.ts stay correct.
-  target.position.x -= box.min.x;
-  target.position.z -= box.max.z;
-  target.position.y -= box.min.y;
-  box.setFromObject(target);
-  box.getSize(size);
-  box.getCenter(center);
-
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  handle.frameMaxDim = maxDim;
-  const fov = (camera.fov * Math.PI) / 180;
-  // Distance so the largest dimension fits, with comfortable padding.
-  let dist = (maxDim / 2 / Math.tan(fov / 2)) * 1.7;
-  dist = Math.max(dist, maxDim * 0.6);
-
-  // Keep the existing view direction; just push the camera out along it.
-  const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
-  if (dir.lengthSq() === 0) dir.set(1, 1, 1).normalize(); // iso fallback
-
-  camera.position.copy(center).addScaledVector(dir, dist);
-  controls.target.copy(center);
-  // Bracket near/far around the framed scene. The render loop refreshes this
-  // every frame from the live orbit distance, so this is just the initial slab.
-  refreshClipPlanes(camera, controls.target, maxDim);
-  controls.update();
-}
-
-/**
- * Encode a raw RGBA byte buffer (one `w`×`h` frame, 4 bytes/pixel) to a PNG blob.
- *
- * `flipY` must be true on the WebGL fallback backend, whose readback rows come
- * back bottom-up; WebGPU readback is already top-down (see scene/readback.ts).
- * Resolves `null` if a canvas isn't available or PNG encoding fails, so the
- * capture path always degrades to a placeholder.
- */
-function pngFromPixels(
-  buf: Uint8Array,
-  w: number,
-  h: number,
-  flipY: boolean,
-): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return resolve(null);
-
-      const out = ctx.createImageData(w, h);
-      out.data.set(packReadbackRows(buf, w, h, flipY));
-      ctx.putImageData(out, 0, 0);
-      canvas.toBlob((blob) => resolve(blob), "image/png");
-    } catch {
-      resolve(null);
-    }
-  });
-}
