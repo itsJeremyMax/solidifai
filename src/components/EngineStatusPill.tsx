@@ -1,7 +1,9 @@
 /**
  * EngineStatusPill — status dot + label, with build details in a click-to-open
- * popover. While the engine is downloading (`updating`) a thin fill across the
- * chip's base and a percentage track the download.
+ * popover. While the engine is updating, the status dot becomes a small ring
+ * gauge: the arc fills to the download percentage, then spins through the
+ * verify/install tail (which has no byte count) so the pill never freezes at
+ * "100%".
  */
 import { useCallback, useState } from "react";
 
@@ -24,6 +26,38 @@ const DOT_RING: Record<EngineStatus, string> = {
   ready: "0 0 0 4px rgba(25,169,87,.14)",
   error: "0 0 0 4px rgba(229,72,77,.14)",
 };
+
+/**
+ * Ring gauge shown in place of the status dot while the engine updates.
+ * Determinate (`pct` set) fills the arc from 12 o'clock during the download;
+ * indeterminate (`pct` null) spins a short arc through the verify/install tail.
+ */
+function EngineGauge({ pct }: { pct: number | null }) {
+  const R = 6; // radius inside the 16px box (stroke 2 -> outer edge at 7, 1px inset)
+  const C = 2 * Math.PI * R;
+  const indeterminate = pct == null;
+  const arc = indeterminate ? C * 0.28 : (C * pct) / 100;
+  return (
+    <span className="inline-flex h-4 w-4 shrink-0">
+      <svg
+        viewBox="0 0 16 16"
+        className={`h-4 w-4 ${indeterminate ? "animate-engine-spin" : "-rotate-90"}`}
+      >
+        <circle cx="8" cy="8" r={R} fill="none" strokeWidth="2" className="stroke-amber/25" />
+        <circle
+          cx="8"
+          cy="8"
+          r={R}
+          fill="none"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={`${arc} ${C}`}
+          className="stroke-amber transition-[stroke-dasharray] duration-300 ease-out"
+        />
+      </svg>
+    </span>
+  );
+}
 
 /** One label/value line in the detail card. The value is mono and truncates. */
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -56,24 +90,21 @@ export default function EngineStatusPill() {
         aria-expanded={open}
         // Hover surfaces the build string; click opens the full card.
         title={version ? `${label} · ${version}` : label}
-        className="relative inline-flex h-7.5 items-center gap-2 overflow-hidden whitespace-nowrap rounded-full border border-line-2 bg-[linear-gradient(180deg,#fff,#fafaf8)] px-2.75 text-xs font-medium text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
+        className="inline-flex h-7.5 items-center gap-2 whitespace-nowrap rounded-full border border-line-2 bg-[linear-gradient(180deg,#fff,#fafaf8)] px-2.75 text-xs font-medium text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
       >
-        <span
-          className={`h-2 w-2 rounded-full ${DOT_COLOR[status]} ${
-            status === "ready" || updating ? "animate-engine-pulse" : ""
-          }`}
-          style={{ boxShadow: DOT_RING[status] }}
-        />
+        {updating ? (
+          <EngineGauge pct={pct} />
+        ) : (
+          <span
+            className={`h-2 w-2 rounded-full ${DOT_COLOR[status]} ${
+              status === "ready" ? "animate-engine-pulse" : ""
+            }`}
+            style={{ boxShadow: DOT_RING[status] }}
+          />
+        )}
         {label}
         {updating && pct != null && (
-          <span className="font-mono text-caption text-ink-3">{pct}%</span>
-        )}
-        {updating && (
-          <span
-            aria-hidden
-            className="absolute bottom-0 left-0 h-0.5 bg-engine transition-[width] duration-300 ease-out"
-            style={{ width: pct != null ? `${pct}%` : "15%" }}
-          />
+          <span className="font-mono text-caption tabular-nums text-ink-3">{pct}%</span>
         )}
       </button>
 

@@ -46,7 +46,9 @@ function labelFor(payload: EngineStatusEvent): string {
     case "provisioning":
       return "Provisioning…";
     case "updating":
-      return "Updating engine";
+      // The engine reports its phase in `message` ("Updating engine" while
+      // downloading, then "Verifying engine" / "Installing engine" for the tail).
+      return payload.message ?? "Updating engine";
     case "ready":
       return "Engine ready";
     case "error":

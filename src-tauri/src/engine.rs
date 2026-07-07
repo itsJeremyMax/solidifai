@@ -216,6 +216,21 @@ impl EngineStatus {
         }
     }
 
+    /// A post-download update phase (verify/install). Same `updating` status and
+    /// dot, but `progress` is None: the work has no byte count, so the pill shows
+    /// an indeterminate (spinning) ring and this `message` instead of a frozen
+    /// "100%". `message` is the pill's label while this phase is live.
+    pub fn updating_phase(message: &str) -> Self {
+        Self {
+            status: "updating".into(),
+            interpreter: None,
+            version: None,
+            message: Some(message.into()),
+            ws_id: String::new(),
+            progress: None,
+        }
+    }
+
     /// Public constructor: `provisioning` status pre-tagged with a workspace id.
     pub fn provisioning_for(ws_id: &str) -> Self {
         let mut s = Self::provisioning();
@@ -355,19 +370,26 @@ fn resolve_engine_dir_status(
         .map(|r| r.join("engine-dist"))
         .filter(|d| d.is_dir());
     let pubkey = updater_pubkey()?;
-    // Throttle progress: the fetch reports every 64KB read, which would be
-    // thousands of IPC emits for a full engine archive. The final report
-    // (done == total) always goes out.
+    // The download reports every 64KB read (thousands of emits for a full
+    // archive), so throttle that byte stream; the final report (done == total)
+    // always goes out. Phase transitions (verify/install) are rare and always
+    // emit immediately so the pill flips off "100%" the instant bytes land.
     let mut last_emit: Option<std::time::Instant> = None;
-    let mut emit = |done: u64, total: Option<u64>| {
-        let now = std::time::Instant::now();
-        let due = last_emit
-            .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(100));
-        if !due && total != Some(done) {
-            return;
-        }
-        last_emit = Some(now);
-        let status = EngineStatus::updating(done, total);
+    let mut emit = |p: engine_fetch::Progress| {
+        let status = match p {
+            engine_fetch::Progress::Downloading { done, total } => {
+                let now = std::time::Instant::now();
+                let due = last_emit
+                    .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(100));
+                if !due && total != Some(done) {
+                    return;
+                }
+                last_emit = Some(now);
+                EngineStatus::updating(done, total)
+            }
+            engine_fetch::Progress::Verifying => EngineStatus::updating_phase("Verifying engine"),
+            engine_fetch::Progress::Installing => EngineStatus::updating_phase("Installing engine"),
+        };
         match state {
             Some(s) => s.set_status(app, status),
             None => emit_status(app, status),
@@ -432,7 +454,7 @@ fn resolve_cached_engine_dir(
     platform: &str,
     bundle: Option<&Path>,
     pubkey: &str,
-    on_progress: &mut dyn FnMut(u64, Option<u64>),
+    on_progress: &mut dyn FnMut(engine_fetch::Progress),
 ) -> Result<PathBuf, String> {
     let _guard = RESOLVE_LOCK.lock();
     if cache.is_ready(&pin.manifest_hash) {
@@ -1283,7 +1305,7 @@ mod tests {
             &current_platform(),
             Some(&bundle),
             "unused",
-            &mut |_, _| {},
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(dir, cache.engine_dir(&pin.manifest_hash));
@@ -1298,7 +1320,7 @@ mod tests {
             &current_platform(),
             None,
             "unused",
-            &mut |_, _| {},
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(dir2, dir);

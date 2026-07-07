@@ -138,6 +138,16 @@ pub trait Transport {
     }
 }
 
+/// A phase of an engine fetch, reported to the UI. Download reports byte counts;
+/// the post-download tail reports indeterminate phases so the pill reflects the
+/// real work (sha256 verify, then assemble + verify-tree + atomic install)
+/// instead of freezing at "100%" once the bytes land.
+pub enum Progress {
+    Downloading { done: u64, total: Option<u64> },
+    Verifying,
+    Installing,
+}
+
 /// Fetch + verify (sha256 + signature + every file) + assemble + atomically
 /// install the engine the pin requires. Returns the installed engine dir. The
 /// prior engine is untouched on any failure.
@@ -151,7 +161,7 @@ pub fn ensure(
     current_rev: Option<&str>,
     current_dir: Option<&Path>,
     pubkey_b64: &str,
-    on_progress: &mut dyn FnMut(u64, Option<u64>),
+    on_progress: &mut dyn FnMut(Progress),
 ) -> anyhow::Result<PathBuf> {
     let index: EngineIndex = serde_json::from_slice(&transport.get(index_url)?)?;
     let dl = plan_download(&index, pin, platform, current_rev)?;
@@ -201,7 +211,7 @@ fn download_and_install(
     manifest: &Manifest,
     dl: &Download,
     current_dir: Option<&Path>,
-    on_progress: &mut dyn FnMut(u64, Option<u64>),
+    on_progress: &mut dyn FnMut(Progress),
 ) -> anyhow::Result<PathBuf> {
     // Archive name derived from the manifest hash (unique per engine); staging is
     // unique per attempt. Downloaded straight to disk and verified from there so
@@ -212,7 +222,10 @@ fn download_and_install(
         .root()
         .join(".staging")
         .join(format!("{}.tar.zst", manifest.manifest_hash));
-    if let Err(e) = transport.get_to_file(&dl.archive_url, &archive_path, on_progress) {
+    let download = transport.get_to_file(&dl.archive_url, &archive_path, &mut |done, total| {
+        on_progress(Progress::Downloading { done, total })
+    });
+    if let Err(e) = download {
         // A failed download must not strand a multi-hundred-MB partial archive
         // until some future successful resolve's gc (never, if the user stays
         // offline). A retry recreates the file from scratch either way.
@@ -220,11 +233,16 @@ fn download_and_install(
         return Err(e);
     }
 
+    // The post-download tail (sha256, then extract + verify-tree + atomic swap)
+    // is the multi-second stretch the old download-only bar showed as a frozen
+    // "100%"; report it as its own indeterminate phases.
     let result = (|| {
+        on_progress(Progress::Verifying);
         let got = engine_pack::hash::sha256_file(&archive_path)?;
         if got != dl.archive_sha256 {
             anyhow::bail!("archive sha256 mismatch");
         }
+        on_progress(Progress::Installing);
         let base = dl.use_base.then_some(current_dir).flatten();
         engine_pack::archive::assemble(base, &archive_path, manifest, &staging)?;
         cache.install_verified(&staging, manifest)
@@ -454,7 +472,7 @@ mod tests {
             Some("r0"), // == pack.from -> plan picks the pack (use_base)
             Some(base.as_path()),
             PUBKEY_B64,
-            &mut |_, _| {},
+            &mut |_| {},
         )
         .expect("ensure should self-heal to the full archive");
 
