@@ -43,6 +43,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { useAppConfig } from "./appConfig";
 import { checkForUpdate, downloadAndInstall, relaunchForUpdate } from "../lib/ipc/config";
+import { useAppVersion } from "../hooks/useAppVersion";
 import { logError } from "../lib/logger";
 import {
   nextActionFor,
@@ -56,7 +57,8 @@ import {
 import {
   readMockUpdateConfig,
   simulateMockDownload,
-  mockNotesFor,
+  mockUpdateNotes,
+  nextMockVersion,
   type MockUpdateConfig,
 } from "../lib/devMockUpdater";
 
@@ -73,6 +75,7 @@ interface CheckResult {
 export function UpdaterProvider({ children }: { children: ReactNode }) {
   const { config, loading } = useAppConfig();
   const { updateBehavior, backgroundUpdateChecks } = config;
+  const current = useAppVersion();
 
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [version, setVersion] = useState<string | null>(null);
@@ -89,6 +92,9 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
   // Live values read inside async callbacks / listeners without re-binding them.
   const channelRef = useRef(config.updateChannel);
   channelRef.current = config.updateChannel;
+  // The running version, so the dev mock can offer one patch above it.
+  const currentVersionRef = useRef(current);
+  currentVersionRef.current = current;
   const behaviorRef = useRef(updateBehavior);
   behaviorRef.current = updateBehavior;
   const statusRef = useRef(status);
@@ -139,8 +145,8 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
     // check can only ever come back empty). Production never takes either path.
     if (m || import.meta.env.DEV) {
       await beat();
-      const version = m?.version ?? "1.4.0";
-      return { available: true, version, notes: mockNotesFor(version), error: null };
+      const version = m?.version ?? nextMockVersion(currentVersionRef.current);
+      return { available: true, version, notes: mockUpdateNotes(), error: null };
     }
     try {
       const res = await checkForUpdate(channelRef.current);

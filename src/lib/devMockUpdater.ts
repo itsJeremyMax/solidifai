@@ -25,7 +25,20 @@ export type MockScenario = "behavior" | "available" | "download" | "silent" | "r
 
 export interface MockUpdateConfig {
   scenario: MockScenario;
-  version: string;
+  /** An explicit ?mockVersion, or null to derive it from the running version. */
+  version: string | null;
+}
+
+/**
+ * The next version above `current` — a patch bump (0.3.0 → 0.3.1) — so a mock
+ * update is always ahead of the installed build, no matter how far the real
+ * version climbs. Falls back to a sensible default when the current version
+ * isn't known yet or doesn't parse as x.y.z.
+ */
+export function nextMockVersion(current: string): string {
+  const m = current.trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return "1.4.0";
+  return `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
 }
 
 const SCENARIOS: MockScenario[] = ["available", "download", "silent", "ready", "error"];
@@ -49,11 +62,10 @@ function readRaw(): { flag: string | null; version: string | null } {
   }
 }
 
-/** Believable release notes (markdown) for the mocked version, for the card UI. */
-export function mockNotesFor(version: string): string {
+/** Believable release-notes body (markdown) for a mock update. No heading: every
+ *  surface that shows these notes prints its own "What's new" title. */
+export function mockUpdateNotes(): string {
   return [
-    `### What's new in ${version}`,
-    "",
     "- Live part validation now streams into the assemblies tree",
     "- Faster STEP import on large solids",
     "- Fixes the macOS 'damaged' launch warning on first open",
@@ -68,7 +80,8 @@ export function readMockUpdateConfig(): MockUpdateConfig | null {
   if (flag === null) return null;
   const s = flag.trim().toLowerCase();
   const scenario = (SCENARIOS.includes(s as MockScenario) ? s : "behavior") as MockScenario;
-  return { scenario, version: version?.trim() || "1.4.0" };
+  // No explicit ?mockVersion → null, so the caller derives it from the running version.
+  return { scenario, version: version?.trim() || null };
 }
 
 /**

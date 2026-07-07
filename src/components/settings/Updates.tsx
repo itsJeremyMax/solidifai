@@ -146,9 +146,9 @@ export default function Updates() {
         )}
       </div>
 
-      {/* What's new: only while an update is pending, so a user can see what the
-          new version brings before installing. */}
-      {(status === "available" || status === "ready") && notes && (
+      {/* What's new: kept up the whole time an update is in play (available,
+          downloading, and ready) so it never blinks out mid-install. */}
+      {(status === "available" || status === "downloading" || status === "ready") && notes && (
         <div className="mt-5.5">
           <h3 className="text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
             What's new{version ? ` in v${version}` : ""}
