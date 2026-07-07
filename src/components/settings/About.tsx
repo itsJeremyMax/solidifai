@@ -20,7 +20,13 @@ import {
   openLicense,
   type AppInfo,
 } from "../../lib/appInfo";
-import { normVersion, parseChangelog, type ChangelogVersion } from "../../lib/changelog";
+import {
+  nonEmptyGroups,
+  normVersion,
+  parseChangelog,
+  type ChangelogVersion,
+} from "../../lib/changelog";
+import ReleaseNotesGroups from "../ReleaseNotesGroups";
 
 const ICON_STROKE = 1.7;
 
@@ -91,9 +97,7 @@ export default function About() {
   // Real per-release notes for the running version; hidden until the version
   // resolves and only when the section actually has entries.
   const whatsNew = useMemo(() => (info ? whatsNewFor(info.version) : undefined), [info]);
-  const whatsNewGroups = whatsNew
-    ? Object.entries(whatsNew.groups).filter(([, entries]) => entries.length > 0)
-    : [];
+  const hasNotes = whatsNew ? nonEmptyGroups(whatsNew.groups).length > 0 : false;
 
   return (
     <div className="mx-auto max-w-160 py-6.5">
@@ -136,7 +140,7 @@ export default function About() {
       </div>
 
       {/* What's new — real notes for this release, grouped like the changelog. */}
-      {whatsNewGroups.length > 0 && (
+      {whatsNew && hasNotes && (
         <div className="mt-5">
           <div className="mb-2 flex items-center gap-2">
             <h2 className="text-base font-bold tracking-snug text-ink">What's new</h2>
@@ -144,23 +148,7 @@ export default function About() {
               {version}
             </span>
           </div>
-          <div className="divide-y divide-line overflow-hidden rounded-panel border border-line bg-surface">
-            {whatsNewGroups.map(([group, entries]) => (
-              <div key={group} className="px-4 py-3">
-                <div className="mb-2 text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
-                  {group}
-                </div>
-                <ul className="grid gap-2">
-                  {entries.map((entry) => (
-                    <li key={entry} className="flex items-start gap-3">
-                      <span className="mt-1.75 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                      <span className="text-body leading-normal text-ink">{entry}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
+          <ReleaseNotesGroups groups={whatsNew.groups} />
         </div>
       )}
 

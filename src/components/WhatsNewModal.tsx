@@ -9,26 +9,10 @@
  * one calm "Continue" to dismiss. No copy here uses em dashes.
  */
 import { createPortal } from "react-dom";
-import { ArrowRight, Bug, Gauge, Sparkles, Wrench, Zap } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { useWhatsNew } from "../hooks/useWhatsNew";
-
-/** Lucide stroke weight matching the rest of the app. */
-const ICON_STROKE = 1.7;
-
-/**
- * A glyph per release-please group heading. Falls back to a generic spark so any
- * future group name (Reverts, Documentation, …) still reads as intentional.
- */
-function groupGlyph(name: string): React.ReactNode {
-  const key = name.toLowerCase();
-  if (key.includes("feature")) return <Sparkles size={14} strokeWidth={ICON_STROKE} />;
-  if (key.includes("fix") || key.includes("bug"))
-    return <Wrench size={14} strokeWidth={ICON_STROKE} />;
-  if (key.includes("perf")) return <Gauge size={14} strokeWidth={ICON_STROKE} />;
-  if (key.includes("revert")) return <Bug size={14} strokeWidth={ICON_STROKE} />;
-  return <Zap size={14} strokeWidth={ICON_STROKE} />;
-}
+import ReleaseNotesGroups from "./ReleaseNotesGroups";
 
 export default function WhatsNewModal() {
   const { open, current, sections, dismiss } = useWhatsNew();
@@ -78,28 +62,8 @@ export default function WhatsNewModal() {
                   )}
                 </div>
 
-                <div className="mt-3 flex flex-col gap-4">
-                  {Object.entries(section.groups)
-                    .filter(([, entries]) => entries.length > 0)
-                    .map(([group, entries]) => (
-                      <div key={group}>
-                        <div className="mb-2 flex items-center gap-1.75 text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
-                          <span className="text-accent">{groupGlyph(group)}</span>
-                          {group}
-                        </div>
-                        <ul className="divide-y divide-line overflow-hidden rounded-panel border border-line bg-surface">
-                          {entries.map((entry, i) => (
-                            <li
-                              key={`${group}-${i}`}
-                              className="flex items-start gap-3 px-4 py-2.75"
-                            >
-                              <span className="mt-1.75 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                              <span className="text-body leading-normal text-ink">{entry}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
+                <div className="mt-3">
+                  <ReleaseNotesGroups groups={section.groups} />
                 </div>
               </section>
             ))}

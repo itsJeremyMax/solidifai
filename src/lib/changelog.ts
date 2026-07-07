@@ -66,6 +66,15 @@ export function stripLeadingTitle(md: string): string {
   return lines.slice(i).join("\n").trim();
 }
 
+/**
+ * The non-empty groups of a parsed section (`Features`, `Bug Fixes`, …), in
+ * display order. Used to decide whether a version has anything worth showing and
+ * to drive the grouped release-notes rendering.
+ */
+export function nonEmptyGroups(groups: Record<string, string[]>): [string, string[]][] {
+  return Object.entries(groups).filter(([, entries]) => entries.length > 0);
+}
+
 export function parseChangelog(md: string): ChangelogVersion[] {
   const out: ChangelogVersion[] = [];
   let cur: ChangelogVersion | null = null;
