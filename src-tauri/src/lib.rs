@@ -1,6 +1,7 @@
 pub mod agent_config;
 pub mod app_config;
 pub mod control;
+pub mod custom_instructions;
 pub mod engine;
 pub mod engine_cache;
 pub mod engine_fetch;
@@ -195,6 +196,11 @@ pub fn run() {
             manufacturing::set_global_manufacturing_profile,
             manufacturing::get_workspace_manufacturing_profile,
             manufacturing::set_workspace_manufacturing_profile,
+            // Global + workspace custom instructions (woven into AGENTS.md).
+            custom_instructions::get_global_custom_instructions,
+            custom_instructions::set_global_custom_instructions,
+            custom_instructions::get_workspace_custom_instructions,
+            custom_instructions::set_workspace_custom_instructions,
             // App-level print destinations (connections), served natively so the
             // Printers page works with no workspace engine.
             fabrication::get_destinations,

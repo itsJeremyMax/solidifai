@@ -54,6 +54,9 @@ const CLAUDE_MD: &str = include_str!("../../engine/workspace_templates/CLAUDE.md
 const MFG_REGION_START: &str = "<!-- solidifai-profile:start";
 const MFG_REGION_END: &str = "<!-- solidifai-profile:end -->";
 
+const CUSTOM_START: &str = "<!-- solidifai-custom:start -->";
+const CUSTOM_END: &str = "<!-- solidifai-custom:end -->";
+
 /// The using-solidifai entry-point directive, injected verbatim into the agent's
 /// context at session start (the Claude hook reads it; the Cursor rule embeds it).
 /// No managed marker: it must land in context clean.
@@ -647,6 +650,32 @@ fn replace_profile_region(text: &str, block: &str) -> String {
     out
 }
 
+/// Replace the content BETWEEN the custom-instructions markers with `block`,
+/// keeping the markers themselves in place (unlike `render_profile_block`,
+/// `custom_instructions::render_block` emits no markers of its own). If both
+/// markers are not present the text is returned unchanged. An empty `block`
+/// collapses the region back to the two bare markers on consecutive lines.
+fn replace_custom_region(text: &str, block: &str) -> String {
+    let Some(start) = text.find(CUSTOM_START) else {
+        return text.to_string();
+    };
+    let content_start = start + CUSTOM_START.len();
+    let Some(end_rel) = text[content_start..].find(CUSTOM_END) else {
+        return text.to_string();
+    };
+    let end = content_start + end_rel;
+    let between = if block.is_empty() {
+        "\n".to_string()
+    } else {
+        format!("\n\n{block}\n\n")
+    };
+    let mut out = String::with_capacity(text.len() + between.len());
+    out.push_str(&text[..content_start]);
+    out.push_str(&between);
+    out.push_str(&text[end..]);
+    out
+}
+
 /// Provision (idempotently) all workspace files.
 ///
 /// `py` is the absolute engine interpreter path; `sock` is the absolute engine
@@ -668,6 +697,10 @@ pub fn provision(
     let config_dir = templates_dir.parent().unwrap_or(templates_dir);
     let agents = template_content(templates_dir, "AGENTS.md");
     let agents = replace_profile_region(&agents, &render_profile_block(config_dir, root.as_path()));
+    let agents = replace_custom_region(
+        &agents,
+        &crate::custom_instructions::render_block(config_dir, root.as_path()),
+    );
 
     // The SessionStart hook reads this by absolute path. It is marker-less (so it
     // injects cleanly), which means it must bypass write_managed — write_managed
@@ -1314,6 +1347,32 @@ mod tests {
     fn replace_region_noop_when_end_marker_missing() {
         let text = "a\n<!-- solidifai-profile:start x -->\nbody no end\n";
         assert_eq!(replace_profile_region(text, "NEW"), text);
+    }
+
+    #[test]
+    fn replace_custom_region_swaps_between_markers_and_keeps_them() {
+        let text = "head\n<!-- solidifai-custom:start -->\n<!-- solidifai-custom:end -->\ntail";
+        let out = replace_custom_region(text, "## Custom instructions\n\nHELLO");
+        assert!(out.contains("HELLO"));
+        assert!(out.contains(CUSTOM_START), "start marker preserved");
+        assert!(out.contains(CUSTOM_END), "end marker preserved");
+        assert!(out.starts_with("head"));
+        assert!(out.trim_end().ends_with("tail"));
+    }
+
+    #[test]
+    fn replace_custom_region_empty_block_collapses_to_bare_markers() {
+        let text =
+            "head\n<!-- solidifai-custom:start -->\nOLD BODY\n<!-- solidifai-custom:end -->\ntail";
+        let out = replace_custom_region(text, "");
+        assert!(!out.contains("OLD BODY"));
+        assert!(out.contains(&format!("{CUSTOM_START}\n{CUSTOM_END}")));
+    }
+
+    #[test]
+    fn replace_custom_region_noop_when_markers_absent() {
+        let text = "no markers here\n";
+        assert_eq!(replace_custom_region(text, "BLOCK"), text);
     }
 
     #[test]

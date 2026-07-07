@@ -42,6 +42,9 @@ change one with `set_manufacturing_profile`.
 - Print (advisory; the slicer owns the real values): 210C nozzle / 60C bed, ~$25/kg
 <!-- solidifai-profile:end -->
 
+<!-- solidifai-custom:start -->
+<!-- solidifai-custom:end -->
+
 ## Routing: which skill, when
 
 Each skill's own "When to use" has the fine print.
