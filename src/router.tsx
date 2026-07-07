@@ -15,7 +15,11 @@ import ReferenceEditor from "./components/references/ReferenceEditor";
 import DocsLayout from "./components/docs/DocsLayout";
 import DocPage from "./components/docs/DocPage";
 import HelpView from "./components/help/HelpView";
-import { SETTINGS_SECTIONS, SETTINGS_SECTION_IDS } from "./components/settings/sections";
+import {
+  APP_SETTINGS_SECTIONS,
+  WORKSPACE_SETTINGS_SECTIONS,
+  type SettingsSection,
+} from "./components/settings/sections";
 import { decodeWsPath, editorPath } from "./lib/routes";
 import { DOC_SLUGS } from "./lib/docs";
 import { useWorkspaceSessions } from "./state/workspaceSessions";
@@ -45,12 +49,12 @@ function referencesChildren() {
   ];
 }
 
-/** Settings sub-routes generated from the registry: an index redirect to the
- *  first section, then one route per section. Reused at every settings mount. */
-function settingsChildren() {
+/** Settings sub-routes generated from a registry: an index redirect to the first
+ *  section, then one route per section. Used for both settings scopes. */
+function settingsChildren(sections: SettingsSection[]) {
   return [
-    { index: true, element: <Navigate to={SETTINGS_SECTION_IDS[0]} replace /> },
-    ...SETTINGS_SECTIONS.map((s) => ({ path: s.id, element: s.element })),
+    { index: true, element: <Navigate to={sections[0].id} replace /> },
+    ...sections.map((s) => ({ path: s.id, element: s.element })),
   ];
 }
 
@@ -96,6 +100,25 @@ function EditorRoute() {
   return null;
 }
 
+/** Workspace settings: focus the URL's workspace before rendering so its
+ *  sections (which resolve via the focused session, not the route) reflect the
+ *  workspace in the address bar even with several open. */
+function WorkspaceSettingsRoute() {
+  const { wsPath = "" } = useParams();
+  const path = decodeWsPath(wsPath);
+  const { focus } = useWorkspaceSessions();
+  useEffect(() => {
+    focus(path);
+  }, [path, focus]);
+  return (
+    <SettingsLayout
+      sections={WORKSPACE_SETTINGS_SECTIONS}
+      title="Workspace settings"
+      crossLink={{ to: "/settings", label: "App settings" }}
+    />
+  );
+}
+
 function MaterialsRoute({ scope }: { scope: "global" | "workspace" }) {
   const { wsPath } = useParams();
   // Workspace scope derives its name from the route; global scope has none.
@@ -109,7 +132,11 @@ export const router = createHashRouter([
     element: <AppLayout />,
     children: [
       { path: "/", element: <LauncherRoute /> },
-      { path: "/settings", element: <SettingsLayout />, children: settingsChildren() },
+      {
+        path: "/settings",
+        element: <SettingsLayout sections={APP_SETTINGS_SECTIONS} title="Settings" />,
+        children: settingsChildren(APP_SETTINGS_SECTIONS),
+      },
       {
         path: "/materials",
         element: <MaterialsRoute scope="global" />,
@@ -127,7 +154,11 @@ export const router = createHashRouter([
         path: "/w/:wsPath",
         children: [
           { index: true, element: <EditorRoute /> },
-          { path: "settings", element: <SettingsLayout />, children: settingsChildren() },
+          {
+            path: "settings",
+            element: <WorkspaceSettingsRoute />,
+            children: settingsChildren(WORKSPACE_SETTINGS_SECTIONS),
+          },
           {
             path: "materials",
             element: <MaterialsRoute scope="workspace" />,

@@ -78,6 +78,7 @@ export default function About() {
 
   const version = info?.version ?? "…";
 
+  // App-scoped: no workspace row (workspace location lives in Workspace settings).
   const diagnostics: [string, string][] = info
     ? [
         [info.name, info.version],
@@ -85,7 +86,6 @@ export default function About() {
         ["OS", info.os],
         ["WebView", info.webview],
         ["Engine", info.engine],
-        ...(info.workspacePath ? ([["Workspace", info.workspacePath]] as [string, string][]) : []),
       ]
     : [];
 

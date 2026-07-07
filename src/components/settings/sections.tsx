@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import {
   Download,
-  FileCode,
   HardDrive,
   Info,
   Keyboard,
+  MessageSquareText,
   Printer,
+  Puzzle,
   SlidersHorizontal,
   Wrench,
 } from "lucide-react";
@@ -16,8 +17,9 @@ import Slicers from "./Slicers";
 import Updates from "./Updates";
 import Shortcuts from "./Shortcuts";
 import About from "./About";
-import Context from "./Context";
 import ManufacturingProfile from "./ManufacturingProfile";
+import AgentConfig from "./AgentConfig";
+import CustomInstructions from "./CustomInstructions";
 
 const ICON_STROKE = 1.7;
 
@@ -30,98 +32,106 @@ export interface SettingsSection {
   element: ReactNode;
 }
 
+/** Simple sections get a `px-6.5` gutter; each section owns its own inner layout. */
+function pane(node: ReactNode): ReactNode {
+  return <div className="px-6.5">{node}</div>;
+}
+
 /**
- * The settings sections, in order. Adding a section is one entry here — the
- * sidebar groups and the nested routes (global + workspace scope) both derive
- * from this list. Simple sections get a `px-6.5` gutter; Context owns its own
- * full-height layout.
+ * App (global) settings — reachable from the home header gear at `/settings`.
+ * Everything here is app-wide: it applies with no workspace open. The
+ * "Defaults" group holds the values woven into every workspace (custom
+ * instructions + the manufacturing profile's global layer).
  */
-export const SETTINGS_SECTIONS: SettingsSection[] = [
+export const APP_SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "viewport",
     label: "Viewport / Features",
     group: "Editor",
     icon: <SlidersHorizontal size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <ViewportFeatures />
-      </div>
-    ),
+    element: pane(<ViewportFeatures />),
   },
   {
-    id: "context",
-    label: "Context",
-    group: "Workspace",
-    icon: <FileCode size={16} strokeWidth={ICON_STROKE} />,
-    element: <Context />,
+    id: "instructions",
+    label: "Custom instructions",
+    group: "Defaults",
+    icon: <MessageSquareText size={16} strokeWidth={ICON_STROKE} />,
+    element: pane(<CustomInstructions scope="global" />),
   },
   {
     id: "manufacturing",
     label: "Manufacturing",
-    group: "Workspace",
+    group: "Defaults",
     icon: <Wrench size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <ManufacturingProfile />
-      </div>
-    ),
-  },
-  {
-    id: "workspace",
-    label: "Workspace & storage",
-    group: "Workspace",
-    icon: <HardDrive size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <WorkspaceStorage />
-      </div>
-    ),
+    element: pane(<ManufacturingProfile scope="global" />),
   },
   {
     id: "slicers",
     label: "Slicers",
     group: "App",
     icon: <Printer size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <Slicers />
-      </div>
-    ),
+    element: pane(<Slicers />),
   },
   {
     id: "updates",
     label: "Updates",
     group: "App",
     icon: <Download size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <Updates />
-      </div>
-    ),
+    element: pane(<Updates />),
   },
   {
     id: "shortcuts",
     label: "Keyboard shortcuts",
     group: "App",
     icon: <Keyboard size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <Shortcuts />
-      </div>
-    ),
+    element: pane(<Shortcuts />),
   },
   {
     id: "about",
     label: "About",
     group: "App",
     icon: <Info size={16} strokeWidth={ICON_STROKE} />,
-    element: (
-      <div className="px-6.5">
-        <About />
-      </div>
-    ),
+    element: pane(<About />),
+  },
+];
+
+/**
+ * Workspace settings — reachable from the editor gear at `/w/:wsPath/settings`.
+ * Everything here is scoped to the focused workspace and layers on top of the
+ * app-wide defaults (custom instructions, manufacturing). A single group, so the
+ * sidebar shows a flat list (SettingsLayout hides the lone group header).
+ */
+export const WORKSPACE_SETTINGS_SECTIONS: SettingsSection[] = [
+  {
+    id: "instructions",
+    label: "Custom instructions",
+    group: "Workspace",
+    icon: <MessageSquareText size={16} strokeWidth={ICON_STROKE} />,
+    element: pane(<CustomInstructions scope="workspace" />),
+  },
+  {
+    id: "skills",
+    label: "Agent skills",
+    group: "Workspace",
+    icon: <Puzzle size={16} strokeWidth={ICON_STROKE} />,
+    element: pane(<AgentConfig />),
+  },
+  {
+    id: "manufacturing",
+    label: "Manufacturing",
+    group: "Workspace",
+    icon: <Wrench size={16} strokeWidth={ICON_STROKE} />,
+    element: pane(<ManufacturingProfile scope="workspace" />),
+  },
+  {
+    id: "workspace",
+    label: "Workspace & storage",
+    group: "Workspace",
+    icon: <HardDrive size={16} strokeWidth={ICON_STROKE} />,
+    element: pane(<WorkspaceStorage />),
   },
 ];
 
 /** Section ids in order — handy for the index redirect + route generation. */
-export const SETTINGS_SECTION_IDS = SETTINGS_SECTIONS.map((s) => s.id);
+export const APP_SETTINGS_SECTION_IDS = APP_SETTINGS_SECTIONS.map((s) => s.id);
+export const WORKSPACE_SETTINGS_SECTION_IDS = WORKSPACE_SETTINGS_SECTIONS.map((s) => s.id);

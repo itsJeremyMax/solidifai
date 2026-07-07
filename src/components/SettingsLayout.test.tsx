@@ -4,19 +4,28 @@ import { render, screen, cleanup } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { HeaderSlotProvider } from "../state/headerSlot";
 import SettingsLayout from "./SettingsLayout";
+import type { SettingsSection } from "./settings/sections";
 
 afterEach(cleanup);
 
-function mount(initial: string) {
+const SECTIONS: SettingsSection[] = [
+  {
+    id: "viewport",
+    label: "Viewport / Features",
+    group: "Editor",
+    icon: <i />,
+    element: <div>viewport-pane</div>,
+  },
+  { id: "about", label: "About", group: "App", icon: <i />, element: <div>about-pane</div> },
+];
+
+function mount(initial: string, crossLink?: { to: string; label: string }) {
   const r = createMemoryRouter(
     [
       {
         path: "/settings",
-        element: <SettingsLayout />,
-        children: [
-          { path: "viewport", element: <div>viewport-pane</div> },
-          { path: "about", element: <div>about-pane</div> },
-        ],
+        element: <SettingsLayout sections={SECTIONS} title="Settings" crossLink={crossLink} />,
+        children: SECTIONS.map((s) => ({ path: s.id, element: s.element })),
       },
     ],
     { initialEntries: [initial] },
@@ -29,18 +38,22 @@ function mount(initial: string) {
 }
 
 describe("SettingsLayout", () => {
-  it("renders the registry-driven sidebar and the active section in the outlet", async () => {
+  it("renders the passed sidebar registry and the active section in the outlet", async () => {
     mount("/settings/viewport");
     expect(await screen.findByText("viewport-pane")).toBeTruthy();
-    // Sidebar labels come from the section registry.
+    // Sidebar labels come from the passed section list.
     expect(screen.getByText("Viewport / Features")).toBeTruthy();
     expect(screen.getByText("About")).toBeTruthy();
-    expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
   });
 
   it("swaps the outlet when the route changes", async () => {
     mount("/settings/about");
     expect(await screen.findByText("about-pane")).toBeTruthy();
     expect(screen.queryByText("viewport-pane")).toBeNull();
+  });
+
+  it("renders a cross-link to the sibling settings page when given one", async () => {
+    mount("/settings/viewport", { to: "/settings", label: "App settings" });
+    expect(await screen.findByText("App settings")).toBeTruthy();
   });
 });
