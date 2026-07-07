@@ -5,8 +5,10 @@
  * The version is read live via getVersion(), which resolves to the single source
  * of truth (root package.json) through tauri.conf.json's "version": "../package.json".
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
+
+import changelog from "/CHANGELOG.md?raw";
 
 import {
   buildDiagnostics,
@@ -17,17 +19,20 @@ import {
   openLicense,
   type AppInfo,
 } from "../../lib/appInfo";
+import { normVersion, parseChangelog, type ChangelogVersion } from "../../lib/changelog";
 
 const ICON_STROKE = 1.7;
 
-/** Hand-written highlights for the current version. */
-const WHATS_NEW: string[] = [
-  "Live WebGPU preview with temporal ambient occlusion and anti-aliasing.",
-  "Materials library, with per-part material assignment.",
-  "Build parametric models in natural language from the agent terminal.",
-  "Export to STEP, STL, GLB, BREP and 3MF.",
-  "Edit history with undo and redo.",
-];
+/**
+ * The changelog section for the running version — the real, per-release "What's
+ * new", sourced from the same bundled CHANGELOG.md the post-update modal uses so
+ * it can never go stale. Falls back to the newest section when the exact version
+ * isn't in the changelog yet (e.g. a dev build ahead of the last release).
+ */
+function whatsNewFor(version: string): ChangelogVersion | undefined {
+  const sections = parseChangelog(changelog);
+  return sections.find((s) => normVersion(s.version) === normVersion(version)) ?? sections[0];
+}
 
 /** One labelled fact in the identity strip. */
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -79,6 +84,7 @@ export default function About() {
   const version = info?.version ?? "…";
 
   // App-scoped: no workspace row (workspace location lives in Workspace settings).
+  // Matches buildDiagnostics exactly so the table and the copied block agree.
   const diagnostics: [string, string][] = info
     ? [
         [info.name, info.version],
@@ -87,6 +93,13 @@ export default function About() {
         ["WebView", info.webview],
         ["Engine", info.engine],
       ]
+    : [];
+
+  // Real per-release notes for the running version; hidden until the version
+  // resolves and only when the section actually has entries.
+  const whatsNew = useMemo(() => (info ? whatsNewFor(info.version) : undefined), [info]);
+  const whatsNewGroups = whatsNew
+    ? Object.entries(whatsNew.groups).filter(([, entries]) => entries.length > 0)
     : [];
 
   return (
@@ -129,23 +142,34 @@ export default function About() {
         </div>
       </div>
 
-      {/* What's new */}
-      <div className="mt-5">
-        <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-base font-bold tracking-snug text-ink">What's new</h2>
-          <span className="rounded-full bg-accent-tint px-2 py-0.5 font-mono text-micro font-semibold tracking-[0.04em] text-accent">
-            {version}
-          </span>
+      {/* What's new — real notes for this release, grouped like the changelog. */}
+      {whatsNewGroups.length > 0 && (
+        <div className="mt-5">
+          <div className="mb-2 flex items-center gap-2">
+            <h2 className="text-base font-bold tracking-snug text-ink">What's new</h2>
+            <span className="rounded-full bg-accent-tint px-2 py-0.5 font-mono text-micro font-semibold tracking-[0.04em] text-accent">
+              {version}
+            </span>
+          </div>
+          <div className="divide-y divide-line overflow-hidden rounded-panel border border-line bg-surface">
+            {whatsNewGroups.map(([group, entries]) => (
+              <div key={group} className="px-4 py-3">
+                <div className="mb-2 text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
+                  {group}
+                </div>
+                <ul className="grid gap-2">
+                  {entries.map((entry) => (
+                    <li key={entry} className="flex items-start gap-3">
+                      <span className="mt-1.75 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                      <span className="text-body leading-normal text-ink">{entry}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
         </div>
-        <ul className="divide-y divide-line overflow-hidden rounded-panel border border-line bg-surface">
-          {WHATS_NEW.map((item) => (
-            <li key={item} className="flex items-start gap-3 px-4 py-3">
-              <span className="mt-1.75 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-              <span className="text-body leading-normal text-ink">{item}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      )}
 
       {/* Diagnostics */}
       <div className="mt-5">
