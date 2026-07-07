@@ -12,7 +12,7 @@ import { stripLeadingTitle } from "../../lib/changelog";
 
 function Heading({ children }: { children: ReactNode }) {
   return (
-    <div className="mb-1.5 text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
+    <div className="mb-1.5 mt-4 text-micro font-semibold uppercase tracking-eyebrow text-ink-3 first:mt-0">
       {children}
     </div>
   );
