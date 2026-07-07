@@ -1,24 +1,16 @@
 import type { Destination, ProfileSet, SlicerEntry } from "../fabrication";
-import { invoke } from "./core";
+import { engineCall, invoke } from "./core";
 
 /* ───────────────────────────── fabrication ────────────────────────────── */
 
 /** Detect the installed slicer / fabrication tool. Returns raw engine JSON or `null`. */
 export async function engineFabDetect(): Promise<string | null> {
-  try {
-    return await invoke<string>("engine_fab_detect");
-  } catch {
-    return null;
-  }
+  return engineCall<string>("engine_fab_detect");
 }
 
 /** Estimate print time / filament for a destination. Returns raw engine JSON or `null`. */
 export async function engineFabEstimate(destinationId?: string | null): Promise<string | null> {
-  try {
-    return await invoke<string>("engine_fab_estimate", { destinationId: destinationId ?? null });
-  } catch {
-    return null;
-  }
+  return engineCall<string>("engine_fab_estimate", { destinationId: destinationId ?? null });
 }
 
 /**
@@ -37,11 +29,7 @@ export async function engineFabOrient(overhangDeg?: number): Promise<string | nu
 
 /** Open (slice / send) the model to a fabrication destination. Returns raw engine JSON or `null`. */
 export async function engineFabOpen(destinationId?: string | null): Promise<string | null> {
-  try {
-    return await invoke<string>("engine_fab_open", { destinationId: destinationId ?? null });
-  } catch {
-    return null;
-  }
+  return engineCall<string>("engine_fab_open", { destinationId: destinationId ?? null });
 }
 
 /**

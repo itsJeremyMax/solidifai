@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "./core";
+import { engineCall, invoke } from "./core";
 
 /* ───────────────────────── workspace + artifacts ───────────────────────── */
 
@@ -85,11 +85,7 @@ export async function onWorkspaceMetaUpdated(
 
 /** Read the focused engine's workspace metadata (raw engine JSON string or null). */
 export async function getWorkspaceMeta(): Promise<string | null> {
-  try {
-    return await invoke<string>("engine_get_workspace_meta");
-  } catch {
-    return null;
-  }
+  return engineCall<string>("engine_get_workspace_meta");
 }
 
 /** Payload of the `build-brief-updated` event. */

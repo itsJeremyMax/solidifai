@@ -4,10 +4,15 @@ Extracted from ``session.py`` so the mesh-assembly and view/focus/highlight
 resolution can be unit-tested without a full Session, and so
 ``Session.capture_views`` stays a thin validate -> assemble -> resolve ->
 render -> shape pipeline. Every function here is pure (or, for
-``assemble_capture_mesh``, side-effect-free on its inputs): failures raise
-``CaptureError`` / ``ValueError`` with the exact messages the (still) public
-error envelope surfaces, rather than returning ``{"ok": False, ...}`` dicts
-themselves — that shaping stays the caller's job.
+``assemble_capture_mesh``, side-effect-free on its inputs): every documented
+failure raises ``CaptureError`` with the exact message the public error
+envelope surfaces verbatim, rather than returning ``{"ok": False, ...}``
+dicts themselves — that shaping stays the caller's job. An *undocumented*
+internal error (e.g. a ``ValueError`` from tessellation or a mismatched
+``zip``) is deliberately left unconverted, so it still falls through to the
+caller's broad ``except Exception`` and gets the generic
+``"capture failed (...)"`` envelope instead of masquerading as a clean,
+documented error.
 """
 
 from __future__ import annotations
@@ -151,6 +156,8 @@ def assemble_capture_mesh(
                 "(the abandoned cut may keep the engine busy a while longer); "
                 "try a simpler model or a different offset"
             ) from None
+        except ValueError as exc:  # bad axis / offset misses the model
+            raise CaptureError(str(exc)) from None
         vertices: list = []
         tris: list = []
         for idx, cshape in enumerate(cut_shapes):

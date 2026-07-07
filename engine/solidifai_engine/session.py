@@ -739,7 +739,7 @@ class Session:
             )
             highlight_mesh = resolve_highlight(highlight, self._features)
             focus_bounds, focus_label = resolve_focus(focus, self._features)
-        except (CaptureError, ValueError) as exc:
+        except CaptureError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001 - tessellation/resolve never crashes
             return {"ok": False, "error": f"capture failed ({type(exc).__name__}): {exc}"}
