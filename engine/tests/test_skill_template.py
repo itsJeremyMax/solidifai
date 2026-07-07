@@ -9,6 +9,7 @@ additions (detail-density checklist, dimensional-grounding hard rule)."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -164,8 +165,13 @@ def test_agents_no_em_dashes():
 
 
 def test_agents_word_ceiling():
-    words = len(AGENTS.read_text(encoding="utf-8").split())
-    assert words <= 3300
+    # Anti-rebloat ratchet on instruction prose. Exclude the structural
+    # HTML-comment region markers (solidifai-managed / -profile / -custom): they
+    # are a substitution mechanism, not words the agent reads, so they must not
+    # eat into the prose budget.
+    text = AGENTS.read_text(encoding="utf-8")
+    prose = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    assert len(prose.split()) <= 3300
 
 
 def test_template_covers_every_skill():
