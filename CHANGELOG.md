@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0](https://github.com/itsJeremyMax/solidifai/compare/v0.3.0...v0.4.0) (2026-07-07)
+
+
+### Features
+
+* **engine:** weave custom instructions into provisioned AGENTS.md ([fe6d3e6](https://github.com/itsJeremyMax/solidifai/commit/fe6d3e6b75e10b8dc82e25d8189496d1f3a65c11))
+* **settings:** split into App and Workspace settings, add Custom instructions ([a1486a5](https://github.com/itsJeremyMax/solidifai/commit/a1486a5a538cf4f70f362a6d3014e82af4d13e92))
+* **ui:** group header nav into libraries + utilities, add a Help page ([13f39f2](https://github.com/itsJeremyMax/solidifai/commit/13f39f20f9e05a143966db6037e8f6a44b7e91e0))
+* **updater:** show real release notes in the update UI ([9626395](https://github.com/itsJeremyMax/solidifai/commit/9626395fbb352b436ba143463eaccdb84ec50bd5))
+
+
+### Bug Fixes
+
+* **engine:** exclude region markers from the AGENTS.md word ceiling ([bdde65a](https://github.com/itsJeremyMax/solidifai/commit/bdde65ae4a40d6c9b4105b2e7d834bfcf1dc0e18))
+* **home:** open from the whole card and hero image, de-dup the hero ([2fe5b65](https://github.com/itsJeremyMax/solidifai/commit/2fe5b6563d7ffdf2ce6de0dc4c1af22c1bcd4b09))
+* **inspector:** don't nest the section action button in the header toggle ([8d90ed8](https://github.com/itsJeremyMax/solidifai/commit/8d90ed865c0620ff1be87675bd0842740ee42894))
+* **ui:** stop nesting tag-chip buttons inside the card open button ([50baff8](https://github.com/itsJeremyMax/solidifai/commit/50baff879374612a5a41c93d3320b4172f5061d6))
+* **updater:** keep What's new visible while installing, tidy mock notes/version ([1419e39](https://github.com/itsJeremyMax/solidifai/commit/1419e39c05a2638ed62560721bb5a7b758600f7f))
+* **updater:** show a single update CTA at a time, never stacked ([28ce93a](https://github.com/itsJeremyMax/solidifai/commit/28ce93a01cfd44ffe3230bac03105bb5186e11b7))
+* **updater:** show the mock update from Check now in dev builds ([4192df5](https://github.com/itsJeremyMax/solidifai/commit/4192df57c789ba6c8b4040f6459a171c0f2f6247))
+
 ## [0.3.0](https://github.com/itsJeremyMax/solidifai/compare/v0.2.0...v0.3.0) (2026-07-07)
 
 
