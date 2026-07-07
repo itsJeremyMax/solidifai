@@ -755,3 +755,20 @@ def test_analyze_import_reports_features(tmp_path):
 
 def test_analyze_import_no_model_errors(tmp_path):
     assert Session(str(tmp_path)).analyze_import()["ok"] is False
+
+
+def test_render_after_set_params_reuses_pipeline(tmp_path):
+    s = Session(str(tmp_path))
+    assert s.execute_script(
+        "from build123d import Box\n"
+        "from solidifai import show\n"
+        "PARAMS = {'w': {'min': 5, 'max': 40, 'default': 20}}\n"
+        "def build(w):\n"
+        "    show(Box(w, w, w), name='b')\n"
+        "build(20)\n"
+    )["ok"]
+    b0 = s.build_id
+    assert s.set_params({"w": 30})["ok"]
+    assert s.build_id == b0 + 1
+    assert s.render()["ok"]
+    assert s.build_id == b0 + 2  # render bumps exactly one build via the shared pipeline

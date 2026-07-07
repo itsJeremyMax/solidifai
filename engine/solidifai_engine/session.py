@@ -147,10 +147,46 @@ class Session:
             code = f.read()
         return self.execute_script(code)
 
+    def _run_build(self, *, params: dict | None, duration_ms: int | None, structural: bool) -> dict:
+        """Shared build tail for execute_script/set_params/render: apply
+        reference fixtures, render, snapshot the registry, and commit or
+        report a clean error. Callers do their own reset + build (or, for
+        render, no rebuild at all) first and pass in the params block for
+        this build; buildId only bumps on success and a failure never
+        clobbers the last-good artifacts.
+
+        ``duration_ms`` is omitted from the render_to call entirely when
+        None, matching render()'s existing behavior of not timing itself."""
+        next_build = self.build_id + 1
+        try:
+            self._apply_references()
+            render_kwargs: dict[str, Any] = {
+                "params": params,
+                "overrides": self._material_overrides,
+            }
+            if duration_ms is not None:
+                render_kwargs["duration_ms"] = duration_ms
+            render_to(self.artifacts_dir, next_build, **render_kwargs)
+            self._model = _compound_from_registry(solidifai._registry())
+            self._objects = list(solidifai._registry())
+            self._snapshot_features()
+        except Exception as exc:  # noqa: BLE001
+            self._cleanup_temps()
+            self.last_ok = False
+            return {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            }
+        self.build_id = next_build
+        self.last_ok = True
+        if not self._suppress_persist:
+            self._after_build(structural=structural)
+        return {"ok": True, "buildId": self.build_id}
+
     def execute_script(self, code: str) -> dict:
         """Execute ``code`` and render. On any failure, return an error dict
         without bumping buildId or overwriting last-good artifacts."""
-        next_build = self.build_id + 1
         started = time.perf_counter()
 
         solidifai.reset_registry()
@@ -184,21 +220,6 @@ class Session:
                 if not list(solidifai._registry()):
                     build_fn(**self._param_values)
                 params_block = self._params_block()
-
-            # Load reference fixtures into the registry before render, so they
-            # appear in the GLB/model.json and the snapshot, but never in model.py.
-            self._apply_references()
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            render_to(
-                self.artifacts_dir,
-                next_build,
-                params=params_block,
-                duration_ms=duration_ms,
-                overrides=self._material_overrides,
-            )
-            self._model = _compound_from_registry(solidifai._registry())
-            self._objects = list(solidifai._registry())
-            self._snapshot_features()
         except Exception as exc:  # noqa: BLE001 - report any script/render error
             self._cleanup_temps()
             self.last_ok = False
@@ -207,6 +228,11 @@ class Session:
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(),
             }
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        res = self._run_build(params=params_block, duration_ms=duration_ms, structural=True)
+        if not res.get("ok"):
+            return res
 
         # Success: persist the durable model (only on success, never on
         # failure) and commit new state.
@@ -222,11 +248,7 @@ class Session:
                     "traceback": traceback.format_exc(),
                 }
         self.code = code
-        self.build_id = next_build
-        self.last_ok = True
-        if not self._suppress_persist:
-            self._after_build(structural=True)
-        return {"ok": True, "buildId": self.build_id}
+        return res
 
     def get_params(self) -> dict:
         """Return the current parameter ``{schema, values}`` (the normalized,
@@ -266,24 +288,11 @@ class Session:
         merged = dict(self._param_values)
         merged.update(values or {})
 
-        next_build = self.build_id + 1
         started = time.perf_counter()
         solidifai.reset_registry()
         solidifai.set_workspace_root(self.root)
         try:
             self._build_fn(**merged)
-            self._apply_references()
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            render_to(
-                self.artifacts_dir,
-                next_build,
-                params=self._params_block(merged),
-                duration_ms=duration_ms,
-                overrides=self._material_overrides,
-            )
-            self._model = _compound_from_registry(solidifai._registry())
-            self._objects = list(solidifai._registry())
-            self._snapshot_features()
         except Exception as exc:  # noqa: BLE001
             self._cleanup_temps()
             self.last_ok = False
@@ -293,12 +302,19 @@ class Session:
                 "traceback": traceback.format_exc(),
             }
 
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        # Set _param_values to merged *before* calling _run_build: on success its
+        # _after_build persists settings.json via self._params_block(), which reads
+        # _param_values, so it must already reflect merged by then. Roll back on
+        # failure so a failed rebuild truly leaves the committed values unchanged.
+        prior_values = self._param_values
         self._param_values = merged
-        self.build_id = next_build
-        self.last_ok = True
-        if not self._suppress_persist:
-            self._after_build(structural=False)
-        return {"ok": True, "buildId": self.build_id}
+        res = self._run_build(
+            params=self._params_block(merged), duration_ms=duration_ms, structural=False
+        )
+        if not res.get("ok"):
+            self._param_values = prior_values
+        return res
 
     def set_part_material(self, part_id: str, material) -> dict:
         """Assign (or clear, when ``material`` is None) the material for one part,
@@ -673,31 +689,9 @@ class Session:
         """Re-render the current model with the next buildId."""
         if self.code is None:
             return {"ok": False, "error": "no model loaded"}
-        next_build = self.build_id + 1
-        params_block = self._params_block()
-        try:
-            render_to(
-                self.artifacts_dir,
-                next_build,
-                params=params_block,
-                overrides=self._material_overrides,
-            )
-            # render() re-renders without rebuilding, so model + features are
-            # snapshotted from the registries left by the last successful build.
-            self._model = _compound_from_registry(solidifai._registry())
-            self._objects = list(solidifai._registry())
-            self._snapshot_features()
-        except Exception as exc:  # noqa: BLE001
-            self._cleanup_temps()
-            self.last_ok = False
-            return {
-                "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-                "traceback": traceback.format_exc(),
-            }
-        self.build_id = next_build
-        self.last_ok = True
-        return {"ok": True, "buildId": self.build_id}
+        # render() re-renders without rebuilding, so model + features are
+        # snapshotted from the registries left by the last successful build.
+        return self._run_build(params=self._params_block(), duration_ms=None, structural=False)
 
     def capture_views(
         self,
