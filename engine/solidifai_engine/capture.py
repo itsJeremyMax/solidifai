@@ -79,10 +79,12 @@ def _srgb(c: float) -> float:
 
 def validate_capture_args(
     layout: str, resolution, section: dict | None, explode: float
-) -> tuple[str | None, int | None]:
+) -> tuple[str | None, int]:
     """Validate the cheap, pre-render capture_views args. Returns
     ``(error_or_none, normalized_resolution)`` — resolution is coerced from a
-    whole-number float to int when valid; left as-is (invalid) otherwise."""
+    whole-number float to int when valid. The resolution is only meaningful when
+    the error is None; on error it echoes the (invalid) input back for the
+    message and the caller returns without using it."""
     if layout not in ("separate", "grid"):
         return f"unknown layout {layout!r}; expected 'separate' or 'grid'", resolution
     if isinstance(resolution, float) and resolution.is_integer():
