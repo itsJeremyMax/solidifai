@@ -8,6 +8,8 @@ import type { ComponentProps, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { stripLeadingTitle } from "../../lib/changelog";
+
 function Heading({ children }: { children: ReactNode }) {
   return (
     <div className="mb-1.5 text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
@@ -44,7 +46,7 @@ export default function ReleaseNotes({
   return (
     <div className={`text-caption leading-normal text-ink-2 ${className}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
-        {notes}
+        {stripLeadingTitle(notes)}
       </ReactMarkdown>
     </div>
   );

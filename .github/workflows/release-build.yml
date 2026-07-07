@@ -275,12 +275,24 @@ jobs:
           set -euo pipefail
           mkdir sigs
           gh release download "$TAG" -p '*.sig' -D sigs -R "$REPO"
+          # Release notes for the in-app "What's new" come from the GitHub release
+          # body (release-please generated), fetched here so the manifest carries them.
+          gh release view "$TAG" -R "$REPO" --json body --jq .body > release-body.md
           python3 - <<'PY'
-          import datetime, json, os, pathlib
+          import datetime, json, os, pathlib, sys
+
+          sys.path.insert(0, "scripts")
+          from build_updater_notes import clean_release_notes
 
           tag = os.environ["TAG"]
           version = tag.removeprefix("v")
           url_base = f"https://github.com/{os.environ['REPO']}/releases/download/{tag}/"
+
+          # Notes = the release body, cleaned (download guide + a leading version
+          # header removed) so the app's own "What's new in vX" isn't doubled. The app
+          # renders the rest as markdown. Logic is unit-tested in test_build_updater_notes.py.
+          notes = clean_release_notes(pathlib.Path("release-body.md").read_text())
+
           # Updater payload per platform, plus tauri-action's historical alias
           # keys so the manifest shape stays byte-compatible for old clients.
           payloads = {
@@ -299,7 +311,7 @@ jobs:
               platforms[alias] = entry
           manifest = {
               "version": version,
-              "notes": "",
+              "notes": notes,
               "pub_date": datetime.datetime.now(datetime.timezone.utc)
                   .strftime("%Y-%m-%dT%H:%M:%S.") + "000Z",
               "platforms": platforms,

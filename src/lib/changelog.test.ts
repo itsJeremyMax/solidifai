@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseChangelog, sectionsSince } from "./changelog";
+import { parseChangelog, sectionsSince, stripLeadingTitle } from "./changelog";
 
 // The real release-please format: compare-URL version headers, `**scope:**` bold
 // prefixes, and trailing commit (and sometimes PR) markdown links.
@@ -31,6 +31,28 @@ describe("parseChangelog", () => {
     expect(v[0].groups["Bug Fixes"]).toEqual(["viewport: explode drift"]);
     // no leftover markdown link or bold syntax leaks into the rendered entry
     expect(v[0].groups["Features"][0]).not.toMatch(/[*[\]()]|https?:/);
+  });
+});
+
+describe("stripLeadingTitle", () => {
+  it("drops a leading version/title header so a surface title isn't doubled", () => {
+    const notes = "## [1.4.0](https://x/compare) (2026-07-07)\n\n### Features\n\n* a thing";
+    expect(stripLeadingTitle(notes)).toBe("### Features\n\n* a thing");
+  });
+
+  it("drops a leading h1 title plus the blank lines before it", () => {
+    expect(stripLeadingTitle("\n\n# solidifai 1.4.0\n\n### Features\n\n* a thing")).toBe(
+      "### Features\n\n* a thing",
+    );
+  });
+
+  it("is a no-op when the notes already start with group content", () => {
+    const notes = "### Features\n\n* a thing";
+    expect(stripLeadingTitle(notes)).toBe(notes);
+  });
+
+  it("keeps ### group subheaders (only strips h1/h2 titles)", () => {
+    expect(stripLeadingTitle("### Bug Fixes\n\n* fix")).toBe("### Bug Fixes\n\n* fix");
   });
 });
 

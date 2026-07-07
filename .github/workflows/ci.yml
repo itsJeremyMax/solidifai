@@ -66,11 +66,11 @@ jobs:
         env:
           TMPDIR: /tmp
         run: xvfb-run -a uv run pytest -q --basetemp=/tmp/pt
-      # The release-bundle pruner's unit tests (dev prune, native closure,
-      # Linux libs-dir detection) live next to the script, outside testpaths.
-      - name: Tests (prune_engine)
+      # Script unit tests (release-bundle pruner, updater-notes cleaner) live next
+      # to their scripts in scripts/, outside the engine's testpaths.
+      - name: Tests (scripts)
         working-directory: engine
-        run: uv run pytest -q ../scripts/test_prune_engine.py
+        run: uv run pytest -q ../scripts/
 
   shell:
     runs-on: ubuntu-22.04

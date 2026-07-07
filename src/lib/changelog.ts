@@ -52,6 +52,20 @@ function cleanEntry(s: string): string {
     .trim();
 }
 
+/**
+ * Drop a leading version/title heading (a top-level `#`/`##` line, plus any blank
+ * lines before it) from release notes, so a surface that prints its own "What's
+ * new in vX" title never doubles it. Group subheaders (`###`) and everything else
+ * are kept. A no-op when the notes already start with content.
+ */
+export function stripLeadingTitle(md: string): string {
+  const lines = md.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i++;
+  if (i < lines.length && /^#{1,2}\s/.test(lines[i])) i++;
+  return lines.slice(i).join("\n").trim();
+}
+
 export function parseChangelog(md: string): ChangelogVersion[] {
   const out: ChangelogVersion[] = [];
   let cur: ChangelogVersion | null = null;
