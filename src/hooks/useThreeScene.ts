@@ -22,13 +22,13 @@ import type { ModelObject } from "../lib/artifacts";
 import { engineMmToGlbWorld } from "../lib/coords";
 import { materialFromAppearance } from "./scene/materials";
 import { setupEnvironment, type EnvHandle } from "./scene/environment";
-import { buildLightRig, type LightRig } from "./scene/lighting";
-import { buildComposer, type ComposerHandle } from "./scene/postprocessing";
-import { buildGrid, type GridHandle } from "./scene/grid";
+import { buildLightRig } from "./scene/lighting";
+import { buildComposer } from "./scene/postprocessing";
+import { buildGrid } from "./scene/grid";
 import { refreshClipPlanes } from "./scene/camera";
 import { createSelectionHighlight, type SelectionHighlight } from "./scene/highlight";
 import { captureExplodeBasis, applyExplode, type ExplodeBasis } from "./scene/explode";
-import { FLOOR_LAYER, captureThumbnail as captureThumbnailImpl } from "./scene/thumbnail";
+import { captureThumbnail as captureThumbnailImpl } from "./scene/thumbnail";
 import { ACCENT, clearMeasurement, markerRadius, updateMeasureLabel } from "./scene/measure";
 import {
   objectSubtrees,
@@ -39,8 +39,19 @@ import {
 } from "./scene/sceneGraph";
 import { disposeObject, disposeMaterial } from "./scene/dispose";
 import { attachInteraction } from "./scene/interaction";
+import {
+  FLOOR_LAYER,
+  GRID_LAYER,
+  type MeasureState,
+  type PickEvent,
+  type PickState,
+  type SceneRefs,
+} from "./scene/types";
 
 export { subtreeIndexForId, subtreeIndicesForId, applyVisibility };
+// Re-exported so any consumer that imported these from the hub before the C5
+// hoist (see scene/types.ts) keeps working unchanged.
+export type { SceneRefs, MeasureState, PickEvent };
 
 /** Optional per-part selection/visibility inputs (default = none). */
 export interface SceneSelection {
@@ -70,88 +81,6 @@ const RESIZE_SETTLE_MS = 100;
  * lower for more savings if convergence proves faster.
  */
 const CONVERGENCE_FRAMES = 60;
-
-/** The work-plane grid lives here, alone, so it renders in its own pass (the
- *  grid camera sees ONLY this layer) and never enters the TRAA-jittered scene
- *  pass — temporal AA dissolves its fine minor lines. Composited back over the
- *  beauty with a model-depth occlusion test (see buildComposer). */
-const GRID_LAYER = 2;
-
-/**
- * A right-click pick event: the hit point in engine (build123d Z-up mm) space,
- * or null if the ray missed the model (or no model is loaded). Screen coords are
- * always present so callers can anchor a context menu to the cursor.
- */
-export interface PickEvent {
-  pointMm: [number, number, number] | null;
-  screenX: number;
-  screenY: number;
-}
-
-/**
- * Imperatively-driven measure state, kept entirely off React. The label is a
- * single absolutely-positioned <div> the hook owns: its world-space anchor is
- * the A–B midpoint, re-projected to screen every RAF frame (no per-frame React
- * state). Markers + line are three.js objects parented to a dedicated group so
- * they orbit with the model and dispose cleanly.
- */
-export interface MeasureState {
-  /** Container for marker spheres + the A–B line; child of the scene. */
-  group: THREE.Group;
-  /** Frosted distance pill, appended to the canvas container. */
-  label: HTMLDivElement;
-  /** Placed world-space hit points (0, 1, or 2). */
-  points: THREE.Vector3[];
-  /** Marker spheres, parallel to `points`. */
-  markers: THREE.Mesh[];
-  /** The A–B line, present only once two points exist. */
-  line: THREE.Line | null;
-  /** Whether measure mode is active (pointer handlers raycast when true). */
-  enabled: boolean;
-  /** Reusable raycaster + pointer NDC, allocated once. */
-  raycaster: THREE.Raycaster;
-  pointer: THREE.Vector2;
-  /** Pointerdown bookkeeping for click-vs-drag discrimination. */
-  downX: number;
-  downY: number;
-  /** Shared sphere geometry for markers (disposed on teardown). */
-  markerGeo: THREE.SphereGeometry;
-}
-
-/** Right-click pick callback registry, kept off React state. */
-interface PickState {
-  onPick: ((p: PickEvent) => void) | null;
-}
-
-/** Internal mutable scene handle kept off React state (refs only). */
-export interface SceneRefs {
-  renderer: WebGPURenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  /** Model-only camera (FLOOR_LAYER disabled) feeding the GTAO input pass. */
-  aoCamera: THREE.PerspectiveCamera;
-  /** Grid-only camera (GRID_LAYER) feeding the separate, un-jittered grid pass. */
-  gridCamera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
-  /** Group holding the current model; cleared + repopulated on each GLB load. */
-  modelGroup: THREE.Group;
-  /** Largest dimension of the framed model. Set by frameToObject; lets the
-   *  render loop re-bracket near/far against the live zoom without a per-frame
-   *  bounding-box traversal. */
-  frameMaxDim: number;
-  /** Contact-shadow ground disc, repositioned under each loaded model. */
-  ground: THREE.Mesh;
-  /** Click-to-measure overlay state (markers, line, label). */
-  measure: MeasureState;
-  /** Right-click pick callback registry. */
-  pick: PickState;
-  lights: LightRig;
-  composer: ComposerHandle;
-  grid: GridHandle;
-  /** Refill the on-demand render budget. Called by every scene mutation so the
-   *  gated loop wakes and renders a convergence burst, then sleeps. */
-  requestRender: () => void;
-}
 
 export interface UseThreeScene {
   /** Attach to the element that should host the <canvas>. */
@@ -497,8 +426,7 @@ export function useThreeScene(
       controls.removeEventListener("change", requestRender);
       controls.dispose();
       disposeObject(modelGroup);
-      ground.geometry.dispose();
-      (ground.material as THREE.Material).dispose();
+      disposeObject(ground);
       // Measure overlay: clear in-progress geometry, then free shared resources.
       clearMeasurement(measure);
       measure.markerGeo.dispose();

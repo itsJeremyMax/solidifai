@@ -11,7 +11,7 @@
  * straight from the measure module, matching how the hook itself calls them.
  */
 import { glbWorldToEngineMm } from "../../lib/coords";
-import type { SceneRefs } from "../useThreeScene";
+import type { SceneRefs } from "./types";
 import { clearMeasurement, handleMeasureClick } from "./measure";
 
 /** Max pointer travel (px²) between down/up that still counts as a "click". */

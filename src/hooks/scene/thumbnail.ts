@@ -1,12 +1,7 @@
 import * as THREE from "three";
-import type { SceneRefs } from "../useThreeScene";
+import { FLOOR_LAYER, type SceneRefs } from "./types";
 import { placeIsoCamera } from "./isoFit";
 import { isWebGLReadback, packReadbackRows } from "./readback";
-
-/** The contact-shadow ground lives here so the AO input pass, whose camera
- *  disables this layer, never samples it as an occluder. The main camera enables
- *  this layer so the ground still renders into the beauty pass. */
-export const FLOOR_LAYER = 1;
 
 /**
  * Render a normalized iso snapshot of the current model to a PNG blob, framed

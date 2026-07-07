@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { ModelObject } from "../../lib/artifacts";
-import type { SceneRefs } from "../useThreeScene";
+import type { SceneRefs } from "./types";
 import { refreshClipPlanes } from "./camera";
 
 /**
