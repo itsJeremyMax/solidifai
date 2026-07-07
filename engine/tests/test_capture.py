@@ -89,3 +89,36 @@ def test_capture_unknown_focus_lists_valid(tmp_path):
     s = _session(tmp_path, CUBE)
     res = s.capture_views(focus="nonexistent_feature")
     assert not res["ok"] and "unknown focus feature" in res["error"]
+
+
+from solidifai_engine import capture
+from solidifai_engine.capture import CaptureError
+
+
+def test_validate_capture_args_rejects_bad_layout():
+    assert "unknown layout" in capture.validate_capture_args("tiled", 512, None, 0)[0]
+
+
+def test_validate_capture_args_normalizes_float_resolution():
+    err, res = capture.validate_capture_args("separate", 512.0, None, 0)
+    assert err is None and res == 512 and isinstance(res, int)
+
+
+def test_validate_capture_args_section_with_explode_conflicts():
+    err, _ = capture.validate_capture_args("separate", 512, {"axis": "x", "offset_mm": 0}, 30)
+    assert "section cannot be combined with explode" in err
+
+
+def test_assemble_plain_cube_mesh_has_triangles(tmp_path):
+    s = _session(tmp_path, CUBE)
+    mesh = capture.assemble_capture_mesh(
+        s._model, s._objects, explode=0.0, section=None, color=True
+    )
+    assert len(mesh.vertices) > 0 and len(mesh.tris) > 0
+    assert mesh.groups is not None and len(mesh.groups) == 1  # one part, one color group
+
+
+def test_resolve_highlight_unknown_feature_raises(tmp_path):
+    s = _session(tmp_path, CUBE)
+    with pytest.raises(CaptureError, match="unknown feature"):
+        capture.resolve_highlight(["nope"], s._features)
