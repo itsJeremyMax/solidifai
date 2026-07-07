@@ -25,11 +25,10 @@ import { setupEnvironment, type EnvHandle } from "./scene/environment";
 import { buildLightRig, type LightRig } from "./scene/lighting";
 import { buildComposer, type ComposerHandle } from "./scene/postprocessing";
 import { buildGrid, type GridHandle } from "./scene/grid";
-import { placeIsoCamera } from "./scene/isoFit";
 import { refreshClipPlanes } from "./scene/camera";
 import { createSelectionHighlight, type SelectionHighlight } from "./scene/highlight";
-import { isWebGLReadback, packReadbackRows } from "./scene/readback";
 import { captureExplodeBasis, applyExplode, type ExplodeBasis } from "./scene/explode";
+import { FLOOR_LAYER, captureThumbnail as captureThumbnailImpl } from "./scene/thumbnail";
 import {
   ACCENT,
   clearMeasurement,
@@ -80,10 +79,6 @@ const RESIZE_SETTLE_MS = 100;
  */
 const CONVERGENCE_FRAMES = 60;
 
-/** The contact-shadow ground lives here so the AO input pass, whose camera
- *  disables this layer, never samples it as an occluder. The main camera enables
- *  this layer so the ground still renders into the beauty pass. */
-const FLOOR_LAYER = 1;
 /** The work-plane grid lives here, alone, so it renders in its own pass (the
  *  grid camera sees ONLY this layer) and never enters the TRAA-jittered scene
  *  pass — temporal AA dissolves its fine minor lines. Composited back over the
@@ -682,50 +677,8 @@ export function useThreeScene(
   /* ── thumbnail capture (off-screen, leaves the live view untouched) ──── */
   const captureThumbnail = useCallback(async (w = 768, h = 576): Promise<Blob | null> => {
     const handle = refs.current;
-    if (!handle || handle.modelGroup.children.length === 0) return null;
-    const box = new THREE.Box3().setFromObject(handle.modelGroup);
-    if (box.isEmpty()) return null;
-
-    // Throwaway camera: never touches handle.camera/controls. Enable FLOOR_LAYER
-    // for the contact-shadow ground; GRID_LAYER stays off so no work-plane grid.
-    const cam = new THREE.PerspectiveCamera(handle.camera.fov, w / h, 0.1, 100000);
-    cam.layers.enable(FLOOR_LAYER);
-    placeIsoCamera(cam, box);
-
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const pw = Math.round(w * dpr);
-    const ph = Math.round(h * dpr);
-    // Plain color+depth target (no MSAA): readback reads texture[0]; multisampled
-    // attachments aren't readable, so we keep samples at the default 0.
-    const rt = new THREE.RenderTarget(pw, ph, { depthBuffer: true });
-    const prev = handle.renderer.getRenderTarget();
-    try {
-      handle.renderer.setRenderTarget(rt);
-      // Plain render bypasses the node composer (TRAA/GTAO) — a single clean
-      // beauty frame is plenty for a static iso card, and the composer's
-      // temporal targets are sized to the live canvas, not this thumbnail.
-      // Synchronous render() (not the r181-deprecated renderAsync): the renderer
-      // is already init'd, and the readback's copyTextureToBuffer queues after
-      // this render on the same GPU queue, so ordering is preserved.
-      handle.renderer.render(handle.scene, cam);
-      // three@0.184: readRenderTargetPixelsAsync RETURNS the pixel buffer (it
-      // does not fill a passed-in array); for an RGBA8 target that's a Uint8Array.
-      const buf = (await handle.renderer.readRenderTargetPixelsAsync(
-        rt,
-        0,
-        0,
-        pw,
-        ph,
-      )) as Uint8Array;
-      return await pngFromPixels(buf, pw, ph, isWebGLReadback(handle.renderer));
-    } catch (e) {
-      console.warn("thumbnail capture failed", e);
-      return null;
-    } finally {
-      handle.renderer.setRenderTarget(prev);
-      rt.dispose();
-      handle.requestRender(); // repaint the live view (which we never moved)
-    }
+    if (!handle) return null;
+    return await captureThumbnailImpl(handle, w, h);
   }, []);
 
   /* ── GLB load on new buildId ────────────────────────────────────────── */
@@ -926,35 +879,3 @@ const MEASURE_LABEL_CLASS =
   "bg-[rgba(20,23,30,.72)] px-2 py-0.75 font-mono text-caption " +
   "font-medium leading-none text-white shadow-[0_2px_10px_rgba(0,0,0,.35)] " +
   "backdrop-blur-md";
-
-/**
- * Encode a raw RGBA byte buffer (one `w`×`h` frame, 4 bytes/pixel) to a PNG blob.
- *
- * `flipY` must be true on the WebGL fallback backend, whose readback rows come
- * back bottom-up; WebGPU readback is already top-down (see scene/readback.ts).
- * Resolves `null` if a canvas isn't available or PNG encoding fails, so the
- * capture path always degrades to a placeholder.
- */
-function pngFromPixels(
-  buf: Uint8Array,
-  w: number,
-  h: number,
-  flipY: boolean,
-): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return resolve(null);
-
-      const out = ctx.createImageData(w, h);
-      out.data.set(packReadbackRows(buf, w, h, flipY));
-      ctx.putImageData(out, 0, 0);
-      canvas.toBlob((blob) => resolve(blob), "image/png");
-    } catch {
-      resolve(null);
-    }
-  });
-}
