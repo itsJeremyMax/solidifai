@@ -14,6 +14,7 @@ import {
   buildDiagnostics,
   copyText,
   CREATOR,
+  diagnosticRows,
   LICENSE,
   loadAppInfo,
   openLicense,
@@ -83,17 +84,9 @@ export default function About() {
 
   const version = info?.version ?? "…";
 
-  // App-scoped: no workspace row (workspace location lives in Workspace settings).
-  // Matches buildDiagnostics exactly so the table and the copied block agree.
-  const diagnostics: [string, string][] = info
-    ? [
-        [info.name, info.version],
-        ["Tauri", info.tauriVersion],
-        ["OS", info.os],
-        ["WebView", info.webview],
-        ["Engine", info.engine],
-      ]
-    : [];
+  // One row source for the table and the copied block (appInfo.diagnosticRows),
+  // so what's shown and what's copied can't drift. App-scoped: no workspace row.
+  const diagnostics = info ? diagnosticRows(info) : [];
 
   // Real per-release notes for the running version; hidden until the version
   // resolves and only when the section actually has entries.

@@ -12,7 +12,6 @@ import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { getEngineStatus, type EngineStatusEvent } from "./ipc/status";
-import { getActiveWorkspace, tildePath } from "./workspaces";
 
 export const LICENSE = "Apache License 2.0";
 export const LICENSE_URL = "https://www.apache.org/licenses/LICENSE-2.0";
@@ -38,8 +37,6 @@ export interface AppInfo {
   engine: string;
   /** Absolute interpreter path the engine resolved to, or null. */
   interpreter: string | null;
-  /** Active workspace path, tilde-collapsed, or null when none is open. */
-  workspacePath: string | null;
 }
 
 /** Host OS family from the user agent. WebKit freezes the version, so we omit it. */
@@ -79,12 +76,11 @@ function engineLabel(s: EngineStatusEvent | null): string {
 
 /** Gather every About fact in parallel. Never rejects. */
 export async function loadAppInfo(): Promise<AppInfo> {
-  const [name, version, tauriVersion, engine, ws] = await Promise.all([
+  const [name, version, tauriVersion, engine] = await Promise.all([
     getName().catch(() => "solidifai"),
     getVersion().catch(() => "—"),
     getTauriVersion().catch(() => "—"),
     getEngineStatus(),
-    getActiveWorkspace(),
   ]);
   return {
     name,
@@ -94,21 +90,31 @@ export async function loadAppInfo(): Promise<AppInfo> {
     webview: webViewLabel(),
     engine: engineLabel(engine),
     interpreter: engine?.interpreter ?? null,
-    workspacePath: ws ? tildePath(ws.path) : null,
   };
 }
 
-/** A plain-text diagnostics block, ready to paste into a bug report. */
-export function buildDiagnostics(info: AppInfo): string {
-  const rows: [string, string][] = [
+/**
+ * The app-scoped diagnostics rows, in display order. The single source for both
+ * the Settings → About table and the copied/bug-report block, so what's shown
+ * and what's copied can't drift apart. No workspace path: it's workspace-scoped
+ * (Workspace settings owns it), and a home-dir path doesn't belong in a public
+ * issue.
+ */
+export function diagnosticRows(info: AppInfo): [string, string][] {
+  return [
     [info.name, info.version],
     ["Tauri", info.tauriVersion],
     ["OS", info.os],
     ["WebView", info.webview],
     ["Engine", info.engine],
   ];
-  if (info.workspacePath) rows.push(["Workspace", info.workspacePath]);
-  return rows.map(([k, v]) => `${k.padEnd(12)}${v}`).join("\n");
+}
+
+/** A plain-text diagnostics block, ready to paste into a bug report. */
+export function buildDiagnostics(info: AppInfo): string {
+  return diagnosticRows(info)
+    .map(([k, v]) => `${k.padEnd(12)}${v}`)
+    .join("\n");
 }
 
 /** Copy text to the clipboard. Returns false (no throw) when blocked. */
