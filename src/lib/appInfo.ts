@@ -18,6 +18,10 @@ export const LICENSE = "Apache License 2.0";
 export const LICENSE_URL = "https://www.apache.org/licenses/LICENSE-2.0";
 export const CREATOR = "Jeremy Max";
 
+/** The project's GitHub home and its issue tracker (the base for bug reports). */
+export const REPO_URL = "https://github.com/itsJeremyMax/solidifai";
+export const ISSUES_URL = `${REPO_URL}/issues`;
+
 /** A snapshot of the build + runtime facts surfaced in About. */
 export interface AppInfo {
   /** Product name (from the Tauri config). */

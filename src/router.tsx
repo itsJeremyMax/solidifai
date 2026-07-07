@@ -14,6 +14,7 @@ import ReferencesView from "./components/references/ReferencesView";
 import ReferenceEditor from "./components/references/ReferenceEditor";
 import DocsLayout from "./components/docs/DocsLayout";
 import DocPage from "./components/docs/DocPage";
+import HelpView from "./components/help/HelpView";
 import { SETTINGS_SECTIONS, SETTINGS_SECTION_IDS } from "./components/settings/sections";
 import { decodeWsPath, editorPath } from "./lib/routes";
 import { DOC_SLUGS } from "./lib/docs";
@@ -79,7 +80,6 @@ function LauncherRoute() {
       onOpenMaterials={() => navigate("/materials")}
       onOpenFactory={() => navigate("/factory")}
       onOpenReferences={() => navigate("/references")}
-      onOpenDocs={() => navigate("/docs")}
     />
   );
 }
@@ -122,6 +122,7 @@ export const router = createHashRouter([
         children: referencesChildren(),
       },
       { path: "/docs", element: <DocsLayout />, children: docsChildren() },
+      { path: "/help", element: <HelpView /> },
       {
         path: "/w/:wsPath",
         children: [

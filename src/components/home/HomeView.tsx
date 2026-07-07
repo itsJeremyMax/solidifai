@@ -14,14 +14,7 @@
  * the presentational pieces.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  AlertTriangle,
-  BookMarked,
-  BookOpen,
-  Factory,
-  Settings as SettingsIcon,
-  SwatchBook,
-} from "lucide-react";
+import { AlertTriangle, BookMarked, Factory, SwatchBook } from "lucide-react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import {
@@ -41,6 +34,7 @@ import { heroWorkspace, selectWorkspaces, type ThumbMeta } from "../../lib/home"
 import { useAppConfig } from "../../state/appConfig";
 import { useHeaderSlot } from "../../state/headerSlot";
 import { useWorkspaceSessions } from "../../state/workspaceSessions";
+import UtilityCluster from "../UtilityCluster";
 import { ContinueHero } from "./ContinueHero";
 import { LibraryToolbar } from "./LibraryToolbar";
 import { WorkspaceGallery } from "./WorkspaceGallery";
@@ -65,8 +59,29 @@ interface HomeViewProps {
   onOpenFactory?: () => void;
   /** Open the References library page. */
   onOpenReferences?: () => void;
-  /** Open the Docs page. */
-  onOpenDocs?: () => void;
+}
+
+/** One labelled cell of the libraries segmented group. The group container draws
+ *  the border + dividers; each cell is borderless and clips to it. */
+function LibSeg({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex h-full items-center gap-1.75 pl-2.5 pr-3 text-body font-medium text-ink-2 transition-colors duration-150 hover:bg-surface-2 hover:text-ink"
+    >
+      {icon}
+      {label}
+    </button>
+  );
 }
 
 /** Which management dialog is open, and for which workspace. */
@@ -81,7 +96,6 @@ export default function HomeView({
   onOpenMaterials,
   onOpenFactory,
   onOpenReferences,
-  onOpenDocs,
 }: HomeViewProps) {
   const { config, setFlag } = useAppConfig();
   // Tear down a deleted workspace's live session (tab + per-path artifact/editor
@@ -341,55 +355,35 @@ export default function HomeView({
   useHeaderSlot({
     actions: (
       <>
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          title="Settings"
-          aria-label="Settings"
-          className="grid h-8 w-8 place-items-center rounded-lg border border-line-2 bg-surface text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
-        >
-          <SettingsIcon size={16} strokeWidth={ICON_STROKE} />
-        </button>
-        {onOpenMaterials && (
-          <button
-            type="button"
-            onClick={onOpenMaterials}
-            className="inline-flex h-8 items-center gap-1.75 rounded-lg border border-line-2 bg-surface pl-2.5 pr-3 text-body font-medium text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
-          >
-            <SwatchBook size={16} strokeWidth={ICON_STROKE} />
-            Materials
-          </button>
+        {/* Libraries — one segmented control (borders + dividers on the container). */}
+        {(onOpenMaterials || onOpenFactory || onOpenReferences) && (
+          <div className="flex h-8 shrink-0 items-stretch divide-x divide-line-2 overflow-hidden rounded-lg border border-line-2 bg-surface">
+            {onOpenMaterials && (
+              <LibSeg
+                icon={<SwatchBook size={16} strokeWidth={ICON_STROKE} />}
+                label="Materials"
+                onClick={onOpenMaterials}
+              />
+            )}
+            {onOpenFactory && (
+              <LibSeg
+                icon={<Factory size={16} strokeWidth={ICON_STROKE} />}
+                label="Factory"
+                onClick={onOpenFactory}
+              />
+            )}
+            {onOpenReferences && (
+              <LibSeg
+                icon={<BookMarked size={16} strokeWidth={ICON_STROKE} />}
+                label="References"
+                onClick={onOpenReferences}
+              />
+            )}
+          </div>
         )}
-        {onOpenFactory && (
-          <button
-            type="button"
-            onClick={onOpenFactory}
-            className="inline-flex h-8 items-center gap-1.75 rounded-lg border border-line-2 bg-surface pl-2.5 pr-3 text-body font-medium text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
-          >
-            <Factory size={16} strokeWidth={ICON_STROKE} />
-            Factory
-          </button>
-        )}
-        {onOpenReferences && (
-          <button
-            type="button"
-            onClick={onOpenReferences}
-            className="inline-flex h-8 items-center gap-1.75 rounded-lg border border-line-2 bg-surface pl-2.5 pr-3 text-body font-medium text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
-          >
-            <BookMarked size={16} strokeWidth={ICON_STROKE} />
-            References
-          </button>
-        )}
-        {onOpenDocs && (
-          <button
-            type="button"
-            onClick={onOpenDocs}
-            className="inline-flex h-8 items-center gap-1.75 rounded-lg border border-line-2 bg-surface pl-2.5 pr-3 text-body font-medium text-ink-2 transition-colors duration-150 hover:border-line-3 hover:text-ink"
-          >
-            <BookOpen size={16} strokeWidth={ICON_STROKE} />
-            Docs
-          </button>
-        )}
+
+        {/* App utilities — Settings + Help as one segmented pair. */}
+        <UtilityCluster onOpenSettings={onOpenSettings} />
       </>
     ),
   });

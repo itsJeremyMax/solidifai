@@ -53,6 +53,7 @@ export default function AppShell({ wsPath, active }: AppShellProps) {
   const onOpenSettings = () => navigate(`${editorPath(wsPath)}/settings`);
   const onOpenMaterials = () => navigate(`${editorPath(wsPath)}/materials`);
   const onOpenFactory = () => navigate(`${editorPath(wsPath)}/factory`);
+  const onOpenReferences = () => navigate(`${editorPath(wsPath)}/references`);
 
   const [activeTab] = useState<InteractionTab>("terminal");
 
@@ -63,6 +64,7 @@ export default function AppShell({ wsPath, active }: AppShellProps) {
           onOpenSettings={onOpenSettings}
           onOpenMaterials={onOpenMaterials}
           onOpenFactory={onOpenFactory}
+          onOpenReferences={onOpenReferences}
         />
       )}
       {active && <WorkspaceToolbar workspaceName={name} />}

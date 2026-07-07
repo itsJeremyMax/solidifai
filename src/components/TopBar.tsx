@@ -1,6 +1,7 @@
-import { Factory, Settings as SettingsIcon, SwatchBook } from "lucide-react";
+import { BookMarked, Factory, SwatchBook } from "lucide-react";
 
 import EngineStatusPill from "./EngineStatusPill";
+import UtilityCluster from "./UtilityCluster";
 import { useHeaderSlot } from "../state/headerSlot";
 
 /** Shared lucide stroke weight to match the design language. */
@@ -34,12 +35,14 @@ function SegButton({
 }
 
 interface TopBarProps {
-  /** Open the global settings page. */
+  /** Open the settings page (workspace scope). */
   onOpenSettings: () => void;
   /** Open the materials library (workspace scope). */
   onOpenMaterials?: () => void;
   /** Open the Factory page (app-level connections). */
   onOpenFactory?: () => void;
+  /** Open the References library (workspace scope). */
+  onOpenReferences?: () => void;
 }
 
 /**
@@ -51,7 +54,12 @@ interface TopBarProps {
  * focused engine's version string and the GLOBAL engine-update progress (the
  * `updating` state), which the per-tab switcher dots do not cover.
  */
-export default function TopBar({ onOpenSettings, onOpenMaterials, onOpenFactory }: TopBarProps) {
+export default function TopBar({
+  onOpenSettings,
+  onOpenMaterials,
+  onOpenFactory,
+  onOpenReferences,
+}: TopBarProps) {
   useHeaderSlot({
     actions: (
       <>
@@ -60,29 +68,36 @@ export default function TopBar({ onOpenSettings, onOpenMaterials, onOpenFactory 
         {/* Hairline that separates the status zone from the controls. */}
         <span className="h-5 w-px shrink-0 bg-line-2" />
 
-        {/* App destinations, grouped as one segmented icon control (tooltips name
-            each). Conditional members collapse without leaving stray dividers. */}
-        <div className="flex h-8 shrink-0 items-stretch divide-x divide-line-2 overflow-hidden rounded-lg border border-line-2 bg-surface">
-          <SegButton
-            title="Settings"
-            icon={<SettingsIcon size={16} strokeWidth={ICON_STROKE} />}
-            onClick={onOpenSettings}
-          />
-          {onOpenMaterials && (
-            <SegButton
-              title="Materials"
-              icon={<SwatchBook size={16} strokeWidth={ICON_STROKE} />}
-              onClick={onOpenMaterials}
-            />
-          )}
-          {onOpenFactory && (
-            <SegButton
-              title="Factory"
-              icon={<Factory size={16} strokeWidth={ICON_STROKE} />}
-              onClick={onOpenFactory}
-            />
-          )}
-        </div>
+        {/* Libraries, grouped as one segmented icon control (tooltips name each).
+            Conditional members collapse without leaving stray dividers. */}
+        {(onOpenMaterials || onOpenFactory || onOpenReferences) && (
+          <div className="flex h-8 shrink-0 items-stretch divide-x divide-line-2 overflow-hidden rounded-lg border border-line-2 bg-surface">
+            {onOpenMaterials && (
+              <SegButton
+                title="Materials"
+                icon={<SwatchBook size={16} strokeWidth={ICON_STROKE} />}
+                onClick={onOpenMaterials}
+              />
+            )}
+            {onOpenFactory && (
+              <SegButton
+                title="Factory"
+                icon={<Factory size={16} strokeWidth={ICON_STROKE} />}
+                onClick={onOpenFactory}
+              />
+            )}
+            {onOpenReferences && (
+              <SegButton
+                title="References"
+                icon={<BookMarked size={16} strokeWidth={ICON_STROKE} />}
+                onClick={onOpenReferences}
+              />
+            )}
+          </div>
+        )}
+
+        {/* App utilities — Settings + Help as one segmented pair. */}
+        <UtilityCluster onOpenSettings={onOpenSettings} />
       </>
     ),
   });
