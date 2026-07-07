@@ -42,7 +42,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 
 import { useAppConfig } from "./appConfig";
-import { checkForUpdate, downloadAndInstall, relaunchForUpdate } from "../lib/ipc";
+import { checkForUpdate, downloadAndInstall, relaunchForUpdate } from "../lib/ipc/config";
 import { logError } from "../lib/logger";
 import {
   nextActionFor,

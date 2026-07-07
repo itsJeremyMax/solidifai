@@ -19,7 +19,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { onModelUpdated, readModelGlb, readModelJson } from "../lib/ipc";
+import { onModelUpdated } from "../lib/ipc/status";
+import { readModelGlb, readModelJson } from "../lib/ipc/workspace";
 import { parseModelInfo, type ModelInfo } from "../lib/artifacts";
 
 /** Module-level artifact cache keyed by wsPath — survives EditorPanes unmount/remount

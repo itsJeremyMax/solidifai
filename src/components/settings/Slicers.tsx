@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import { FolderOpen, Printer, RotateCcw } from "lucide-react";
 
-import { getSlicerConfig, pickSlicerBinary, setSlicerOverride } from "../../lib/ipc";
+import { getSlicerConfig, pickSlicerBinary, setSlicerOverride } from "../../lib/ipc/fabrication";
 import type { SlicerEntry } from "../../lib/fabrication";
 
 const ICON_STROKE = 1.7;

@@ -19,7 +19,8 @@
  */
 import { useEffect, useState } from "react";
 
-import { engineGoto, engineHistory, onModelUpdated, type HistoryEntry } from "../lib/ipc";
+import { engineGoto, engineHistory, type HistoryEntry } from "../lib/ipc/history";
+import { onModelUpdated } from "../lib/ipc/status";
 import { relativeTime } from "../lib/workspaces";
 
 export default function History() {

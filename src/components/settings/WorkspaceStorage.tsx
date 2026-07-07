@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import { Box, FolderOpen } from "lucide-react";
 
-import { getExportDir, revealWorkspaceDir } from "../../lib/ipc";
+import { getExportDir, revealWorkspaceDir } from "../../lib/ipc/workspace";
 import { getActiveWorkspace, relativeTime, tildePath, type Workspace } from "../../lib/workspaces";
 
 const ICON_STROKE = 1.7;

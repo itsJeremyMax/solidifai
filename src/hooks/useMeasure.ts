@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { engineMeasure } from "../lib/ipc";
+import { engineMeasure } from "../lib/ipc/engine";
 import { parseMeasureReport, type MeasureReport } from "../lib/validation";
 
 export interface MeasureState {

@@ -11,7 +11,7 @@
 import { getName, getTauriVersion, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-import { getEngineStatus, type EngineStatusEvent } from "./ipc";
+import { getEngineStatus, type EngineStatusEvent } from "./ipc/status";
 import { getActiveWorkspace, tildePath } from "./workspaces";
 
 export const LICENSE = "Apache License 2.0";

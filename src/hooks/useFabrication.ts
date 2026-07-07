@@ -16,7 +16,7 @@ import {
   getDestinations,
   getSlicerProfiles,
   setDestinations as writeDestinations,
-} from "../lib/ipc";
+} from "../lib/ipc/fabrication";
 import {
   parseEstimate,
   parseInstallInfo,

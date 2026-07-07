@@ -22,7 +22,7 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 
-import { ptyResize, ptySpawn, ptyWrite } from "../lib/ipc";
+import { ptyResize, ptySpawn, ptyWrite } from "../lib/ipc/pty";
 
 /** xterm theme tuned to the solidifai dark `term` surface + cobalt accent. */
 const TERM_THEME = {

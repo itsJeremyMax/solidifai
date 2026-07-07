@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { engineImportReference, pickCadFile } from "../lib/ipc";
+import { engineImportReference, pickCadFile } from "../lib/ipc/engine";
 
 /** A transient import result note, shown briefly inline. */
 export interface ImportNote {

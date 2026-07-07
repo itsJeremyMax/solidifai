@@ -6,7 +6,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { engineAnalyzeDfm } from "../lib/ipc";
+import { engineAnalyzeDfm } from "../lib/ipc/engine";
 import { parseDfmReport, type DfmReport } from "../lib/dfm";
 
 export interface DfmState {

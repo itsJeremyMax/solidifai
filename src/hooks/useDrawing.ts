@@ -7,7 +7,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 
-import { engineCreateDrawing, getExportDir } from "../lib/ipc";
+import { engineCreateDrawing } from "../lib/ipc/engine";
+import { getExportDir } from "../lib/ipc/workspace";
 import { tildePath } from "../lib/workspaces";
 
 export interface DrawingNote {

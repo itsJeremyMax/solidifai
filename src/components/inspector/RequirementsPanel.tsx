@@ -9,7 +9,7 @@ import { ArrowRight, ChevronDown, Plus, RefreshCw, X } from "lucide-react";
 import Select from "../ui/Select";
 import { useRequirements } from "../../hooks/useRequirements";
 import { useConverge } from "../../hooks/useConverge";
-import { engineSetParams } from "../../lib/ipc";
+import { engineSetParams } from "../../lib/ipc/engine";
 import {
   OPS,
   PRESETS,

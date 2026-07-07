@@ -38,7 +38,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 
-import type { EngineFeature } from "../lib/ipc";
+import type { EngineFeature } from "../lib/ipc/engine";
 import { useDismiss } from "../hooks/useDismiss";
 
 /** Driving-parameter schema for the inline ± stepper. */

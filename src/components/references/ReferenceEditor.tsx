@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { BookMarked, Plus, X } from "lucide-react";
 import { useNavigate, useOutletContext, useParams } from "react-router-dom";
 
-import type { ReferenceEntry } from "../../lib/ipc";
+import type { ReferenceEntry } from "../../lib/ipc/references";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useGoBack } from "../../hooks/useGoBack";
 import { ACCENT_CTA } from "../../lib/styles";

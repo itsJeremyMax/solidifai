@@ -31,8 +31,8 @@ import { useImport } from "../hooks/useImport";
 import { useFileDrop } from "../hooks/useFileDrop";
 import { useAppConfig } from "../state/appConfig";
 import { formatDims } from "../lib/format";
-import type { EngineFeature } from "../lib/ipc";
-import { engineFeatureAt, engineGetParams, engineSetFeature } from "../lib/ipc";
+import type { EngineFeature } from "../lib/ipc/engine";
+import { engineFeatureAt, engineGetParams, engineSetFeature } from "../lib/ipc/engine";
 import { ViewportContextMenu, type ParamRange } from "./ViewportContextMenu";
 
 /** The four viewport tools. Orbit is the default active interaction mode. */

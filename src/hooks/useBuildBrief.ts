@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getBuildBrief, onBuildBriefUpdated } from "../lib/ipc";
+import { getBuildBrief, onBuildBriefUpdated } from "../lib/ipc/workspace";
 
 export interface BuildBriefPart {
   name: string;

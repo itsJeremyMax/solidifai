@@ -7,7 +7,7 @@
  */
 import { useCallback, useState } from "react";
 
-import { engineConvergeToSpec } from "../lib/ipc";
+import { engineConvergeToSpec } from "../lib/ipc/engine";
 import { parseConvergeResult, type ConvergeResult } from "../lib/requirements";
 
 export interface ConvergeState {
