@@ -171,23 +171,23 @@ pub fn ensure(
     // self-heal by retrying once with the self-contained full archive: the delta
     // base may be corrupted (e.g. runtime-mutated stdlib bytecode that no longer
     // matches the signed manifest), and the full archive does not depend on it.
-    let result = download_and_install(transport, cache, &manifest, &dl, current_dir, on_progress);
-    if result.is_err() && dl.use_base {
-        tracing::warn!(
-            "incremental engine update failed, retrying with the full archive: {:#}",
-            result.as_ref().unwrap_err()
-        );
-        let dl_full = full_fallback(&index, pin, platform)?;
-        return download_and_install(
-            transport,
-            cache,
-            &manifest,
-            &dl_full,
-            current_dir,
-            on_progress,
-        );
+    match download_and_install(transport, cache, &manifest, &dl, current_dir, on_progress) {
+        Err(e) if dl.use_base => {
+            tracing::warn!(
+                "incremental engine update failed, retrying with the full archive: {e:#}"
+            );
+            let dl_full = full_fallback(&index, pin, platform)?;
+            download_and_install(
+                transport,
+                cache,
+                &manifest,
+                &dl_full,
+                current_dir,
+                on_progress,
+            )
+        }
+        other => other,
     }
-    result
 }
 
 /// Download `dl`'s archive to disk, verify its sha256, assemble the tree (sourcing
