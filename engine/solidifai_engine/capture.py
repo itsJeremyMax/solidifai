@@ -15,6 +15,7 @@ from __future__ import annotations
 import concurrent.futures
 from typing import NamedTuple
 
+import solidifai
 from solidifai_engine import features as feature_geom
 from solidifai_engine import materials as _materials
 from solidifai_engine import section as section_mod
@@ -123,8 +124,6 @@ def assemble_capture_mesh(
     # Compound — that would reparent a shared original out of the caller's
     # model and corrupt it. Instead we merge per-part meshes. Nothing here
     # mutates model / objects, so the saved + exported model stays assembled.
-    import solidifai  # local import: avoid a hard dependency at module load
-
     spread = None
     if explode and explode > 0 and len(objects) > 1:
         spread = solidifai.exploded([o.shape for o in objects], explode)
