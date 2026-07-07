@@ -2,9 +2,32 @@
 
 The VTK native subset is validated end-to-end by the build smoke test, not here.
 """
+import struct
+import sys
 from pathlib import Path
 
 import prune_engine
+
+# PEP 552 .pyc header: 4-byte magic, then a 4-byte little-endian bit field.
+#   bit 0 (0x1) set  -> hash-based invalidation (vs timestamp-based when clear)
+#   bit 1 (0x2) set  -> "check_source" (Python re-hashes the source and may
+#                       regenerate the .pyc); clear -> "unchecked", never checked
+# A shipped, integrity-verified engine tree must contain ONLY unchecked-hash
+# .pyc (flags == 0x1): those are the only ones the running interpreter never
+# rewrites, so their bytes stay identical to the signed manifest across
+# incremental updates. A timestamp .pyc (flags == 0x0) gets regenerated when the
+# source mtime drifts (e.g. a base file copied during an incremental assemble),
+# which is exactly the "hash mismatch for Lib/__pycache__/*.pyc" install failure.
+PYC_HASH_BASED = 0x1
+PYC_CHECK_SOURCE = 0x2
+
+
+def _pyc_flags(pyc: Path) -> int:
+    return struct.unpack("<I", pyc.read_bytes()[4:8])[0]
+
+
+def _all_pyc(root: Path) -> list[Path]:
+    return list(root.rglob("*.pyc"))
 
 
 def _touch(p: Path) -> None:
@@ -77,6 +100,56 @@ def test_strip_caches_drops_pycache_and_package_tests(tmp_path):
     assert not (sp / "pkg" / "__pycache__").exists()
     assert not (sp / "pkg" / "tests").exists()
     assert (sp / "tests").exists()  # top-level tests dir untouched
+
+
+def test_recompile_bytecode_ships_only_unchecked_hash(tmp_path):
+    # Regression: stdlib .pyc shipped as timestamp-based bytecode, which the
+    # running engine rewrites when a source mtime drifts, breaking the signed
+    # manifest on the next incremental update ("hash mismatch for
+    # Lib/__pycache__/tarfile.cpython-312.pyc"). After recompile, EVERY shipped
+    # .pyc must be unchecked-hash so the interpreter never regenerates it.
+    root = tmp_path / "Lib"
+    _touch(root / "amod.py")
+    _touch(root / "pkg" / "__init__.py")
+    _touch(root / "pkg" / "sub.py")
+    # a pre-existing timestamp-mode .pyc (what python-build-standalone ships) that
+    # the recompile must replace, not leave behind
+    stale = root / "__pycache__" / "amod.cpython-stale.pyc"
+    _touch(stale)
+
+    prune_engine.recompile_bytecode(root, Path(sys.executable))
+
+    pyc = _all_pyc(root)
+    assert pyc, "recompile must produce .pyc for the tree"
+    assert not stale.exists(), "stale timestamp .pyc must be cleared, not kept"
+    for p in pyc:
+        flags = _pyc_flags(p)
+        assert flags & prune_engine.PYC_HASH_BASED, f"{p} is not hash-based (flags={flags:#x})"
+        assert not (flags & prune_engine.PYC_CHECK_SOURCE), (
+            f"{p} is checked-hash; it must be unchecked so the runtime never "
+            f"regenerates it (flags={flags:#x})"
+        )
+
+
+def test_assert_stable_bytecode_rejects_timestamp_pyc(tmp_path):
+    # The build-time fail-closed guard: if ANYTHING leaves a timestamp .pyc in the
+    # tree (a dependency that shipped one, a compileall miss), the build must fail
+    # loudly rather than publish a drift-prone, signed-but-unstable engine.
+    root = tmp_path / "Lib"
+    _touch(root / "mod.py")
+    prune_engine.recompile_bytecode(root, Path(sys.executable))
+    prune_engine.assert_stable_bytecode(root)  # clean tree: no raise
+
+    # Inject a timestamp-mode .pyc (flags = 0x0) and expect a hard failure.
+    bad = root / "__pycache__" / "injected.cpython-tmp.pyc"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    good = _all_pyc(root)[0].read_bytes()
+    bad.write_bytes(good[:4] + struct.pack("<I", 0) + good[8:])
+    try:
+        prune_engine.assert_stable_bytecode(root)
+        raise AssertionError("expected assert_stable_bytecode to reject a timestamp .pyc")
+    except RuntimeError as e:
+        assert "injected" in str(e) and "timestamp" in str(e).lower()
 
 
 def test_native_closure_is_transitive():
