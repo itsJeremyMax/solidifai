@@ -261,6 +261,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Needed for scripts/build_updater_notes.py (imported by the manifest step).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
       # SINGLE WRITER of latest.json. The build legs upload payloads + .sig but
       # no manifest (tauri-action's per-leg merge of the shared asset raced when
       # legs finished together). Composing it here, after the entire matrix,
