@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/itsJeremyMax/solidifai/compare/v0.2.0...v0.3.0) (2026-07-07)
+
+
+### Features
+
+* **updater:** context-aware update UX, periodic checks, and reliability fixes ([0823b24](https://github.com/itsJeremyMax/solidifai/commit/0823b243ac603c42de4d4959f0c543eb351e4974))
+
+
+### Bug Fixes
+
+* **engine:** satisfy clippy::unnecessary_unwrap in ensure() self-heal ([#10](https://github.com/itsJeremyMax/solidifai/issues/10)) ([60f4c7b](https://github.com/itsJeremyMax/solidifai/commit/60f4c7bb926f166bfa45b9ca6123d55d0c628aae))
+* **engine:** stop shipping mutable bytecode that breaks incremental update integrity ([193b55d](https://github.com/itsJeremyMax/solidifai/commit/193b55d49156b5e97d4ee550479b631e8b0453b7))
+
 ## [0.2.0](https://github.com/itsJeremyMax/solidifai/compare/v0.1.2...v0.2.0) (2026-07-06)
 
 
