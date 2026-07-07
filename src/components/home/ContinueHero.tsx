@@ -34,12 +34,19 @@ export function ContinueHero({
         <X size={15} strokeWidth={2} aria-hidden />
       </button>
 
-      {/* Left: render thumbnail — fixed width, full panel height */}
-      <WorkspaceThumb
-        name={workspace.name}
-        src={thumbSrc}
-        className="w-[300px] shrink-0 aspect-[4/3]"
-      />
+      {/* Left: render thumbnail — click it to continue, like the button below. */}
+      <button
+        type="button"
+        onClick={() => onContinue(workspace)}
+        aria-label={`Continue ${workspace.name}`}
+        className="group relative aspect-[4/3] w-[300px] shrink-0 overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-line"
+      >
+        <WorkspaceThumb name={workspace.name} src={thumbSrc} className="h-full w-full" />
+        <span
+          className="pointer-events-none absolute inset-0 bg-ink/0 transition-colors duration-200 group-hover:bg-ink/5"
+          aria-hidden
+        />
+      </button>
 
       {/* Right: text column (pr-12 reserves room for the dismiss button) */}
       <div className="flex flex-1 min-w-0 flex-col py-5 pl-6 pr-12">

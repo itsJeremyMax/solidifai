@@ -31,7 +31,22 @@ describe("ContinueHero", () => {
       />,
     );
     expect(screen.getByText("fidget-bracket")).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(onContinue).toHaveBeenCalledWith(ws);
+  });
+
+  it("fires onContinue from the thumbnail too", async () => {
+    const onContinue = vi.fn();
+    render(
+      <ContinueHero
+        workspace={ws}
+        thumbSrc={null}
+        onContinue={onContinue}
+        onReveal={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /continue fidget-bracket/i }));
     expect(onContinue).toHaveBeenCalledWith(ws);
   });
 

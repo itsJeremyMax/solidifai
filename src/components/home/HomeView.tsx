@@ -207,6 +207,15 @@ export default function HomeView({
     [list, thumbMetas, filter, query],
   );
 
+  // The hero shows above the gallery when it's the recent workspace and no search
+  // or tag filter narrows the view. While it's shown, drop it from the grid below
+  // so it isn't a duplicate; dismissing the hero returns it to the grid.
+  const heroVisible = Boolean(
+    hero && hero.path !== config.homeHeroDismissed && !query && !tagFilter,
+  );
+  const galleryWorkspaces =
+    heroVisible && hero ? visible.filter((w) => w.path !== hero.path) : visible;
+
   const handleOpen = useCallback(
     async (ws: Workspace) => {
       if (busyKey) return;
@@ -397,7 +406,7 @@ export default function HomeView({
           <EmptyState onCreate={() => setComposing(true)} />
         ) : (
           <>
-            {hero && hero.path !== config.homeHeroDismissed && !query && !tagFilter && (
+            {heroVisible && hero && (
               <div className="motion-safe:animate-rise">
                 <ContinueHero
                   workspace={hero}
@@ -436,11 +445,15 @@ export default function HomeView({
                   />
                 ))}
               </div>
-            ) : visible.length === 0 ? (
-              <NoResults query={query} filter={filter} onClear={() => setQuery("")} />
+            ) : galleryWorkspaces.length === 0 ? (
+              // Empty because the hero is the only match (hero covers it), or a real
+              // no-results state when nothing is shown above.
+              heroVisible ? null : (
+                <NoResults query={query} filter={filter} onClear={() => setQuery("")} />
+              )
             ) : (
               <WorkspaceGallery
-                workspaces={visible}
+                workspaces={galleryWorkspaces}
                 view={view}
                 thumbs={thumbs}
                 busyKey={busyKey}
