@@ -65,7 +65,7 @@ def _resolve_target(edges: list) -> Any:
 
     target = edges[0].topo_parent
     if target is None:
-        ctx = Builder._get_context(None)
+        ctx: Any = Builder._get_context(None)
         target = ctx._obj if ctx is not None else None
     if isinstance(target, BasePartObject):
         target = Part(target.wrapped)
