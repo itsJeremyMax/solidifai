@@ -10,6 +10,7 @@ artifact.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 from datetime import UTC, datetime
@@ -23,6 +24,42 @@ from solidifai_engine import paths
 from solidifai_engine.props import mass_grams, properties
 
 UNITS = "mm"
+
+# Mesh resolution for the GLB export (mm). Also the yardstick for the
+# meshability guard below, so the two stay in step.
+_GLB_LINEAR_DEFLECTION = 1e-3
+# Reject a build whose bounding-box diagonal exceeds this many mesh steps: the
+# tessellation would produce a runaway triangle count and hang. A real part at
+# any plausible size (even a few metres) is orders of magnitude under this; only
+# pathological geometry (a metre-scale sphere, a non-finite dimension) trips it.
+_MESH_SIZE_BUDGET = 1e8
+
+
+def _guard_meshable(objects: list) -> None:
+    """Fail a build fast, with a clear message, when its geometry cannot be
+    tessellated in bounded time -- a non-finite dimension (NaN/Inf from a bad
+    parameter) or a size so large it explodes the triangle count. Cheap: reads
+    each shape's bounding box (no meshing). The process-isolation worker is the
+    backstop for kernel faults this static check cannot see; this just turns the
+    common, detectable cases into an instant error instead of a killed worker."""
+    for o in objects:
+        try:
+            bb = o.shape.bounding_box()
+        except Exception:  # noqa: BLE001 - unbboxable: let tessellation try (worker guards it)
+            continue
+        diag = math.sqrt(
+            (bb.max.X - bb.min.X) ** 2 + (bb.max.Y - bb.min.Y) ** 2 + (bb.max.Z - bb.min.Z) ** 2
+        )
+        if not math.isfinite(diag):
+            raise ValueError(
+                f"{o.name!r} has non-finite geometry: a dimension came out as NaN or "
+                f"infinity. Check the values (or math) feeding it."
+            )
+        if diag / _GLB_LINEAR_DEFLECTION > _MESH_SIZE_BUDGET:
+            raise ValueError(
+                f"{o.name!r} is too large to mesh at this resolution ({diag:.3g} mm across). "
+                f"Scale it down, or export STEP (which needs no mesh)."
+            )
 
 
 def _slug(name: str) -> str:
@@ -88,6 +125,10 @@ def render_to(
     # so both must agree. An unknown override id simply has no matching object.
     node_ids = list(node_ids) if node_ids is not None else _node_ids(objects)
 
+    # Fail fast on geometry that would hang the tessellator (non-finite or
+    # astronomically large), before any meshing or mass integration runs.
+    _guard_meshable(objects)
+
     compound = _compound_from_registry(objects)
 
     glb_final = paths.glb_path(artifacts_dir)
@@ -117,7 +158,7 @@ def render_to(
             glb_tmp,
             binary=True,
             unit=Unit.MM,
-            linear_deflection=1e-3,
+            linear_deflection=_GLB_LINEAR_DEFLECTION,
             angular_deflection=0.1,
         )
 
@@ -130,6 +171,10 @@ def render_to(
         json_objects = []
         total_mass = 0.0
         labels: set[str] = set()
+        # label -> density for part-role objects only, so the build-level material
+        # label/density is read from a PART, never from resolved[0] (which may be a
+        # role="reference" import with a different material when a reference is shown first).
+        part_density: dict[str, float] = {}
         for obj, mat, node in zip(objects, resolved, node_ids, strict=True):
             role = getattr(obj, "role", "part")
             appearance = dict(_materials.RESOLVER.appearance(mat))
@@ -142,6 +187,7 @@ def render_to(
                 obj_mass = mass_grams(float(obj.shape.volume), mat.density)
                 total_mass += obj_mass
                 labels.add(mat.label)
+                part_density[mat.label] = mat.density
                 mass_entry = {"value": obj_mass, "material": mat.label, "density": mat.density}
             json_objects.append(
                 {
@@ -160,7 +206,8 @@ def render_to(
         # material, name it; otherwise "mixed" (density 0) — the frontend Inspector
         # shows this label and the value.
         if len(labels) == 1:
-            build_label, build_density = resolved[0].label, resolved[0].density
+            build_label = next(iter(labels))
+            build_density = part_density[build_label]
         else:
             build_label, build_density = "mixed", 0
 

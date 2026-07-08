@@ -13,6 +13,43 @@ def setup_function():
     reset_registry()
 
 
+def test_nonfinite_geometry_fails_fast_not_hangs(tmp_path):
+    """A NaN dimension would hang the tessellator; the guard rejects it instantly."""
+    from build123d import Sphere
+
+    show(Sphere(float("nan")), name="bad")
+    with pytest.raises(ValueError, match="non-finite"):
+        render_to(str(tmp_path), build_id=1)
+
+
+def test_astronomically_large_geometry_fails_fast(tmp_path):
+    """A metre-scale sphere meshed at 1 micron explodes the triangle count."""
+    from build123d import Sphere
+
+    show(Sphere(1e6), name="huge")
+    with pytest.raises(ValueError, match="too large to mesh"):
+        render_to(str(tmp_path), build_id=1)
+
+
+def test_normal_sized_part_meshes_fine(tmp_path):
+    """The guard must not flag ordinary parts, even fairly large ones."""
+    show(Box(500, 400, 300), name="big_but_ok")  # half-metre part is fine
+    assert render_to(str(tmp_path), build_id=1)["ok"] is True
+
+
+def test_build_material_reads_from_a_part_not_a_leading_reference(tmp_path):
+    """Regression: a reference shown first must not set the build-level material.
+    The reported material/density come from the parts, never from resolved[0]."""
+    show(Box(50, 50, 50), name="fixture", material="aluminum", role="reference")
+    show(Box(20, 20, 20), name="Bracket", material="pla")
+
+    render_to(str(tmp_path), build_id=1)
+    data = json.loads((tmp_path / "model.json").read_text())
+
+    assert data["mass"]["material"].lower() == "pla"
+    assert data["mass"]["density"] == pytest.approx(1.24, rel=1e-3)  # PLA, not aluminum 2.7
+
+
 def test_render_writes_glb_and_json(tmp_path):
     show(Box(20, 20, 20), name="Bracket")
 
