@@ -72,3 +72,17 @@ def test_clearance_hole_close_and_coarse_are_iso273():
         plate = Box(20, 20, 5) - hardware.clearance_hole("M3", depth=5, fit=fit)
         removed = 20 * 20 * 5 - plate.volume
         assert math.isclose(removed, math.pi * (dia / 2) ** 2 * 5, rel_tol=0.05), fit
+
+
+def test_counterbore_cuts_a_stepped_head_pocket():
+    """Subtracting counterbore() from a top-referenced plate must leave a wide
+    head recess above the clearance bore, not a plain hole (recess-direction
+    regression)."""
+    from build123d import Align
+
+    plate = Box(30, 30, 10, align=(Align.CENTER, Align.CENTER, Align.MAX))  # top at Z=0
+    removed = plate.volume - (plate - hardware.counterbore("M6", depth=8)).volume
+    t = hardware.dims("M6")
+    plain_bore = math.pi * (t["clearance_medium"] / 2) ** 2 * 8
+    # the stepped pocket removes clearly more than a plain bore of the same depth
+    assert removed > plain_bore * 1.3

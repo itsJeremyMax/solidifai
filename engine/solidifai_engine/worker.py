@@ -80,9 +80,20 @@ def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -
     from solidifai_engine import materials
     from solidifai_engine.session import Session
 
-    root = os.path.dirname(model_path) if model_path else None
+    # Workspace root for the material resolver, matching Server._workspace_root:
+    # the model's dir, else the artifacts grandparent (artifacts live at
+    # <root>/.solidifai/artifacts). Point the resolver at it BEFORE startup so the
+    # reloaded model resolves the workspace's default + custom materials (not the
+    # PLA built-in) for correct mass, and a part shown with a custom material
+    # actually builds on open.
+    if model_path:
+        root: str | None = os.path.dirname(os.path.abspath(model_path))
+    else:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(artifacts_dir)))
 
     session = Session(artifacts_dir, model_path=model_path)
+    if root is not None:
+        materials.configure_resolver(root)
     try:
         session.startup()  # reload last-good model + settings (never raises)
     except Exception:  # noqa: BLE001 - belt and suspenders; startup already guards

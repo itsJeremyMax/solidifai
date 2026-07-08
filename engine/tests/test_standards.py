@@ -228,3 +228,14 @@ def test_lookup_handlers_dispatch(tmp_path):
     assert r["clearance_hole"]["dia"] == 3.4
     r = _HANDLERS["lookup_reference"](srv, {"object": "18650"})
     assert r["match"]["dims_mm"]["dia_max"] == 18.6
+
+
+def test_size_regex_parses_sizes_glued_to_other_text():
+    """M8x20 and M2.5mm must not be misparsed (trailing \\b regression)."""
+    assert standards.lookup_standard("M8x20 cap screw")["size"] == "M8"
+    assert standards.lookup_standard("M2.5mm nut")["size"] == "M2.5"
+    # leading boundary still guards: no false size from a plain word
+    assert (
+        "size" not in standards.lookup_standard("beam5 bracket")
+        or standards.lookup_standard("beam5 bracket").get("size") is None
+    )

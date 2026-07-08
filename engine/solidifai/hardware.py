@@ -118,10 +118,13 @@ def counterbore(size: str, depth: float):
     for the socket head, opening upward. Subtract from a part."""
     t = dims(size)
     bore = Cylinder(t["clearance_medium"] / 2, depth, align=(Align.CENTER, Align.CENTER, Align.MAX))
+    # The head recess must open the SAME way as the bore (downward from the cut
+    # face at Z=0), or subtracting from a top-referenced plate leaves the recess
+    # in the air above the part and cuts a plain hole with no head pocket.
     recess = Cylinder(
         t["head_dia"] / 2 + 0.2,
         t["head_height"] + 0.2,
-        align=(Align.CENTER, Align.CENTER, Align.MIN),
+        align=(Align.CENTER, Align.CENTER, Align.MAX),
     )
     return bore + recess
 

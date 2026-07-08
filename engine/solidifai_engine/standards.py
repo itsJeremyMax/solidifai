@@ -236,7 +236,11 @@ def bearing(code: str) -> dict:
 
 # -- lookup tools (the MCP surface) -------------------------------------------
 
-_SIZE_RE = re.compile(r"\bm\s?(\d+(?:[.,]\d+)?)\b", re.IGNORECASE)
+# No trailing \b: a size is often glued to more text ("M8x20", "M2.5mm"), where
+# a word boundary after the digits either fails to match (M8x20 -> no size) or
+# backtracks to a shorter, wrong number (M2.5mm -> M2). The leading \bm still
+# anchors it to a real size token (not the m in "beam5").
+_SIZE_RE = re.compile(r"\bm\s?(\d+(?:[.,]\d+)?)", re.IGNORECASE)
 
 
 def _normalize_size(text: str) -> str:
