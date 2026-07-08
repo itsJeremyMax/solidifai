@@ -8,6 +8,7 @@ last-good artifacts untouched.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import glob
 import json
@@ -63,6 +64,41 @@ if TYPE_CHECKING:
 COALESCE_WINDOW = 0.7
 
 
+def _module_build_overrides(code: str, valid_names: set) -> dict:
+    """Statically read the literal keyword args of a top-level ``build(...)`` call
+    in ``code``. When a script calls ``build(size=50)`` at module level (an
+    off-convention build, not the ``__name__ == "__main__"`` guard), this lets the
+    engine report the values the geometry was actually built with instead of the
+    PARAMS defaults. Only literal-evaluable kwargs (and ``**{...}`` literals) are
+    returned; anything dynamic (a comprehension, a variable) is ignored, and the
+    conventional guarded ``build(**defaults)`` tail is never a top-level call so it
+    never reaches here."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return {}
+    overrides: dict = {}
+    for node in tree.body:  # module-level statements only
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "build"
+        ):
+            continue
+        for kw in node.value.keywords:
+            try:
+                if kw.arg is None:  # build(**{...})
+                    value = ast.literal_eval(kw.value)
+                    if isinstance(value, dict):
+                        overrides.update({k: v for k, v in value.items() if k in valid_names})
+                elif kw.arg in valid_names:
+                    overrides[kw.arg] = ast.literal_eval(kw.value)
+            except (ValueError, SyntaxError):
+                continue  # non-literal arg: leave the default in place
+    return overrides
+
+
 class Session:
     def __init__(self, artifacts_dir: str, model_path: str | None = None):
         self.artifacts_dir = artifacts_dir
@@ -115,6 +151,10 @@ class Session:
         # use last-good objects (with their materials/colors) and never a later
         # script's partial or reset registry.
         self._objects: list | None = None
+        # Last-good params block (parallels _objects/_model): a re-render of the
+        # last-good model reports these PARAMS even after a failed build reset the
+        # live param state to empty.
+        self._last_params_block: dict | None = None
         # Last-good snapshot of declared features (parallels self._model).
         self._features: list = []
         # Collaborators: cohesive method groups that hold a back-reference to
@@ -166,6 +206,7 @@ class Session:
         render_to(self.artifacts_dir, next_build, **render_kwargs)
         self._model = _compound_from_registry(solidifai._registry())
         self._objects = list(solidifai._registry())
+        self._last_params_block = params
         self._snapshot_features()
 
     def _build_failed(self, exc: Exception) -> dict:
@@ -210,20 +251,19 @@ class Session:
                 self._params_schema = self._normalize_schema(params_schema)
                 # Build once: if the script already invoked build() at module level
                 # (the conventional `build(**defaults)` tail, or a __main__ guard
-                # that did not fire), reuse that registry — it IS the default build.
-                # Only build ourselves when the script defined build() but did not
-                # call it (registry empty), so we never run the kernel twice.
-                #
-                # Known limitation: a self-contradictory script that calls build()
-                # at module level with NON-default args (e.g. `build(size=50)` while
-                # PARAMS.size defaults to 20) makes get_params/model.json report the
-                # declared defaults while the geometry reflects the hardcoded args.
-                # We can't recover the module-level call's kwargs post-hoc, and a
-                # reset+rebuild would run the kernel twice; convention-following
-                # scripts (which guard the call with __name__ == "__main__", never
-                # matched here) never hit this, so we accept the reused build.
+                # that did not fire), reuse that registry, so we never run the kernel
+                # twice. Only build ourselves when build() was defined but not called
+                # (registry empty).
                 if not list(solidifai._registry()):
                     build_fn(**self._param_values)
+                else:
+                    # A module-level build(...) already ran. If it used non-default
+                    # literal args (e.g. `build(size=50)`), reflect them so
+                    # get_params/model.json match the geometry instead of reporting
+                    # the PARAMS defaults.
+                    self._param_values.update(
+                        _module_build_overrides(code, set(self._param_values))
+                    )
                 params_block = self._params_block()
 
             # Load reference fixtures into the registry before render, so they
@@ -615,7 +655,7 @@ class Session:
             render_to(
                 self.artifacts_dir,
                 next_build,
-                params=self._params_block(),
+                params=self._last_params_block,
                 overrides=self._material_overrides,
             )
             self._model = _compound_from_registry(solidifai._registry())
@@ -708,7 +748,7 @@ class Session:
             render_to(
                 self.artifacts_dir,
                 next_build,
-                params=self._params_block(),
+                params=self._last_params_block,
                 overrides=self._material_overrides,
                 objects=self._objects,
             )
