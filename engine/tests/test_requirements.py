@@ -119,6 +119,45 @@ def test_predicate_missing_measurement_is_null():
     assert rq.evaluate([r], {})[0]["pass"] is None
 
 
+def test_size_within_flat_bound_is_null_not_crash():
+    # A `within` on a vector quantity needs a [lo, hi] pair per axis; a flat
+    # [lo, hi] bound is the wrong shape and must read as unmeasured, not raise.
+    r = {"id": "z", "quantity": "size", "op": "within", "bound": [10, 40]}
+    assert rq.evaluate([r], {"bbox": [20, 20, 20]})[0]["pass"] is None
+
+
+def test_size_within_per_axis_pairs():
+    r = {
+        "id": "z",
+        "quantity": "size",
+        "op": "within",
+        "bound": [[10, 40], [10, 40], [10, 40]],
+    }
+    assert rq.evaluate([r], {"bbox": [20, 20, 20]})[0]["pass"] is True
+    res = rq.evaluate([r], {"bbox": [20, 50, 20]})[0]
+    assert res["pass"] is False and "Y" in res["detail"]
+
+
+def test_predicate_ok_rejects_bad_bound_shapes():
+    # size + within needs per-axis pairs, not a flat pair
+    assert rq.predicate_ok({"quantity": "size", "op": "within", "bound": [10, 40]}) is False
+    assert (
+        rq.predicate_ok(
+            {"quantity": "size", "op": "within", "bound": [[10, 40], [10, 40], [10, 40]]}
+        )
+        is True
+    )
+    # size + <= needs three scalars
+    assert rq.predicate_ok({"quantity": "size", "op": "<=", "bound": [60, 40, 20]}) is True
+    assert rq.predicate_ok({"quantity": "size", "op": "<=", "bound": 60}) is False
+    # scalar quantity: within needs a pair, others need a scalar
+    assert rq.predicate_ok({"quantity": "mass", "op": "<=", "bound": 50}) is True
+    assert (
+        rq.predicate_ok({"quantity": "min_clearance", "op": "within", "bound": [0.2, 0.4]}) is True
+    )
+    assert rq.predicate_ok({"quantity": "mass", "op": "within", "bound": 50}) is False
+
+
 # ---------------------------------------------------------------------------
 # Task 2: Legacy migration + restricted assert
 # ---------------------------------------------------------------------------

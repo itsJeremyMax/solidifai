@@ -82,6 +82,19 @@ def test_pick_feasible_empty_candidates():
     assert best is None and feasible == 0 and closest is None
 
 
+def test_pick_feasible_unmeasured_predicate_not_feasible():
+    # A candidate that never measured the constrained quantity (min_wall absent)
+    # must not count as feasible just because the predicate was skipped.
+    preds = [{"id": "w", "quantity": "min_wall", "op": ">=", "bound": 1.5}]
+    cands = [
+        {"params": {"wall": 0.5}, "ok": True, "mass": 2.0},  # min_wall unmeasured
+        {"params": {"wall": 2.0}, "ok": True, "mass": 9.0, "min_wall": 2.0},
+    ]
+    best, feasible, _ = converge.pick_feasible(cands, preds)
+    assert best["params"]["wall"] == 2.0  # the measured, passing candidate
+    assert feasible == 1
+
+
 def test_pick_feasible_failed_candidates_ignored():
     # ok=False variants must not be selected.
     preds = [{"id": "w", "quantity": "min_wall", "op": ">=", "bound": 1.2}]

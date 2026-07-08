@@ -252,11 +252,7 @@ class Analysis:
         for r in migrated:
             if not isinstance(r, dict):
                 continue
-            if (
-                "quantity" in r
-                and r["quantity"] in requirements_mod.QUANTITIES
-                and r.get("op") in requirements_mod.OPS
-            ) or (r.get("kind") == "assert" and r.get("expr")):
+            if requirements_mod.predicate_ok(r) or (r.get("kind") == "assert" and r.get("expr")):
                 valid.append(r)
         self.s._requirements = valid
         if self.s.root is not None:

@@ -59,6 +59,23 @@ def test_tolerance_bad_link_errors():
     assert val.tolerance_stack([{"label": "x", "nominal": 1.0, "fit": "Z99"}])["ok"] is False
 
 
+def test_tolerance_rss_centered_on_zone_mean():
+    # Asymmetric fits shift the tolerance-zone mean off the raw nominal, so the
+    # RSS band must be centred on that mean, not on nominal. H7/g6 at Ø10.
+    chain = [
+        {"label": "hole", "nominal": 10.0, "fit": "H7", "direction": 1},
+        {"label": "shaft", "nominal": 10.0, "fit": "g6", "direction": -1},
+    ]
+    r = val.tolerance_stack(chain)
+    assert math.isclose(r["rss"]["min"], 0.0083, abs_tol=1e-4)
+    assert math.isclose(r["rss"]["max"], 0.0258, abs_tol=1e-4)
+
+
+def test_tolerance_nominal_outside_iso_table_errors():
+    # Ø300 is past the last ISO 286 band; the fit must error, not clamp.
+    assert val.tolerance_stack([{"label": "x", "nominal": 300.0, "fit": "H7"}])["ok"] is False
+
+
 # --- stress hot-spots --------------------------------------------------------
 
 

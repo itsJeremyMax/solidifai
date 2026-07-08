@@ -192,10 +192,12 @@ _SHAFT = {
 
 
 def _band(nominal: float) -> int:
+    if nominal <= 0:
+        raise ValueError(f"nominal {nominal} mm outside ISO 286 table (>0..{_BANDS[-1]} mm)")
     for i, hi in enumerate(_BANDS):
         if nominal <= hi:
             return i
-    return len(_BANDS) - 1
+    raise ValueError(f"nominal {nominal} mm outside ISO 286 table (>0..{_BANDS[-1]} mm)")
 
 
 def _resolve(link: dict) -> dict:
@@ -226,10 +228,11 @@ def tolerance_stack(chain: list[dict]) -> dict:
     except (ValueError, KeyError, TypeError) as exc:
         return {"ok": False, "error": f"bad tolerance chain: {exc}"}
 
-    nominal = wc_lo = wc_hi = rss_sq = 0.0
+    nominal = mid = wc_lo = wc_hi = rss_sq = 0.0
     for link in links:
         s = int(link.get("direction", 1))
         nominal += s * float(link["nominal"])
+        mid += s * (link["plus"] + link["minus"]) / 2.0
         lo, hi = s * link["minus"], s * link["plus"]
         wc_lo += min(lo, hi)
         wc_hi += max(lo, hi)
@@ -246,8 +249,8 @@ def tolerance_stack(chain: list[dict]) -> dict:
             "range": round(wc_hi - wc_lo, 4),
         },
         "rss": {
-            "min": round(nominal - rss, 4),
-            "max": round(nominal + rss, 4),
+            "min": round(nominal + mid - rss, 4),
+            "max": round(nominal + mid + rss, 4),
             "range": round(2 * rss, 4),
         },
         "links": links,

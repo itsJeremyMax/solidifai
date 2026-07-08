@@ -112,6 +112,31 @@ def _measured(quantity: str, ctx: dict):
     return val
 
 
+def _bound_ok(quantity: str, op: str, bound) -> bool:
+    """True if ``bound`` has the right shape for ``quantity``/``op``. A vector
+    quantity (size) needs one entry per axis: a ``[lo, hi]`` pair for ``within``,
+    else a scalar. A scalar quantity needs a ``[lo, hi]`` pair for ``within``,
+    else a scalar. A wrong shape would raise mid-compare, so reject it upfront."""
+    if quantity in _VECTOR:
+        if not isinstance(bound, list) or len(bound) != 3:
+            return False
+        if op == "within":
+            return all(isinstance(b, list) and len(b) == 2 for b in bound)
+        return all(not isinstance(b, list) for b in bound)
+    if op == "within":
+        return isinstance(bound, list) and len(bound) == 2
+    return not isinstance(bound, list)
+
+
+def predicate_ok(r: dict) -> bool:
+    """True if a predicate's quantity, op, and bound shape are mutually valid."""
+    return (
+        r.get("quantity") in QUANTITIES
+        and r.get("op") in OPS
+        and _bound_ok(r["quantity"], r["op"], r.get("bound"))
+    )
+
+
 def _cmp(op: str, measured, bound) -> bool:
     if op == "<=":
         return measured <= bound
@@ -139,8 +164,10 @@ def _eval_predicate(r: dict, ctx: dict) -> dict:
     if measured is None:
         return out
     if q in _VECTOR:  # per-axis vector compare (size)
-        if not isinstance(bound, list):
+        if not _bound_ok(q, op, bound):
             return out
+        # _bound_ok guarantees the shapes; assert narrows them for the type checker.
+        assert isinstance(measured, list) and isinstance(bound, list)
         out["measured"] = [round(v, 2) for v in measured]
         over = [i for i in range(3) if not _cmp(op, measured[i], bound[i])]
         out["pass"] = not over

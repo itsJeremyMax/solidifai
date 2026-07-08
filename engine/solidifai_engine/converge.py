@@ -54,7 +54,7 @@ def _ctx_from(cand: dict) -> dict:
 def _passes(cand: dict, preds: list) -> bool:
     """True when every applicable predicate passes for this candidate."""
     results = rq.evaluate(preds, _ctx_from(cand))
-    return bool(results) and all(r["pass"] is True for r in results if r["pass"] is not None)
+    return bool(results) and all(r["pass"] is True for r in results)
 
 
 def _satisfied_count(cand: dict, preds: list) -> int:
