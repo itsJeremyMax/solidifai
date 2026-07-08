@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.5.0](https://github.com/itsJeremyMax/solidifai/compare/v0.4.0...v0.5.0) (2026-07-08)
+
+
+### Features
+
+* **engine:** isolate builds in a crash-proof worker process ([dc64fbb](https://github.com/itsJeremyMax/solidifai/commit/dc64fbbac649e4ac4fc54b6830da494692421925))
+* **engine:** phase-aware update progress + ring-gauge status pill ([133eea1](https://github.com/itsJeremyMax/solidifai/commit/133eea1472dec306aa20c452ff160e11648df829))
+* **engine:** self-clamping safe_chamfer/safe_fillet ([9f4d820](https://github.com/itsJeremyMax/solidifai/commit/9f4d820aa8c19f772857c781f89e232b7b42dd27))
+* **macos:** explain Documents-folder access in the permission prompt ([ce9ace3](https://github.com/itsJeremyMax/solidifai/commit/ce9ace3f2db425e7bedf12e8d215e94f8e085de1))
+
+
+### Bug Fixes
+
+* **about:** source "What's new" from the changelog, not a stale hardcoded list ([34e5f43](https://github.com/itsJeremyMax/solidifai/commit/34e5f43bd115f506ec89459c3b40ea5c068110f1))
+* **about:** stop copying a workspace path the diagnostics table never shows ([1257188](https://github.com/itsJeremyMax/solidifai/commit/1257188ad2e6b7a3703c1c52bde3d7befb109e5a))
+* **engine:** annotate ctx in safe bevel target resolution for mypy ([582c0b7](https://github.com/itsJeremyMax/solidifai/commit/582c0b7a081dd3f5c75891b8846c8cac7d4a800a))
+* **engine:** audit batch 1 - screw-size parse, counterbore pocket, worker resolver ([c946ace](https://github.com/itsJeremyMax/solidifai/commit/c946ace54b8f6728329093e5d1a0a191e8227ea4))
+* **engine:** audit fixes for DFM checks and motion range ([7c2c86f](https://github.com/itsJeremyMax/solidifai/commit/7c2c86f025092def2283c9aea06d75675674205a))
+* **engine:** audit fixes for export, standards, reverse, drawing ([b44cec8](https://github.com/itsJeremyMax/solidifai/commit/b44cec8aea1360ebb47aa959dd1f0a74a0cba684))
+* **engine:** audit fixes for metrology and spec correctness ([6610cd3](https://github.com/itsJeremyMax/solidifai/commit/6610cd3f3fa64303724338b821e7a31586c4bcc2))
+* **engine:** audit fixes for session state integrity ([67721d7](https://github.com/itsJeremyMax/solidifai/commit/67721d74588c6c3ce068229f06942d0e9113d06a))
+* **engine:** carry the asset fingerprint through cache promotion ([e4e4993](https://github.com/itsJeremyMax/solidifai/commit/e4e499379df592cd6997de6210147edb1d57ba41))
+* **engine:** re-audit fixes for requirements, fabrication, standards, drawing, motion ([2e75c48](https://github.com/itsJeremyMax/solidifai/commit/2e75c4840c9159f3044f57c640f4860b4e09e81d))
+* **engine:** repair three worker/bevel regressions from the crash-isolation refactor ([7363f3a](https://github.com/itsJeremyMax/solidifai/commit/7363f3a56241357e7533474f1943524a26aebedc))
+* **engine:** repair two regressions from the audit fix pass ([ce4f46d](https://github.com/itsJeremyMax/solidifai/commit/ce4f46d01ca5ffb37882a1d1e573db3bc2195678))
+* **engine:** restore clean error type across the worker boundary ([de7f321](https://github.com/itsJeremyMax/solidifai/commit/de7f3212ff9f56d2c1b3ae17b07f195234716f3b))
+* **engine:** revalidate imported-asset fingerprint in the node cache ([f29dbc4](https://github.com/itsJeremyMax/solidifai/commit/f29dbc4be77874728abfb4236960fb53ba70633f))
+* **engine:** snapshot last-good params + reflect module-level build args ([8734b8d](https://github.com/itsJeremyMax/solidifai/commit/8734b8df35033508b82079b339f04b1fdab7ba2c))
+* **hooks:** honor ruff excludes for staged files (--force-exclude) ([653f869](https://github.com/itsJeremyMax/solidifai/commit/653f8696e9591311b3cec0af8629c0c34ad2bf15))
+* **render:** correct build material + reject unmeshable geometry ([cf8479d](https://github.com/itsJeremyMax/solidifai/commit/cf8479d522ef2e12c2f8f0e4b93543efedfe085c))
+* **ui:** swap import/export button icons ([fec65dc](https://github.com/itsJeremyMax/solidifai/commit/fec65dcc98688f02dce5d5a3baa717619126bb5f))
+* **updater:** add vertical spacing between What's new groupings ([2878c7d](https://github.com/itsJeremyMax/solidifai/commit/2878c7df2c2650c1e250d66886ad6c803eff12f1))
+
 ## [0.4.0](https://github.com/itsJeremyMax/solidifai/compare/v0.3.0...v0.4.0) (2026-07-07)
 
 
