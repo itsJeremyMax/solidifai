@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from . import hardware, std
+from .bevel import safe_chamfer, safe_fillet
 from .imports import import_cad, set_workspace_root
 from .skeleton_api import SkeletonResult, skeleton
 
@@ -35,6 +36,8 @@ __all__ = [
     "set_workspace_root",
     "hardware",
     "std",
+    "safe_chamfer",
+    "safe_fillet",
     "skeleton",
     "SkeletonResult",
     "_record_asset",
