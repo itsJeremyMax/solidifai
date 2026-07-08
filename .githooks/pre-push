@@ -1,0 +1,15 @@
+#!/bin/sh
+# Pre-push typecheck gate. The pre-commit hook is deliberately lean (format +
+# lint only) so commits stay fast; this runs the type check CI enforces but the
+# commit gate skips, so a type error never reaches the shared branch. It lives
+# at push (not commit) time so it costs nothing per commit, and mypy is
+# incremental so a no-Python-change push is a fast cache hit. Skips gracefully
+# when the toolchain isn't present. Wired via core.hooksPath .githooks.
+set -e
+
+if command -v uv >/dev/null 2>&1 && [ -d engine/.venv ]; then
+  echo "pre-push: mypy (engine typecheck, matches CI)"
+  (cd engine && uv run mypy solidifai_engine solidifai_mcp solidifai)
+fi
+
+exit 0
