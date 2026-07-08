@@ -46,5 +46,15 @@ class DiskCache:
             return False
         return os.path.exists(serialize._brep_path(self.dir, key))
 
+    def fingerprint(self, key: str) -> dict | None:
+        """The asset fingerprint persisted with `key`'s entry (meta['assets']), or
+        None when there is no entry. Lets an L2->L1 promotion carry the same
+        revalidation an in-session put would; an empty map short-circuits like a
+        direct-build asset-free entry."""
+        meta = serialize.load_meta(self.dir, key)
+        if meta is None:
+            return None
+        return meta.get("assets")
+
     def put(self, key: str, objects: list, assets_fp: dict) -> None:
         serialize.dump_result(self.dir, key, objects, assets=assets_fp)

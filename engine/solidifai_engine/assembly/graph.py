@@ -45,8 +45,11 @@ def build_child(node_dir: str, skel, child, *, cache=None, disk=None) -> tuple[l
         if objs is None and disk is not None:
             objs = disk.get(key)
             if objs is not None and cache is not None:
-                # promote L2 hit into L1 for subsequent calls this session
-                cache.put(key, objs)
+                # promote L2 hit into L1 for subsequent calls this session, carrying
+                # L2's asset fingerprint so the promoted entry revalidates an edited
+                # asset exactly like a direct-build entry (a reopened workspace has a
+                # cold L1 but warm L2, so this is the only place the fingerprint lands).
+                cache.put(key, objs, disk.fingerprint(key))
     if objs is None:
         from solidifai_engine.assembly.cache import asset_fingerprint
 

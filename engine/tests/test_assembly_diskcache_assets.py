@@ -57,3 +57,36 @@ def test_editing_an_asset_invalidates_disk_cache(tmp_path):
     v2 = objs2[0].shape.volume  # ~8000 if invalidated; ~1000 if STALE
     assert abs(v1 - 1000) < 1.0
     assert v2 > 2000  # the asset change was picked up (NOT a stale cache hit)
+
+
+def test_l2_to_l1_promotion_carries_asset_fingerprint(tmp_path):
+    """Cross-session: a reopened workspace (cold L1, warm L2) promotes an L2 hit
+    into L1. That promoted entry must carry the asset fingerprint so a later edit
+    to the imported asset is revalidated and not served stale from the warm L1."""
+    _ws(tmp_path)
+    disk = DiskCache(str(tmp_path))
+    # Session 1: cold L1 + L2, populates the DiskCache.
+    graph.build_node(str(tmp_path), params={}, parent=None, cache=NodeCache(), disk=disk)
+
+    # Session 2: FRESH NodeCache (reopened workspace) over the SAME warm DiskCache.
+    # First build: L1 miss -> L2 hit -> promotes into L1.
+    warm_l1 = NodeCache()
+    graph.build_node(str(tmp_path), params={}, parent=None, cache=warm_l1, disk=disk)
+    # Edit the asset on disk to a bigger cube.
+    export_brep(Box(20, 20, 20), str(tmp_path / "assets" / "fixture.brep"))
+    # Rebuild against the SAME warm L1: it must MISS the promoted entry and rebuild.
+    objs = graph.build_node(str(tmp_path), params={}, parent=None, cache=warm_l1, disk=disk)
+    assert objs[0].shape.volume > 2000  # picked up the edit, not a stale 1000
+
+
+def test_promotion_keeps_hit_for_unchanged_asset(tmp_path):
+    """A promoted L1 entry with an unchanged asset stays a hit (no needless rebuild)."""
+    _ws(tmp_path)
+    disk = DiskCache(str(tmp_path))
+    graph.build_node(str(tmp_path), params={}, parent=None, cache=NodeCache(), disk=disk)
+
+    warm_l1 = NodeCache()
+    graph.build_node(str(tmp_path), params={}, parent=None, cache=warm_l1, disk=disk)  # promote
+    hits_before = warm_l1.hits
+    graph.build_node(str(tmp_path), params={}, parent=None, cache=warm_l1, disk=disk)  # unchanged
+    assert warm_l1.hits == hits_before + 1  # served from L1, revalidation passed
