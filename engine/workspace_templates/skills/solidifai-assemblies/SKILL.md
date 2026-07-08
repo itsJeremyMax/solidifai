@@ -15,8 +15,8 @@ millimetres; +Z is up.
 
 ## When to use
 
-- The design is genuinely **more than one part** working together: a lid and a base, a hinge, a
-  geared mechanism, anything where independently authored parts share dimensions.
+- The design is genuinely **more than one part** working together: a hinge, a geared mechanism,
+  anything where independently authored parts share dimensions.
 - The user asks for fasteners (screws, bolts, nuts, washers), a hole sized for a bolt, parts
   mated a set way, or whether something clears or jams through its motion.
 - A **mechanism** (it moves, latches, springs, or meshes) gets a grounding pass first

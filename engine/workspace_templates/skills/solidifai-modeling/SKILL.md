@@ -174,8 +174,8 @@ subtract a cutter for placed holes: `part - Pos(x, y, 0) * hardware.clearance_ho
 
 Model each genuinely separate part (a lid and a base, a bolt and a nut, a gear on a shaft) as
 its own `show()` object so it keeps its color/material and stays individually inspectable.
-This one-script pattern fits a few tightly coupled bodies that always move together;
-independently authored parts sharing dimensions are **solidifai-assemblies**.
+This one-script pattern fits a few parts you author together; independently authored parts
+sharing a skeleton are **solidifai-assemblies**.
 
 **Name and color each part** so the assembly is legible in the viewport and in `capture_views`:
 

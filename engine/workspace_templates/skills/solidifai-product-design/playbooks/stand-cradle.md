@@ -92,8 +92,8 @@ from solidifai import show
 
 PARAMS = {
     "base_l":  {"value": 120.0, "min": 70.0,  "max": 220.0, "step": 1.0, "unit": "mm", "desc": "Base length (X)"},
-    "base_w":  {"value": 120.0, "min": 70.0,  "max": 220.0, "step": 1.0, "unit": "mm", "desc": "Base depth (Y) — wider = more stable"},
-    "base_h":  {"value": 12.0,  "min": 6.0,   "max": 30.0,  "step": 1.0, "unit": "mm", "desc": "Base thickness (Z) — lower CoG"},
+    "base_w":  {"value": 120.0, "min": 70.0,  "max": 220.0, "step": 1.0, "unit": "mm", "desc": "Base depth (Y), wider = more stable"},
+    "base_h":  {"value": 12.0,  "min": 6.0,   "max": 30.0,  "step": 1.0, "unit": "mm", "desc": "Base thickness (Z), lower CoG"},
     "rest_t":  {"value": 10.0,  "min": 4.0,   "max": 20.0,  "step": 0.5, "unit": "mm", "desc": "Back-rest thickness"},
     "rest_h":  {"value": 95.0,  "min": 40.0,  "max": 160.0, "step": 1.0, "unit": "mm", "desc": "Back-rest height"},
     "angle":   {"value": 20.0,  "min": 5.0,   "max": 45.0,  "step": 1.0, "unit": "deg","desc": "Lean from vertical (viewing angle)"},

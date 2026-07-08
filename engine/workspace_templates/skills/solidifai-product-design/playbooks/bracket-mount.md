@@ -97,7 +97,7 @@ PARAMS = {
     "leg":      {"value": 55.0, "min": 25.0, "max": 120.0, "step": 1.0, "unit": "mm", "desc": "Leg length (each flange, X & Z)"},
     "width":    {"value": 40.0, "min": 20.0, "max": 100.0, "step": 1.0, "unit": "mm", "desc": "Bracket width (Y)"},
     "thick":    {"value": 5.0,  "min": 3.0,  "max": 12.0,  "step": 0.5, "unit": "mm", "desc": "Plate thickness (size to the load)"},
-    "bolt_d":   {"value": 4.5,  "min": 3.2,  "max": 7.0,   "step": 0.1, "unit": "mm", "desc": "Bolt clearance Ø — set from cookbook §11 A"},
+    "bolt_d":   {"value": 4.5,  "min": 3.2,  "max": 7.0,   "step": 0.1, "unit": "mm", "desc": "Bolt clearance Ø, set from cookbook §11 A"},
     "pitch_x":  {"value": 20.0, "min": 10.0, "max": 90.0,  "step": 1.0, "unit": "mm", "desc": "Hole spacing along X"},
     "pitch_y":  {"value": 24.0, "min": 12.0, "max": 70.0,  "step": 1.0, "unit": "mm", "desc": "Hole spacing along Y"},
     "gusset":   {"value": 28.0, "min": 8.0,  "max": 60.0,  "step": 1.0, "unit": "mm", "desc": "Gusset reach along each flange"},

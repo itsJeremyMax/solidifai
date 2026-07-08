@@ -128,8 +128,8 @@ few lines in the thread; a skip needs neither.
 
 - **One part, or one coupled parametric body** (a bracket, plate, knob, a few bodies that always
   move together): `execute_script` as above. Do not wrap a single part in a skeleton.
-- **Genuinely multiple parts that fit or move together** (a lid + base, a hinge, a geared
-  mechanism, parts that share dimensions): author a nested assembly per
+- **Genuinely multiple, independently-authored parts that share dimensions** (a hinge, a geared
+  mechanism, a multi-part product): author a nested assembly per
   **`solidifai-assemblies`**: a `skeleton.py` of shared dimensions and frames plus a
   `parts/<id>.py` per part, wired with the assembly tools below. The viewport and the checks
   work on the composed result the same way. For **several** independent parts,

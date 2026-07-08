@@ -32,13 +32,13 @@ from build123d import (
 from solidifai import show
 
 PARAMS = {
-    "device_w":   {"value": 60.0, "min": 30.0, "max": 120.0, "step": 1.0,  "unit": "mm", "desc": "Device width  (X) — the thing going inside"},
+    "device_w":   {"value": 60.0, "min": 30.0, "max": 120.0, "step": 1.0,  "unit": "mm", "desc": "Device width  (X), the thing going inside"},
     "device_h":   {"value": 90.0, "min": 40.0, "max": 160.0, "step": 1.0,  "unit": "mm", "desc": "Device height (Y)"},
     "device_t":   {"value": 16.0, "min": 8.0,  "max": 60.0,  "step": 1.0,  "unit": "mm", "desc": "Device thickness (Z) inside the shell"},
     "wall":       {"value": 2.4,  "min": 1.6,  "max": 4.0,   "step": 0.2,  "unit": "mm", "desc": "Shell wall (>= printable minimum)"},
     "clearance":  {"value": 0.3,  "min": 0.1,  "max": 0.6,   "step": 0.05, "unit": "mm", "desc": "Cavity gap per side (loose FDM fit)"},
     "lid_clear":  {"value": 0.15, "min": 0.1,  "max": 0.3,   "step": 0.05, "unit": "mm", "desc": "Lid lip gap (tight locating fit)"},
-    "corner_r":   {"value": 6.0,  "min": 1.0,  "max": 12.0,  "step": 0.5,  "unit": "mm", "desc": "Outer corner radius — one family"},
+    "corner_r":   {"value": 6.0,  "min": 1.0,  "max": 12.0,  "step": 0.5,  "unit": "mm", "desc": "Outer corner radius, one family"},
     "button_dia": {"value": 13.0, "min": 10.0, "max": 18.0,  "step": 0.5,  "unit": "mm", "desc": "Button cutout (>= 10 mm finger pad)"},
     "port_w":     {"value": 12.0, "min": 6.0,  "max": 24.0,  "step": 0.5,  "unit": "mm", "desc": "Port opening width  (connector + ~0.5)"},
     "port_h":     {"value": 7.5,  "min": 4.0,  "max": 16.0,  "step": 0.5,  "unit": "mm", "desc": "Port opening height (connector + ~0.5)"},

@@ -21,10 +21,10 @@ seeing precisely what a change did, and packaging a finished part for someone el
 
 ## The procedure
 
-1. **Checkpoint** with `cad_checkpoint("message")` at meaningful milestones ("base bracket",
+1. **Checkpoint** with `checkpoint("message")` at meaningful milestones ("base bracket",
    "added ribs", "ready for print") so there are clear points to compare and return to.
-   `cad_history()` lists the timeline with each entry's index and message; `cad_undo` /
-   `cad_redo` step one state, and `cad_goto(index)` jumps to any entry.
+   `history()` lists the timeline with each entry's index and message; `undo` /
+   `redo` step one state, and `goto(index)` jumps to any entry.
 2. **Diff** with `diff_against(index)`: it compares the **current** model to the checkpoint at
    `index` and reports **added** and **removed** material, each with a volume and bounding box
    ("this edit added 1.2 cm3 of rib and removed the old 0.4 cm3 boss"), plus overall volume and
@@ -40,7 +40,7 @@ seeing precisely what a change did, and packaging a finished part for someone el
 
 History works the same on an assembly, but on the **whole fileset** rather than one `model.py`:
 
-- `cad_undo` / `cad_redo` / `cad_goto(index)` restore the entire assembly at that point (the
+- `undo` / `redo` / `goto(index)` restore the entire assembly at that point (the
   skeleton, every `parts/<id>.py`, the manifest wiring), then rebuild and recompose. Undoing an
   "add part" removes that part's file again.
 - `diff_against(index)` returns a **structural** diff instead of a material one:
