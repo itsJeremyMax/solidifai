@@ -25,7 +25,7 @@ import threading
 from typing import Any
 
 from solidifai_engine import ipc, scratch
-from solidifai_engine.worker import SessionProxy
+from solidifai_engine.worker import RemoteSessionError, SessionProxy
 
 # -- parent-death detection ---------------------------------------------------
 # On unix a dead parent reparents the engine, so polling getppid() works. On
@@ -267,6 +267,11 @@ class Server:
 
         try:
             result = self._dispatch(method, params)
+        except RemoteSessionError as exc:
+            # The worker already formatted the Session error as "<Type>: message";
+            # surface it verbatim so the original exception type isn't buried under
+            # a second (RemoteSessionError) prefix.
+            return {"id": req_id, "ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
             return {"id": req_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

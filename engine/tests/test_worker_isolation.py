@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from solidifai_engine.worker import KernelCrash, SessionProxy
+from solidifai_engine.worker import KernelCrash, RemoteSessionError, SessionProxy
 
 CHANNEL = """
 from solidifai import show
@@ -117,3 +117,41 @@ def test_worker_configures_resolver_before_startup(tmp_path):
         assert info["mass"]["material"].lower() != "pla"
     finally:
         proxy.close()
+
+
+def test_session_error_keeps_original_type_prefix(proxy):
+    """A Session method that raises must surface with its own exception type,
+    not the proxy's. The proxy re-raises as RemoteSessionError carrying the
+    worker's already-formatted "<Type>: message" string verbatim, so the
+    server can emit it without prepending a second (RuntimeError) prefix."""
+    # 'notadict' makes set_requirements iterate a string and hit AttributeError
+    # inside the worker (a normal caught error, not a native crash).
+    with pytest.raises(RemoteSessionError) as excinfo:
+        proxy.set_requirements("notadict")
+    msg = str(excinfo.value)
+    assert msg.startswith("AttributeError:")
+    assert "RuntimeError:" not in msg
+
+
+def test_server_does_not_double_prefix_session_error(tmp_path):
+    """End to end: the client-facing error string keeps the original exception
+    type and is not buried under a second RuntimeError prefix (the pre-worker
+    behavior)."""
+    from solidifai_engine.server import Server
+
+    (tmp_path / ".solidifai").mkdir()
+    srv = Server(
+        socket_path=str(tmp_path / "sock"),
+        artifacts_dir=str(tmp_path / ".solidifai" / "artifacts"),
+        model_path=str(tmp_path / "model.py"),
+    )
+    try:
+        line = json.dumps(
+            {"id": 1, "method": "set_requirements", "params": {"requirements": "notadict"}}
+        ).encode("utf-8")
+        resp = srv._handle_line(line)
+        assert resp["ok"] is False
+        assert resp["error"].startswith("AttributeError:")
+        assert not resp["error"].startswith("RuntimeError:")
+    finally:
+        srv._session.close()

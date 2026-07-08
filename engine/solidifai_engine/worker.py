@@ -70,6 +70,12 @@ class KernelCrash(RuntimeError):
     previous good model are unaffected."""
 
 
+class RemoteSessionError(RuntimeError):
+    """A ``Session`` method raised inside the worker (a normal, caught error).
+    Carries the worker's already-formatted ``"<Type>: message"`` string verbatim
+    so the server surfaces it without prepending a second type prefix."""
+
+
 def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -> None:
     """Child entry point: hold a Session and serve one request at a time.
 
@@ -231,7 +237,9 @@ class SessionProxy:
             return payload
         # A Session method raised (a normal, caught error path): re-raise so the
         # server's handler maps it to an {ok: false} response, exactly as before.
-        raise RuntimeError(str(payload))
+        # The payload is already "<Type>: message"; RemoteSessionError lets the
+        # server emit it as-is instead of prepending its own RuntimeError prefix.
+        raise RemoteSessionError(str(payload))
 
     def __getattr__(self, name: str) -> Any:
         # Only reached for names not defined on the proxy: every Session method.
