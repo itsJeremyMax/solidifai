@@ -23,8 +23,10 @@ py_files=$(staged 'engine/*.py' 'engine/**/*.py')
 if [ -n "$py_files" ] && command -v uv >/dev/null 2>&1 && [ -d engine/.venv ]; then
   echo "pre-commit: ruff check + format (staged Python)"
   rel=$(echo "$py_files" | sed 's#^engine/##')
-  (cd engine && echo "$rel" | xargs uv run ruff check)
-  (cd engine && echo "$rel" | xargs uv run ruff format --check)
+  # --force-exclude so ruff honors its config excludes (e.g. workspace_templates)
+  # even when the path is passed explicitly, matching what CI lints.
+  (cd engine && echo "$rel" | xargs uv run ruff check --force-exclude)
+  (cd engine && echo "$rel" | xargs uv run ruff format --force-exclude --check)
 fi
 
 # --- Rust shell (src-tauri/**) ---
