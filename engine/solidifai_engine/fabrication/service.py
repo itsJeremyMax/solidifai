@@ -170,7 +170,7 @@ class Fabrication:
             if part.get("role") == "reference":
                 continue
             total_volume += part.get("volume", 0.0)
-            total_surface += part.get("area", 0.0)
+            total_surface += part.get("surfaceArea", 0.0)
             total_mass += part.get("mass", 0.0)
 
         if total_volume == 0.0:

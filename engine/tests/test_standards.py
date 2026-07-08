@@ -248,6 +248,21 @@ def test_lookup_reference_survives_non_string_alias(tmp_path, monkeypatch):
         standards._USER_LIBRARY_CACHE = None
 
 
+def test_lookup_reference_multiword_prefers_more_specific_entry():
+    """A short generic alias ('micro' on the AAA cell) must not hijack a
+    multi-word query when a more specific entry ('micro hdmi') also matches."""
+    assert standards.lookup_reference("micro hdmi cable")["match"]["id"] == "micro-hdmi-d"
+    # exact-equality path already worked; keep it covered
+    assert standards.lookup_reference("micro hdmi")["match"]["id"] == "micro-hdmi-d"
+
+
+def test_lookup_reference_short_alias_only_matches_whole_word():
+    """A single-token alias may still resolve a query it is the only match for,
+    but never mid-word."""
+    assert standards.lookup_reference("micro usb port")["match"]["id"] == "aaa"
+    assert standards.lookup_reference("micrometer")["match"] is None
+
+
 def test_size_regex_parses_sizes_glued_to_other_text():
     """M8x20 and M2.5mm must not be misparsed (trailing \\b regression)."""
     assert standards.lookup_standard("M8x20 cap screw")["size"] == "M8"

@@ -378,6 +378,7 @@ def lookup_reference(object_name: str) -> dict:
     q = " ".join(object_name.strip().lower().split())
     entries = _all_reference_objects()
     best = None
+    fuzzy = None  # (matched-alias length, entry): most specific fuzzy match wins
     for entry in entries:
         eid = entry["id"] if isinstance(entry["id"], str) else str(entry["id"])
         names = [eid.replace("-", " ")] + [
@@ -386,8 +387,16 @@ def lookup_reference(object_name: str) -> dict:
         if q in (eid, *names):
             best = entry
             break
-        if best is None and any(q in n or n in q for n in names):
-            best = entry
+        # Fuzzy fallback: q contains a full alias (word-bounded so a short alias
+        # can't match mid-word), or an alias contains the whole query. Keep the
+        # entry with the longest matched alias so a specific one beats a generic.
+        matched = [n for n in names if q in n or re.search(rf"\b{re.escape(n)}\b", q)]
+        if matched:
+            span = max(len(n) for n in matched)
+            if fuzzy is None or span > fuzzy[0]:
+                fuzzy = (span, entry)
+    if best is None and fuzzy is not None:
+        best = fuzzy[1]
     if best is None:
         return {
             "query": object_name,

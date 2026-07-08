@@ -283,6 +283,8 @@ class Exploration:
 
         origin = Vector(*(axis_origin or [0.0, 0.0, 0.0]))
         direction = Vector(*(axis_dir or [0.0, 0.0, 1.0]))
+        if direction.length == 0:
+            return {"ok": False, "error": "axis_dir must be a non-zero vector"}
         axis = Axis(origin, direction)
         n = max(2, int(steps))
         span = float(stop) - float(start)

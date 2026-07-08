@@ -215,6 +215,30 @@ def test_bom_overflow_note_stays_above_the_title_block():
     assert note.y < ty, f"'+N more' at y={note.y} overlaps the title block rule at {ty}"
 
 
+def test_hole_chart_rows_stay_above_the_title_block():
+    # A part with many located holes once ran chart rows down through the title-block
+    # rule and over the SCALE/UNITS fields. Rows must be clamped with a '+N more' note.
+    from build123d import Align, Box, Cylinder, Pos
+
+    plate = Box(200, 200, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    holes = []
+    for i in range(30):
+        hx, hy = -90 + (i % 10) * 20, -90 + (i // 10) * 20
+        plate -= Pos(hx, hy, 0) * Cylinder(radius=2, height=10)
+        holes.append({"center": (float(hx), float(hy), 0.0), "axis": (0.0, 0.0, 1.0), "dia": 4.0})
+    spec = dict(_PART_SPEC)
+    spec["bbox"] = (200.0, 200.0, 4.0)
+    spec["holes"] = holes
+    d, meta = sheet.compose_part({"shape": plate, "spec": spec}, spec, {})
+    ty = sheet.SHEET_H - sheet.MARGIN - 40.0  # the title-block rule
+    chart_rows = [t for t in d.items if isinstance(t, Text) and t.mono and "Ø" in t.s]
+    assert chart_rows, "expected hole-chart rows"
+    for row in chart_rows:
+        assert row.y < ty, f"hole-chart row at y={row.y} crosses the title rule at {ty}"
+    note = next(t for t in d.items if isinstance(t, Text) and t.s.endswith("more"))
+    assert note.y < ty, f"'+N more' at y={note.y} overlaps the title block rule at {ty}"
+
+
 def test_oblique_holes_get_an_informational_note_not_a_chart_row():
     import math
 

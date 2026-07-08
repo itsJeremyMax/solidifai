@@ -77,3 +77,20 @@ def test_motion_single_part_errors(tmp_path):
         "from build123d import Box\nfrom solidifai import show\nshow(Box(10,10,10),name='Solo')\n"
     )
     assert s.check_motion("Solo")["ok"] is False
+
+
+def test_motion_zero_axis_dir_errors_cleanly(tmp_path):
+    # A zero-length axis_dir must return a clean bad-input envelope, not raise.
+    s = _sess(tmp_path)
+    for kind in ("revolute", "prismatic"):
+        rep = s.check_motion(
+            "Arm",
+            kind=kind,
+            axis_origin=[0, 0, 0],
+            axis_dir=[0, 0, 0],
+            start=0,
+            stop=90,
+            steps=6,
+        )
+        assert rep["ok"] is False
+        assert "axis_dir" in rep["error"]

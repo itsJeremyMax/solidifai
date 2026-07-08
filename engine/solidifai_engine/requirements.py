@@ -163,9 +163,9 @@ def _eval_predicate(r: dict, ctx: dict) -> dict:
     measured = _measured(q, ctx)
     if measured is None:
         return out
+    if not _bound_ok(q, op, bound):
+        return out
     if q in _VECTOR:  # per-axis vector compare (size)
-        if not _bound_ok(q, op, bound):
-            return out
         # _bound_ok guarantees the shapes; assert narrows them for the type checker.
         assert isinstance(measured, list) and isinstance(bound, list)
         out["measured"] = [round(v, 2) for v in measured]

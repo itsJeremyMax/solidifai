@@ -148,10 +148,15 @@ def _hole_chart(drawing, x, right, y, rows):
     y = _eyebrow(drawing, x, right, y, "HOLE CHART")
     drawing.add(Text(x, y, "TAG  DIA    X      Y", size=2.0, mono=True, color=MUTED))
     y += 4.2
-    for tag, h, dx, dy in rows:
+    ty = SHEET_H - MARGIN - 40.0  # title-block rule; chart rows stay above it
+    max_rows = max(0, int((ty - 2.0 - y) / 3.8))
+    for tag, h, dx, dy in rows[:max_rows]:
         row = f"{tag:<4} Ø{h['dia']:<5.1f}{dx:<6.1f} {dy:<6.1f}"
         drawing.add(Text(x, y, row, size=2.0, mono=True, color=INK))
         y += 3.8
+    if len(rows) > max_rows:
+        note_y = min(y, ty - 2.0)  # keep the overflow note clear of the title rule
+        drawing.add(Text(x, note_y, f"+{len(rows) - max_rows} more", size=2.0, color=MUTED))
     return y
 
 

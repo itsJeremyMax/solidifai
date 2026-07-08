@@ -126,6 +126,13 @@ def test_size_within_flat_bound_is_null_not_crash():
     assert rq.evaluate([r], {"bbox": [20, 20, 20]})[0]["pass"] is None
 
 
+def test_scalar_within_flat_bound_is_null_not_crash():
+    # A scalar `within` needs a [lo, hi] pair; a bare scalar bound is the wrong
+    # shape and must read as unmeasured, not raise (matches the vector branch).
+    r = {"id": "z", "quantity": "min_wall", "op": "within", "bound": 2}
+    assert rq.evaluate([r], {"min_wall": 1.2})[0]["pass"] is None
+
+
 def test_size_within_per_axis_pairs():
     r = {
         "id": "z",

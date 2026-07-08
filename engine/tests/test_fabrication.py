@@ -495,6 +495,20 @@ def test_fab_estimate_geometric_fallback(tmp_path):
     assert result["estimate"]["filamentGrams"] > 0
 
 
+def test_fab_estimate_geometric_counts_surface_shell(tmp_path):
+    """The fallback must read measure()'s surfaceArea so the shell contributes.
+
+    A 20x20x20 box has surfaceArea 2400; the shell (surface x wall) dominates
+    the printed volume. If the shell is dropped, filamentGrams collapses to the
+    infill-only figure (~1.984) instead of the correct ~4.841.
+    """
+    sess = _make_session(tmp_path)
+    result = sess.fab_estimate(destination_id=None)
+    grams = result["estimate"]["filamentGrams"]
+    assert grams > 3.0, f"shell not counted — got {grams}"
+    assert 4.83 < grams < 4.85, f"expected ~4.841, got {grams}"
+
+
 def test_fab_estimate_no_model_returns_error(tmp_path):
     """fab_estimate() with no model built returns ok=False."""
     from solidifai_engine.session import Session
