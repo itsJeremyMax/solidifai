@@ -119,6 +119,52 @@ def test_worker_configures_resolver_before_startup(tmp_path):
         proxy.close()
 
 
+def test_worker_writes_engine_log(tmp_path):
+    """The worker is a fresh spawn interpreter, so it must run setup_logging
+    itself: otherwise Session's build/geometry logs (which now all execute in
+    the worker) never reach the workspace engine.log the file exists to capture."""
+    (tmp_path / ".solidifai").mkdir()
+    proxy = SessionProxy(
+        str(tmp_path / ".solidifai" / "artifacts"), model_path=str(tmp_path / "model.py")
+    )
+    try:
+        assert proxy.execute_script(CHANNEL)["ok"] is True  # runs inside the worker
+        log_file = tmp_path / ".solidifai" / "logs" / "engine.log"
+        assert log_file.exists()  # the worker installed the file handler
+    finally:
+        proxy.close()
+
+
+def test_long_running_op_uses_the_larger_budget():
+    """Aggregate multi-build ops (sweep/optimize/converge_to_spec/check_motion)
+    run many builds inside one RPC, so they must not be capped by the single
+    per-build timeout. The proxy picks the long-run budget for them and the
+    normal budget for everything else."""
+    proxy = SessionProxy("/tmp/unused", timeout=1.5, longrun_timeout=99.0)
+    seen = {}
+
+    def fake_recv(conn, procc, timeout):
+        seen["timeout"] = timeout
+        return ("ok", None)
+
+    proxy._ensure = lambda: None
+    proxy._conn = _FakeConn()
+    proxy._proc = object()
+    proxy._recv_result = fake_recv
+
+    proxy.execute_script("x")
+    assert seen["timeout"] == 1.5  # normal per-build ceiling
+    proxy.converge_to_spec()
+    assert seen["timeout"] == 99.0  # aggregate op gets the larger budget
+    proxy.sweep("w", [1, 2])
+    assert seen["timeout"] == 99.0
+
+
+class _FakeConn:
+    def send(self, _payload):
+        return None
+
+
 def test_session_error_keeps_original_type_prefix(proxy):
     """A Session method that raises must surface with its own exception type,
     not the proxy's. The proxy re-raises as RemoteSessionError carrying the

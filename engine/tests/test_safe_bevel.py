@@ -9,7 +9,7 @@ the biggest size that works so the model just builds.
 """
 
 import pytest
-from build123d import Align, Axis, Box, BuildPart, Locations, chamfer, fillet
+from build123d import Align, Axis, Box, BuildPart, Edge, Locations, chamfer, fillet
 
 from solidifai import safe_chamfer, safe_fillet
 
@@ -95,3 +95,13 @@ def test_degrades_to_no_op_when_even_min_fails():
     out = safe_fillet(edges, 30.0, min_radius=25.0)
     assert out.is_valid
     assert out.volume == pytest.approx(part.volume, rel=1e-9)
+
+
+def test_parentless_edge_is_noop_not_crash():
+    """A parentless edge (no owning solid, no active BuildPart) is a degenerate
+    input: the helpers must honor their "never raise" contract and return the
+    input unchanged, not crash with AttributeError on a None target."""
+    stray = Edge.make_line((0, 0, 0), (10, 0, 0))
+    assert stray.topo_parent is None  # precondition: no owning solid
+    assert safe_fillet(stray, 1.0) is stray
+    assert safe_chamfer(stray, 1.0) is stray

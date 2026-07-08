@@ -126,6 +126,8 @@ def safe_fillet(objects: Any, radius: float, *, min_radius: float = 0.1) -> Any:
     if not edges:
         return fillet(objects, radius)  # let build123d raise its own "no objects" error
     target = _resolve_target(edges)
+    if target is None:
+        return objects  # edges own no solid and no active part: nothing to bevel
     best = _largest_ok(lambda r: target.fillet(r, edges), radius, min_radius)
     if best is None:
         return target  # degrade to a no-op rather than fail the build
@@ -152,6 +154,8 @@ def safe_chamfer(
     if not edges:
         return chamfer(objects, length, length2)
     target = _resolve_target(edges)
+    if target is None:
+        return objects  # edges own no solid and no active part: nothing to bevel
     ratio = (length2 / length) if (length2 is not None and length) else None
 
     def trial(v: float) -> Any:

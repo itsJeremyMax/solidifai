@@ -56,11 +56,20 @@ REFRESH_METHODS = frozenset(
     }
 )
 
+# Aggregate operations that run MANY builds inside a single RPC: a parameter
+# sweep, an optimize/converge loop, a motion range. One per-build ceiling would
+# kill a legitimate long run partway (each of ~24 candidates rebuilds+measures),
+# so these get a much larger budget while a truly wedged worker is still bounded.
+# Names match the Session methods dispatched by the server.
+LONG_RUNNING_METHODS = frozenset({"sweep", "optimize", "converge_to_spec", "check_motion"})
+
 # Per-call ceiling (seconds). A build that runs longer is treated as wedged: the
 # worker is killed and the call reported as failed, rather than hanging forever
 # (the old in-process behavior). Generous so heavy-but-legitimate assembly builds
 # and tessellations finish; override with SOLIDIFAI_BUILD_TIMEOUT for testing.
 _DEFAULT_TIMEOUT = float(os.environ.get("SOLIDIFAI_BUILD_TIMEOUT", "180"))
+# Larger ceiling for LONG_RUNNING_METHODS, which run many builds per call.
+_LONGRUN_TIMEOUT = float(os.environ.get("SOLIDIFAI_LONGRUN_TIMEOUT", "1200"))
 _SPAWN_READY_TIMEOUT = float(os.environ.get("SOLIDIFAI_WORKER_START_TIMEOUT", "60"))
 
 
@@ -84,7 +93,13 @@ def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -
     process mid-reply -- the parent notices the closed pipe. Runs the build in
     this process so an OCC fault cannot reach the parent."""
     from solidifai_engine import materials
+    from solidifai_engine.logconfig import setup_logging
     from solidifai_engine.session import Session
+
+    # The worker is a fresh (spawn) interpreter, so the engine's main-process log
+    # setup did not run here. Configure it now or Session's build/geometry logs --
+    # which all execute in this worker -- never reach the workspace engine.log.
+    setup_logging(artifacts_dir)
 
     # Workspace root for the material resolver, matching Server._workspace_root:
     # the model's dir, else the artifacts grandparent (artifacts live at
@@ -129,10 +144,12 @@ class SessionProxy:
         model_path: str | None = None,
         *,
         timeout: float = _DEFAULT_TIMEOUT,
+        longrun_timeout: float = _LONGRUN_TIMEOUT,
     ):
         self._artifacts_dir = artifacts_dir
         self._model_path = model_path
         self._timeout = timeout
+        self._longrun_timeout = longrun_timeout
         self._ctx = mp.get_context("spawn")  # fresh interpreter: safe cross-platform
         self._proc: mp.process.BaseProcess | None = None
         self._conn: Connection | None = None
@@ -194,12 +211,14 @@ class SessionProxy:
 
     # -- call forwarding ----------------------------------------------------
 
-    def _recv_result(self, conn: Connection, proc: mp.process.BaseProcess) -> tuple[str, Any]:
+    def _recv_result(
+        self, conn: Connection, proc: mp.process.BaseProcess, timeout: float
+    ) -> tuple[str, Any]:
         """Wait for the worker's reply, watching for death and the timeout.
 
         Returns the raw ``(tag, payload)`` on a reply, or raises ``KernelCrash``
         if the worker died (native fault) or overran the build timeout."""
-        deadline = time.monotonic() + self._timeout
+        deadline = time.monotonic() + timeout
         while True:
             if conn.poll(0.2):
                 try:
@@ -213,21 +232,20 @@ class SessionProxy:
                         return conn.recv()
                 raise KernelCrash("the modeling kernel crashed on that operation")
             if time.monotonic() > deadline:
-                raise KernelCrash(
-                    f"the build ran past the {int(self._timeout)}s limit and was stopped"
-                )
+                raise KernelCrash(f"the build ran past the {int(timeout)}s limit and was stopped")
 
     def _call(self, method: str, args: tuple, kwargs: dict) -> Any:
         self._ensure()
         assert self._conn is not None and self._proc is not None
         refresh = method in REFRESH_METHODS
+        timeout = self._longrun_timeout if method in LONG_RUNNING_METHODS else self._timeout
         try:
             self._conn.send((method, args, kwargs, refresh))
         except (OSError, BrokenPipeError, ValueError):
             self._teardown()
             raise KernelCrash("the modeling kernel crashed on that operation") from None
         try:
-            tag, payload = self._recv_result(self._conn, self._proc)
+            tag, payload = self._recv_result(self._conn, self._proc, timeout)
         except KernelCrash:
             # The worker is dead or wedged: drop it so the next call respawns a
             # fresh one that reloads the last good model.
