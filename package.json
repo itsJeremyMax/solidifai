@@ -1,7 +1,7 @@
 {
   "name": "solidifai",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Agentic parametric CAD.",
   "author": "Jeremy Max",
   "license": "Apache-2.0",
