@@ -202,6 +202,37 @@ with BuildPart() as p:
 show(p.part, name="RoundedBottom")
 ```
 
+### Thin walls: bevels that clamp instead of failing
+
+A fillet or chamfer bigger than **~half the local wall width** is impossible: the kernel
+rejects it and the whole build fails with `Failed creating a fillet/chamfer, try a smaller
+value`. On a thin part (a 3 mm wall, a 2 mm rim) most "bevel the edges" sizes fail. Two rules:
+
+- **Size the bevel under the wall.** Keep `radius`/`length` below half the thinnest wall the
+  edge touches: a 3 mm wall takes at most ~1.4 mm, not 2 mm. Read the wall from
+  `get_manufacturing_profile()` (the edge-break value is a good default) instead of guessing big.
+- **Use the self-clamping helpers.** `safe_fillet` / `safe_chamfer` (from `solidifai`) apply the
+  largest size that fits, up to what you asked for, and never fail the build on a too-large
+  value. Drop-in for `fillet`/`chamfer` (same first two args, same builder behavior). Reach for
+  them on thin or unfamiliar geometry so a bevel never costs you a rebuild.
+
+```python
+from build123d import BuildPart, Box, Axis, Align, Locations
+from solidifai import show, safe_chamfer
+
+with BuildPart() as p:
+    Box(90, 81, 3, align=(Align.CENTER, Align.CENTER, Align.MIN))     # 3 mm floor
+    with Locations((-43.5, 0, 0), (43.5, 0, 0)):
+        Box(3, 81, 23, align=(Align.CENTER, Align.CENTER, Align.MIN))  # 3 mm walls
+    safe_chamfer(p.edges().group_by(Axis.Z)[-1], 2.0)  # asks 2 mm, clamps to what the wall takes
+
+show(p.part, name="ChanneledRim")
+```
+
+If even `min_radius`/`min_length` will not fit, the helper leaves the edge un-beveled rather
+than failing, so the part still builds. When it clamps, say so plainly ("beveled the rim as far
+as the 3 mm wall allows"); don't retry with random smaller numbers.
+
 ---
 
 ## 7. Holes, counterbores, countersinks
@@ -227,6 +258,40 @@ with BuildPart() as p:
 
 show(p.part, name="Counterbore")
 ```
+
+### Robust screw holes: subtract a cutter at an explicit position
+
+`Hole()` drills into the face under the **current `Locations`**. That is clean on one flat
+plate, but it is fragile when the face you land on does not cleanly span the hole (a thin wall,
+a narrow ledge, a spot near an edge or the open end of a channel): the cut can no-op or fail, so
+holes look like they "won't go in symmetrically" or "cap out at two of four." When you know
+where a hole goes in model space, the reliable way is to **subtract a cylinder cutter at that
+exact position** — placement is independent of face selection, so a symmetric layout stays
+symmetric every time:
+
+```python
+from build123d import BuildPart, Box, Align, Locations, Pos
+from solidifai import show, hardware
+
+W, D, t = 90.0, 81.0, 3.0
+with BuildPart() as bp:
+    Box(W, D, t, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    with Locations((-W/2 + t/2, 0, 0), (W/2 - t/2, 0, 0)):
+        Box(t, D, 23, align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+part = bp.part
+xs, ys = W/2 - 8, D/2 - 8
+for (px, py) in ((xs, ys), (-xs, ys), (xs, -ys), (-xs, -ys)):
+    part = part - Pos(px, py, 0) * hardware.clearance_hole("M3", t * 2)  # ISO clearance, profile fit
+
+show(part, name="bracket")   # four symmetric mounting holes, valid + manifold
+```
+
+`hardware.clearance_hole(size, depth)` returns a cylinder at the exact ISO 273 clearance
+diameter (resolved through the manufacturing profile's fit), so you never type a drill number.
+`hardware.counterbore` and `hardware.tap_hole` are the counterbore and threaded-pilot cutters.
+Rotate a cutter (`Rot(0, 90, 0) * ...`) to bore sideways through a wall. Keep a hole at least
+one radius clear of any edge so it does not open a sliver.
 
 ---
 

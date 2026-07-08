@@ -100,20 +100,61 @@ with BuildPart() as p:
 ```
 
 **Fix:** shrink the radius (well under the smallest adjacent dimension) and confirm the selection
-isn't empty.
+isn't empty. On thin or unfamiliar geometry, prefer `safe_fillet` / `safe_chamfer` (from
+`solidifai`), which apply the largest size that fits, up to what you ask for, and never fail the
+build on a too-large value — so you don't burn rebuilds guessing at numbers.
 
 ```python
-from build123d import BuildPart, Box, Axis, fillet
-from solidifai import show
+from build123d import BuildPart, Box, Axis
+from solidifai import show, safe_fillet
 
 with BuildPart() as p:
     Box(40, 30, 6)
-    fillet(p.edges().filter_by(Axis.Z), radius=2)   # <- fits the geometry
+    safe_fillet(p.edges().filter_by(Axis.Z), 15)   # asks 15 mm, clamps to what fits
 
 show(p.part, name="RoundedPlate")
 ```
 
 After it builds, call `get_model_info()` and confirm `valid` / `manifold` are `true`.
+
+---
+
+## Screw holes won't place symmetrically, or "only some go in"
+
+**Cause:** `Hole()` cuts into the face under the current `Locations`. On a thin wall, a narrow
+ledge, or near an edge or the open end of a channel, that face doesn't cleanly span the hole, so
+the cut no-ops or fails — the holes look asymmetric or "cap out" at a couple of positions.
+
+```python
+# doctest: +SKIP
+# FRAGILE: drilling four holes via face selection on a thin channel floor; some
+# positions land where the picked face doesn't span the hole and quietly drop out.
+top = bp.faces().filter_by(Plane.XY).sort_by(Axis.Z)[-1]
+with Locations(top):
+    with Locations((xs, ys), (-xs, ys), (xs, -ys), (-xs, -ys)):
+        Hole(radius=1.7, depth=t)
+```
+
+**Fix:** subtract a cutter at each explicit position; placement is independent of face selection,
+so a symmetric layout stays symmetric.
+
+```python
+from build123d import BuildPart, Box, Align, Locations, Pos
+from solidifai import show, hardware
+
+W, D, t = 90.0, 81.0, 3.0
+with BuildPart() as bp:
+    Box(W, D, t, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    with Locations((-W/2 + t/2, 0, 0), (W/2 - t/2, 0, 0)):
+        Box(t, D, 23, align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+part = bp.part
+xs, ys = W/2 - 8, D/2 - 8
+for (px, py) in ((xs, ys), (-xs, ys), (xs, -ys), (-xs, -ys)):
+    part = part - Pos(px, py, 0) * hardware.clearance_hole("M3", t * 2)
+
+show(part, name="bracket")
+```
 
 ---
 

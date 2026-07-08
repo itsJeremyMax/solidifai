@@ -44,8 +44,12 @@ done-gate on a build that succeeded; this skill gets it building and looking rig
 - **Empty viewport, no error** → you didn't `show()`, or you edited `model.py` as a file
   without `run_file("model.py")`.
 - **`cannot connect to engine`** → the app's engine is still starting; retry in a moment.
-- **Fillet/chamfer failed** → radius/length too big for the edge, or you selected the wrong (or
-  zero) edges. Shrink it, and reason carefully about the edge selection.
+- **Fillet/chamfer failed** ("try a smaller value") → the size exceeds ~half the local wall, or
+  the edge selection is wrong/empty. Don't retry random numbers: use `safe_fillet` /
+  `safe_chamfer` (from `solidifai`), which clamp to the largest size that fits. (cookbook §6.)
+- **Screw holes lose symmetry / "only some go in"** → `Hole()` is fragile on thin walls and
+  narrow ledges. Subtract a cutter at an explicit position:
+  `part - Pos(x, y, 0) * hardware.clearance_hole("M3", depth)`. (cookbook §7.)
 - **Revolve failed / weird solid** → the profile crosses the rotation axis, or isn't a closed
   face. Keep it on one side of the axis and `make_face()` it.
 - **`offset`/shell failed** → wall thickness too large for the part, or wrong `openings` face.

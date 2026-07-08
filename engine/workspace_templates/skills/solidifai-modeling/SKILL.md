@@ -161,6 +161,15 @@ plate = Box(30, 20, 5) - Cylinder(dia / 2, 20) - Pos(10, 0, 0) * Cylinder(boss /
 show(plate, name="plate")
 ```
 
+Coverage is M2 to M8 (heat-set inserts only M2 to M5).
+
+### Bevels and screw holes that don't fight you
+
+Thin geometry breaks two ops (fixes in cookbook §6 and §7). A fillet/chamfer over ~half the local
+wall fails the build, so use `safe_fillet` / `safe_chamfer` (from `solidifai`), which clamp to
+what fits. And `Hole()` is fragile on thin walls/ledges (holes "cap out" or lose symmetry), so
+subtract a cutter for placed holes: `part - Pos(x, y, 0) * hardware.clearance_hole("M3", depth)`.
+
 ### Multi-part models
 
 Model each genuinely separate part (a lid and a base, a bolt and a nut, a gear on a shaft) as
