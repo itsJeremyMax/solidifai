@@ -22,7 +22,8 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "assembly_enclosur
 
 
 def _cached_shapes(cache):
-    return [o.shape for objs in cache._store.values() for o in objs]
+    # NodeCache stores (objects, asset_fingerprint) per key.
+    return [o.shape for objs, _fp in cache._store.values() for o in objs]
 
 
 def _mesh_all(shapes):

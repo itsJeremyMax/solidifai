@@ -57,10 +57,11 @@ def build_child(node_dir: str, skel, child, *, cache=None, disk=None) -> tuple[l
         # "Write_s()" TypeError and would also poison the cache.
         if not objs or sum(len(o.shape.solids()) for o in objs) == 0:
             raise ValueError(f"part {child.id!r} produced no geometry; did you forget show()?")
+        assets_fp = asset_fingerprint(assets)
         if key is not None and cache is not None:
-            cache.put(key, objs)
+            cache.put(key, objs, assets_fp)
         if key is not None and disk is not None:
-            disk.put(key, objs, asset_fingerprint(assets))
+            disk.put(key, objs, assets_fp)
     return objs, key
 
 

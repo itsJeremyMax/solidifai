@@ -89,21 +89,29 @@ def asset_fingerprint(paths) -> dict:
 
 
 class NodeCache:
-    """Per-session dict of part_key -> list[ShownObject]. hits/misses are
-    observable for tests and telemetry."""
+    """Per-session dict of part_key -> (list[ShownObject], asset fingerprint).
+    hits/misses are observable for tests and telemetry. The stored asset
+    fingerprint gives L1 the same post-hoc revalidation the DiskCache has, so an
+    imported CAD asset edited mid-session is not served stale from L1 (which is
+    checked before L2)."""
 
     def __init__(self) -> None:
-        self._store: dict[str, list] = {}
+        self._store: dict[str, tuple[list, dict | None]] = {}
         self.hits = 0
         self.misses = 0
 
     def get(self, key: str):
-        val = self._store.get(key)
-        if val is None:
+        entry = self._store.get(key)
+        if entry is None:
+            self.misses += 1
+            return None
+        objects, assets_fp = entry
+        if assets_fp and asset_fingerprint(list(assets_fp)) != assets_fp:
+            # a recorded asset changed on disk: stale entry, treat as a miss
             self.misses += 1
             return None
         self.hits += 1
-        return val
+        return objects
 
-    def put(self, key: str, objects: list) -> None:
-        self._store[key] = objects
+    def put(self, key: str, objects: list, assets_fp: dict | None = None) -> None:
+        self._store[key] = (objects, assets_fp)
