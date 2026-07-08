@@ -49,6 +49,7 @@ def analyze_part(shape, process: str = "fdm", config: dict | None = None) -> dic
     Only ``fdm`` is evaluated; any other process returns
     ``evaluated=False`` with no violations (the session adds an info note).
     """
+    process = (process or "").strip().lower()
     if process != "fdm":
         return {"process": process, "evaluated": False, "violations": []}
     cfg = {**FDM_DEFAULTS, **(config or {})}
@@ -206,6 +207,17 @@ def _check_small_holes(shape, cfg) -> list[dict]:
                 continue
         except Exception:  # noqa: BLE001
             continue
+        # Skip partial cylinders (a concave fillet spans ~pi/2 rad; a real hole
+        # spans a full 2*pi, or ~pi per half when split), so an inner fillet is
+        # never misread as a too-small hole.
+        try:
+            from OCP.BRepTools import BRepTools
+
+            umin, umax, _vmin, _vmax = BRepTools.UVBounds_s(f.wrapped)
+            if (umax - umin) < 2.5:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
         if not _is_hole(f, center):
             continue
         r = _cylinder_radius(f)

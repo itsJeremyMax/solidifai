@@ -50,6 +50,23 @@ def test_motion_clear_small_range(tmp_path):
     assert rep["firstCollision"] is None
 
 
+def test_motion_clear_through_is_last_clear_sample(tmp_path):
+    # clearThrough must report the last collision-free position, not the first
+    # colliding one (off-by-one would overstate safe travel).
+    s = _sess(tmp_path)
+    rep = s.check_motion(
+        "Arm",
+        kind="revolute",
+        axis_origin=[0, 0, 0],
+        axis_dir=[0, 0, 1],
+        start=0,
+        stop=120,
+        steps=13,
+    )
+    assert rep["collides"] is True
+    assert rep["clearThrough"] < rep["firstCollision"]["at"]
+
+
 def test_motion_unknown_part(tmp_path):
     assert _sess(tmp_path).check_motion("Nope")["ok"] is False
 

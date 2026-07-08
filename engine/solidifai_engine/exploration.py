@@ -289,6 +289,7 @@ class Exploration:
         samples: list[dict[str, Any]] = []
         collides, first = False, None
         clear_through = float(stop)
+        last_clear = float(start)
         for i in range(n):
             at = float(start) + span * i / (n - 1)
             try:
@@ -312,8 +313,10 @@ class Exploration:
                 step["with"] = hit
                 if first is None:
                     first = {"at": round(at, 3), "with": hit}
-                    clear_through = round(at, 3)
+                    clear_through = round(last_clear, 3)
                     collides = True
+            else:
+                last_clear = at
             samples.append(step)
         return {
             "ok": True,

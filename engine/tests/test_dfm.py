@@ -12,6 +12,7 @@ from build123d import (
     Polyline,
     Pos,
     Rot,
+    extrude,
     make_face,
     revolve,
 )
@@ -38,6 +39,17 @@ def test_analyze_part_unknown_process_not_evaluated():
     assert rep["evaluated"] is False
     assert rep["process"] == "cnc"
     assert rep["violations"] == []
+
+
+def test_analyze_part_process_is_case_insensitive():
+    # 'FDM'/'Fdm' (reachable via the analyze_dfm process override) must evaluate
+    # exactly like 'fdm', not silently skip every check.
+    for process in ("FDM", "Fdm", " fdm "):
+        rep = dfm.analyze_part(Box(20, 20, 0.5), process=process)
+        assert rep["evaluated"] is True, process
+        assert any(v["rule"] == "wall_thickness" for v in rep["violations"]), process
+    # a genuinely unevaluated process stays unevaluated regardless of case.
+    assert dfm.analyze_part(Box(10, 10, 10), process="CNC")["evaluated"] is False
 
 
 def test_analyze_part_thick_fdm_block_has_no_violations():
@@ -102,6 +114,31 @@ def test_small_hole_flags_advisory():
 
 def test_large_hole_is_fine():
     rep = dfm.analyze_part(_part_with_hole(5.0), process="fdm")
+    assert _rules(rep, "small_hole") == []
+
+
+def _l_bracket_with_inner_fillet(radius: float):
+    """An L-bracket with a small concave fillet on its inner corner. The fillet
+    is a partial cylinder (UV span ~pi/2), NOT a hole, so it must not be flagged
+    as a small hole even though its radius sits below the hole minimum."""
+    with BuildPart() as bp:
+        with BuildSketch(Plane.XZ):
+            with BuildLine():
+                Polyline((0, 0), (10, 0), (10, 2), (2, 2), (2, 10), (0, 10), (0, 0))
+            make_face()
+        extrude(amount=10)
+    part = bp.part
+    inner = min(
+        part.edges().filter_by(Axis.Y), key=lambda e: abs(e.center().X - 2) + abs(e.center().Z - 2)
+    )
+    return part.fillet(radius=radius, edge_list=[inner])
+
+
+def test_inner_fillet_is_not_a_small_hole():
+    # Regression: a 0.5 mm concave fillet is a partial cylinder, not a hole. It
+    # must not be misread as a too-small hole (the opposite of the fix stress
+    # analysis recommends).
+    rep = dfm.analyze_part(_l_bracket_with_inner_fillet(0.5), process="fdm")
     assert _rules(rep, "small_hole") == []
 
 
