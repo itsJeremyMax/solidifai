@@ -25,8 +25,8 @@ skill owns how to build it. build123d is your internal toolkit; never name it to
 ## The procedure
 
 1. **State a stream-tier build brief** (AGENTS.md "State the build brief"): what it is, the
-   few functional dims (the PARAMS you are about to define), and the process/material from the
-   profile. A fully-specified or pure-geometry part skips even this. Ground a mechanism,
+   few functional dims (the PARAMS you'll define), and the process/material from the profile;
+   record it with `propose_build`. A fully-specified or pure-geometry part skips this. Ground a mechanism,
    multi-part product, or image reproduction first (**solidifai-grounding**); bring in
    **solidifai-product-design** when a person holds, wears, operates, or sees the part and
    design is open; neither is stalling (AGENTS.md "model it now").

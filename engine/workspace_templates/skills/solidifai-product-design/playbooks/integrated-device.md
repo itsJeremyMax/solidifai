@@ -67,12 +67,13 @@ Inside-out order, each step traceable to a lens:
    gap and cable bend; size the airflow channel from
    [thermal-ventilation](../references/thermal-ventilation.md#decision-rules); size the service
    opening from [serviceability-assembly](../references/serviceability-assembly.md#decision-rules).
-4. **Derive the packed envelope** -- the tightest axis-aligned box that contains all the
+4. **Derive the component envelope** -- the tightest axis-aligned box that contains all the
    reference component volumes ([internal-layout](../references/internal-layout.md#principle)).
-5. **Wrap the shell** -- outer size = packed envelope (components) + clearance + other reservations
-   + 2 * wall (one wall per side), where wall comes from the manufacturing profile. Component-to-
-   wall clearance is one of the reservations the internal-layout lens folds into its
-   `packed_envelope`, so its `packed_envelope + 2 * wall` and this expanded form are the same thing
+5. **Wrap the shell** -- outer size = component envelope + clearance + other reservations
+   + 2 * wall (one wall per side), where wall comes from the manufacturing profile. The
+   internal-layout lens folds component-to-wall clearance and the other reservations into its
+   `packed_envelope` (= component envelope + reservations), so its `packed_envelope + 2 * wall`
+   and this expanded form are the same thing
    ([internal-layout](../references/internal-layout.md#data--defaults)).
 6. **Provision mounts under each component and port cutouts sized to the real connectors** --
    standoff geometry from [structure](../references/structure.md#decision-rules); cutout sizing

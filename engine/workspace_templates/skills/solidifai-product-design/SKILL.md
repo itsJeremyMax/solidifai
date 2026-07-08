@@ -31,15 +31,16 @@ and well-proportioned. Units are millimetres.
    screws, 2 mm walls, 0.2 mm lid clearance"). The dims and the "why" you settle here fill the
    **build brief**'s `key_dims` and each part's `why` (AGENTS.md "State the build brief");
    record it with `propose_build` (tier set) and state it before you build.
-4. **Ask only the few that matter:** the 1-3 decision-changing unknowns the playbook flags. If
-   guessing wrong is cheap, default instead of asking. Never quiz.
+4. **Surface the few that matter:** the 1-3 decision-changing unknowns the playbook flags, as
+   stated assumptions the user can correct, not a gate you wait behind. If guessing wrong is
+   cheap, just default. Never quiz, never block.
 5. **Build** through `solidifai-modeling` (`execute_script`), parametric where it earns it.
 6. **Run the finishing pass, then self-verify** (both below). Walk the finishing checklist
    item by item and say what each got (which face carries the seam, where the draft went,
    which edges were broken); a pass you didn't narrate didn't happen.
-7. **Refine & report.** Fix what failed (`set_params`/rebuild), re-verify, then report the
-   class assumed, the key defaults applied, the assumptions flagged, and any trade-off you
-   could not resolve.
+7. **Refine & report.** Fix what failed (`set_params`/rebuild), re-verify, run the tier's
+   critique (self-verify's step 8) on a stream or pause part, then report the class assumed, the
+   key defaults applied, the assumptions flagged, and any trade-off you could not resolve.
 
 ### Route the part
 
