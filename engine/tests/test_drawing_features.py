@@ -49,6 +49,15 @@ def test_signature_groups_identical_parts_regardless_of_pose():
     assert features.part_signature(base) != features.part_signature(distinct)
 
 
+def test_base_name_strips_only_separated_index():
+    # An explicit separator before the number is an instance index -> strip it.
+    assert features._base_name("Foot 1") == "Foot"
+    assert features._base_name("Bay_03") == "Bay"
+    # A number glued to letters is part of the spec token -> keep it.
+    assert features._base_name("M3") == "M3"
+    assert features._base_name("Panel v2") == "Panel v2"
+
+
 def test_group_parts_qty_and_base_name():
     base = Box(8, 4, 2)
     objs = [_Obj(Pos(i * 20, 0, 0) * base, f"Foot {i + 1}") for i in range(4)] + [

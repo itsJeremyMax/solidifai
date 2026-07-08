@@ -230,6 +230,24 @@ def test_lookup_handlers_dispatch(tmp_path):
     assert r["match"]["dims_mm"]["dia_max"] == 18.6
 
 
+def test_lookup_reference_survives_non_string_alias(tmp_path, monkeypatch):
+    """A non-string alias or id in the host-written library must read as
+    unmatched, never abort the lookup loop (malformed reads as empty)."""
+    from solidifai_engine import paths
+
+    monkeypatch.setattr(paths, "app_config_dir", lambda: str(tmp_path))
+    standards._USER_LIBRARY_CACHE = None
+    (tmp_path / "reference-library.json").write_text(
+        json.dumps({"objects": [{"id": "widget", "aliases": [123, None], "dims_mm": {}}]}),
+        encoding="utf-8",
+    )
+    try:
+        # A miss that must scan the malformed entry without raising.
+        assert standards.lookup_reference("18650")["match"]["dims_mm"]["dia_max"] == 18.6
+    finally:
+        standards._USER_LIBRARY_CACHE = None
+
+
 def test_size_regex_parses_sizes_glued_to_other_text():
     """M8x20 and M2.5mm must not be misparsed (trailing \\b regression)."""
     assert standards.lookup_standard("M8x20 cap screw")["size"] == "M8"

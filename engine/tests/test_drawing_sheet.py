@@ -159,3 +159,74 @@ def test_assembly_bom_is_grouped_and_uncapped():
     d, meta = sheet.compose(Box(20, 10, 5), spec, {})
     # all 12 unique rows render (no [:7] cap); rows past the old cap are present
     assert any("P7" in t or "P8" in t or "P11" in t for t in _texts(d))
+
+
+def test_oversized_part_scales_to_fit_the_panel():
+    # A part larger than the smallest nice ratio (1:100) once floored the scale at
+    # 1:100 and overflowed the drawing area, bleeding across the panel divider.
+    spec = dict(_SPEC)
+    spec["bbox"] = (20000.0, 15000.0, 200.0)
+    spec["holes"] = {}
+    d, meta = sheet.compose(Box(20000, 15000, 200), spec, {})
+    panel_x = sheet.SHEET_W - sheet.MARGIN - sheet.PANEL_W
+    crossing = [
+        ln
+        for ln in d.items
+        if isinstance(ln, Line)
+        and max(ln.x1, ln.x2) > panel_x + 0.5
+        and min(ln.x1, ln.x2) < panel_x - 0.5
+    ]
+    assert not crossing, f"{len(crossing)} view lines cross the panel divider"
+    for ln in d.items:
+        if isinstance(ln, Line):
+            for x, _y in ((ln.x1, ln.y1), (ln.x2, ln.y2)):
+                assert x <= sheet.SHEET_W + 0.5
+
+
+def test_hole_tags_stay_alphabetic_past_z():
+    # 27+ charted holes once ran the A..Z counter into '[', '\\', ']' via chr();
+    # they must roll over to spreadsheet-style AA, AB, ... instead.
+    from build123d import Align, Box, Cylinder, Pos
+
+    plate = Box(200, 200, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    holes = []
+    for i in range(30):
+        hx, hy = -90 + (i % 10) * 20, -90 + (i // 10) * 20
+        plate -= Pos(hx, hy, 0) * Cylinder(radius=2, height=10)
+        holes.append({"center": (float(hx), float(hy), 0.0), "axis": (0.0, 0.0, 1.0), "dia": 4.0})
+    spec = dict(_PART_SPEC)
+    spec["bbox"] = (200.0, 200.0, 4.0)
+    spec["holes"] = holes
+    d, meta = sheet.compose_part({"shape": plate, "spec": spec}, spec, {})
+    tags = {
+        t.s for t in d.items if isinstance(t, Text) and t.color == sheet.ACCENT and len(t.s) <= 2
+    }
+    assert not (tags & set("[\\]^_`")), f"non-alphabetic tags leaked: {tags}"
+    assert "AA" in tags  # rolled over past Z
+
+
+def test_bom_overflow_note_stays_above_the_title_block():
+    spec = dict(_SPEC)
+    spec["bom"] = [{"name": f"P{i}", "qty": 1, "mass_g": 1.0} for i in range(25)]
+    spec["part_count"] = 25
+    d, meta = sheet.compose(Box(20, 10, 5), spec, {})
+    ty = sheet.SHEET_H - sheet.MARGIN - 40.0  # the title-block rule
+    note = next(t for t in d.items if isinstance(t, Text) and t.s.endswith("more"))
+    assert note.y < ty, f"'+N more' at y={note.y} overlaps the title block rule at {ty}"
+
+
+def test_oblique_holes_get_an_informational_note_not_a_chart_row():
+    import math
+
+    from build123d import Align, Box, Cylinder, Pos
+
+    block = Box(40, 40, 40, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    block -= Pos(0, 0, 20) * Cylinder(radius=3, height=60, rotation=(45, 0, 0))
+    ax = (0.0, math.sin(math.radians(45)), math.cos(math.radians(45)))
+    spec = dict(_PART_SPEC)
+    spec["bbox"] = (40.0, 40.0, 40.0)
+    spec["holes"] = [{"center": (0.0, 0.0, 20.0), "axis": ax, "dia": 6.0}]
+    d, meta = sheet.compose_part({"shape": block, "spec": spec}, spec, {})
+    texts = _texts(d)
+    assert any("oblique" in t for t in texts), "expected an oblique-hole note"
+    assert not any(t.startswith("HOLE CHART") for t in texts)  # no ambiguous chart

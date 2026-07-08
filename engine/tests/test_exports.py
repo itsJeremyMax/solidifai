@@ -227,3 +227,29 @@ def test_export_3mf_mesh_type_and_part(tmp_path):
     p = str(tmp_path / "role.3mf")
     export("3mf", p, {"mesh_type": "support", "part_number": "KB-1", "unit": "in"})
     assert os.path.getsize(p) > 0
+
+
+# -- write-failure and path-normalization guards ---------------------------
+
+
+def test_export_raises_when_writer_produces_no_file(tmp_path, monkeypatch):
+    # build123d's stl/brep/gltf writers return False instead of raising on a
+    # failed write, leaving a missing or empty file. A no-op writer stands in
+    # for that: export must surface it as an error, not report success.
+    from solidifai_engine import exports as _exp
+
+    _current_model()
+    monkeypatch.setitem(_exp._WRITERS, "stl", lambda s, p, o: None)
+    with pytest.raises(Exception):  # noqa: B017 - any raise beats a silent ok
+        export("stl", str(tmp_path / "out.stl"))
+
+
+def test_export_dotdot_path_writes_a_real_file(tmp_path):
+    # A '..' traversal through a not-yet-created "exports" dir must not write
+    # through a still-missing directory. Normalizing the path once makes the
+    # makedirs target and the writer target agree, so the file lands.
+    _current_model()
+    raw = str(tmp_path / "exports" / ".." / "leaked.stl")
+    out = export("stl", raw)
+    assert out == os.path.abspath(raw)
+    assert os.path.getsize(out) > 0

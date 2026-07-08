@@ -77,14 +77,15 @@ def _node_ids(objects) -> list[str]:
     ids like 'hinge/pin/pin' keep their separators while flat names are
     unchanged."""
     seen: dict[str, int] = {}
+    used: set[str] = set()
     ids: list[str] = []
     for obj in objects:
-        node = "/".join(_slug(s) for s in obj.name.split("/"))
-        if node in seen:
-            seen[node] += 1
-            node = f"{node}_{seen[node]}"
-        else:
-            seen[node] = 0
+        base = "/".join(_slug(s) for s in obj.name.split("/"))
+        node = base
+        while node in used:
+            seen[base] = seen.get(base, 0) + 1
+            node = f"{base}_{seen[base]}"
+        used.add(node)
         ids.append(node)
     return ids
 

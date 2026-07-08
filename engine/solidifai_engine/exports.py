@@ -278,8 +278,14 @@ def export(
         raise ValueError(f"Unsupported format {format!r}; expected one of {', '.join(SUPPORTED)}.")
     resolved = validate_options(fmt, options)
     target = shape if shape is not None else _current_compound()
-    # Ensure the destination directory exists (e.g. a fresh "exports" folder)
-    # so writers never fail on a missing parent.
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    # Normalize once so the directory we create and the file the writer opens
+    # agree; otherwise a '..' path writes through a still-missing dir and fails
+    # silently. Ensure the parent exists (e.g. a fresh "exports" folder) too.
+    path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     _WRITERS[fmt](target, path, resolved)
+    # build123d's stl/brep/gltf writers return False rather than raising on a
+    # failed write, so a missing or empty file would otherwise pass as success.
+    if not (os.path.exists(path) and os.path.getsize(path) > 0):
+        raise RuntimeError(f"export failed: {_LABELS[fmt]} writer produced no file at {path}")
     return path

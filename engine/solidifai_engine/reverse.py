@@ -55,7 +55,7 @@ def _primitive_guess(size: list, planar: int, cylindrical: int) -> str:
     thin = smallest > 0 and smallest < largest / 4
     if cylindrical == 0 and planar <= 6:
         return "plate" if thin else "box"
-    if cylindrical >= planar and planar <= 3:
+    if cylindrical >= 1 and planar <= 3:
         return "cylinder"
     return "compound"
 

@@ -33,7 +33,18 @@ def _nice_scale(fit: float) -> float:
     for s in _NICE:
         if s <= fit:
             return s
-    return _NICE[-1]
+    return fit  # oversized part: no nice ratio fits, so use the exact fitting scale
+
+
+def _col_label(n: int) -> str:
+    """Spreadsheet-style label for a 0-based index: A..Z, AA, AB, ... so a chart
+    with 27+ holes never runs the alphabet off into punctuation."""
+    s = ""
+    n += 1
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(ord("A") + r) + s
+    return s
 
 
 def _seg(drawing: Drawing, pts, ox, oy, bx, by, scale, dashed):
@@ -122,10 +133,10 @@ def _hole_marks(drawing, holes, view, bbox, ox, oy, scale, start_tag):
         m = 1.4
         drawing.add(Line(px - m, py, px + m, py, width=0.15))
         drawing.add(Line(px, py - m, px, py + m, width=0.15))
-        drawing.add(Text(px + m + 0.6, py - 0.6, chr(tag), size=2.2, color=ACCENT))
+        drawing.add(Text(px + m + 0.6, py - 0.6, _col_label(tag), size=2.2, color=ACCENT))
         # Chart datum is the part's lower-left: X from the left edge, Y up from the
         # bottom edge. Screen v grows downward, so the bottom edge is bbox[3].
-        rows.append((chr(tag), h, u - bbox[0], bbox[3] - v))
+        rows.append((_col_label(tag), h, u - bbox[0], bbox[3] - v))
         tag += 1
     return rows, tag
 
@@ -182,6 +193,7 @@ def _panel(drawing: Drawing, x0, spec: dict, scale: float, *, kind="assembly", p
     chart (part), title block. ``placed`` is the list of located-hole rows."""
     x = x0 + 4.0
     right = SHEET_W - MARGIN - 4.0
+    ty = SHEET_H - MARGIN - 40.0  # top of the ruled title block; content stays above it
 
     # -- brand header --
     _iso_cube(drawing, x + 2.0, MARGIN + 8.5, 2.4, ACCENT)
@@ -220,12 +232,12 @@ def _panel(drawing: Drawing, x0, spec: dict, scale: float, *, kind="assembly", p
                 total = item.get("mass_total_g", item.get("mass_g", 0) * qty)
                 y = _kv(drawing, x, right, y, name, f"{total:.1f} g", step=4.4, size=2.2)
             if len(bom) > max_rows:
-                drawing.add(Text(x, y, f"+{len(bom) - max_rows} more", size=2.0, color=MUTED))
+                note_y = min(y, ty - 2.0)  # keep the overflow note clear of the title rule
+                drawing.add(Text(x, note_y, f"+{len(bom) - max_rows} more", size=2.0, color=MUTED))
     elif placed:
         y = _hole_chart(drawing, x, right, y + 3.0, placed)
 
     # -- title block (ruled, bottom of the panel) --
-    ty = SHEET_H - MARGIN - 40.0
     drawing.add(Line(x0, ty, SHEET_W - MARGIN, ty, width=0.3))
     drawing.add(Text(x, ty + 7.0, spec.get("name", "part")[:20], size=4.8, bold=True, color=INK))
     drawing.add(Text(x, ty + 11.0, "PART", size=1.85, color=MUTED))
@@ -288,7 +300,7 @@ def _render_sheet(d: Drawing, compound, spec: dict, opts: dict, *, kind: str) ->
         (avail_w - GAP) / max(W + right_col_w, 1e-6),
         (avail_h - GAP) / max(H + top_row_h, 1e-6),
     )
-    scale = _nice_scale(max(fit, _NICE[-1]))
+    scale = _nice_scale(fit)
 
     ox = MARGIN + PAD + 6.0
     oy = MARGIN + PAD
@@ -316,7 +328,7 @@ def _render_sheet(d: Drawing, compound, spec: dict, opts: dict, *, kind: str) ->
         # circle (top for Z-axis holes, front for Y, right for X). Tags continue
         # across views so the chart is globally unique.
         holes = spec.get("holes") or []
-        next_tag = ord("A")
+        next_tag = 0
         for view, vx, vy, bb in (
             ("top", ox, oy, bboxes["top"]),
             ("front", ox, front_y, bboxes["front"]),
@@ -324,6 +336,20 @@ def _render_sheet(d: Drawing, compound, spec: dict, opts: dict, *, kind: str) ->
         ):
             rows, next_tag = _hole_marks(d, holes, view, bb, vx, vy, scale, next_tag)
             placed.extend(rows)
+        # Oblique holes read as ellipses in every ortho view, so they carry no
+        # unambiguous X/Y datum and stay off the chart. Note the count rather than
+        # inventing coordinates; their bore edges are still drawn in the views.
+        oblique = len(holes) - len(placed)
+        if oblique:
+            d.add(
+                Text(
+                    ox,
+                    front_y + H * scale + 23.0,
+                    f"{oblique} hole(s) not charted (oblique)",
+                    size=2.4,
+                    color=MUTED,
+                )
+            )
     else:
         note = hole_note(_aggregate_holes(spec.get("holes")))
         if note:

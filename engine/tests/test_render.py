@@ -142,6 +142,20 @@ def test_node_ids_are_collision_safe():
     assert ids == ["bracket", "bracket_1", "pin"]
 
 
+def test_node_ids_generated_suffix_does_not_collide_with_real_slug():
+    """A bumped '_N' id must not collide with a later real object's slug, or
+    an override keyed to that id would recolor two parts."""
+    from solidifai_engine.render import _node_ids
+
+    class Obj:
+        def __init__(self, name):
+            self.name = name
+
+    ids = _node_ids([Obj("a"), Obj("a"), Obj("a_1")])
+    assert ids == ["a", "a_1", "a_1_1"]
+    assert len(set(ids)) == len(ids)
+
+
 def test_override_changes_a_parts_material(tmp_path):
     show(Box(20, 20, 20), name="Bracket", material="pla")
     show(Box(10, 10, 10), name="Pin", material="pla")

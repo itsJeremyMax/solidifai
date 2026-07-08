@@ -379,8 +379,11 @@ def lookup_reference(object_name: str) -> dict:
     entries = _all_reference_objects()
     best = None
     for entry in entries:
-        names = [entry["id"].replace("-", " ")] + [a.lower() for a in entry.get("aliases", [])]
-        if q in (entry["id"], *names):
+        eid = entry["id"] if isinstance(entry["id"], str) else str(entry["id"])
+        names = [eid.replace("-", " ")] + [
+            a.lower() for a in entry.get("aliases", []) if isinstance(a, str)
+        ]
+        if q in (eid, *names):
             best = entry
             break
         if best is None and any(q in n or n in q for n in names):

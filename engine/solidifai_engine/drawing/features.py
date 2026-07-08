@@ -70,8 +70,11 @@ def part_signature(shape) -> tuple:
 
 
 def _base_name(name: str) -> str:
-    """Strip a trailing instance index: 'Foot 1' -> 'Foot', 'Bay_03' -> 'Bay'."""
-    return re.sub(r"[ _-]*\d+$", "", (name or "part")).strip() or (name or "part")
+    """Strip a trailing instance index: 'Foot 1' -> 'Foot', 'Bay_03' -> 'Bay'.
+
+    Requires an explicit separator before the number so spec tokens glued to
+    letters survive ('M3' and 'Panel v2' stay as-is)."""
+    return re.sub(r"[ _-]+\d+$", "", (name or "part")).strip() or (name or "part")
 
 
 def group_parts(objects) -> list[dict]:
