@@ -62,7 +62,7 @@ function ExportMenu() {
         {exporting !== null ? (
           <Loader2 className="animate-spin" size={15} strokeWidth={2.2} />
         ) : (
-          <Download size={15} strokeWidth={1.8} />
+          <Upload size={15} strokeWidth={1.8} />
         )}
         Export
       </button>
@@ -113,7 +113,7 @@ function ImportButton() {
         {importing ? (
           <Loader2 className="animate-spin" size={15} strokeWidth={2.2} />
         ) : (
-          <Upload size={15} strokeWidth={1.8} />
+          <Download size={15} strokeWidth={1.8} />
         )}
         Import
       </button>
