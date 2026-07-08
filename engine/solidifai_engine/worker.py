@@ -1,0 +1,248 @@
+"""Fault-isolated build worker.
+
+The modeling kernel (OpenCascade, via build123d) can crash the *process* on
+degenerate geometry -- a fillet whose radius equals a wall thickness, a
+self-intersecting boolean, a pathological tessellation -- with a native
+SIGSEGV/SIGABRT that no ``try/except`` can catch. The engine runs arbitrary
+agent-authored build123d code, so an in-process kernel crash would take the
+whole engine down and drop the client's connection.
+
+``SessionProxy`` moves the ``Session`` (all geometry work) into a spawned child
+process and forwards each RPC to it over a pipe. A native crash now kills only
+the child: the proxy detects the death, respawns a fresh worker (which reloads
+the last good ``model.py`` on startup), and returns a clean build-failed error
+for the offending call. The engine process itself never dies. The same boundary
+bounds runaway builds: a call that exceeds ``timeout`` has its worker killed and
+reported, instead of wedging the engine forever.
+
+The proxy is a drop-in for ``Session`` from the ``Server``'s point of view: any
+attribute it does not define is forwarded to the worker's ``Session`` method of
+the same name, and results (plain JSON-able values -- the same ones that already
+cross the RPC socket) come back over the pipe.
+"""
+
+from __future__ import annotations
+
+import logging
+import multiprocessing as mp
+import os
+import time
+from multiprocessing.connection import Connection
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+# Session methods that mutate script/material/import state: the worker must point
+# the material resolver at the workspace before running them so a material
+# created/edited mid-session resolves. Kept here (not in server.py) so both the
+# proxy and the worker share one definition without a circular import.
+REFRESH_METHODS = frozenset(
+    {
+        "execute_script",
+        "run_file",
+        "render",
+        "set_params",
+        "set_part_material",
+        "import_reference",
+        "remove_import",
+        "set_skeleton",
+        "set_part",
+        "attach",
+        "set_inputs",
+        "remove_part",
+        "add_subassembly",
+        "build_part",
+        "end_round",
+    }
+)
+
+# Per-call ceiling (seconds). A build that runs longer is treated as wedged: the
+# worker is killed and the call reported as failed, rather than hanging forever
+# (the old in-process behavior). Generous so heavy-but-legitimate assembly builds
+# and tessellations finish; override with SOLIDIFAI_BUILD_TIMEOUT for testing.
+_DEFAULT_TIMEOUT = float(os.environ.get("SOLIDIFAI_BUILD_TIMEOUT", "180"))
+_SPAWN_READY_TIMEOUT = float(os.environ.get("SOLIDIFAI_WORKER_START_TIMEOUT", "60"))
+
+
+class KernelCrash(RuntimeError):
+    """A build worker died on a native fault or was killed for exceeding the
+    build timeout. Surfaced to the client as a failed build; the engine and the
+    previous good model are unaffected."""
+
+
+def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -> None:
+    """Child entry point: hold a Session and serve one request at a time.
+
+    Requests are ``(method, args, kwargs, refresh)``; replies are ``("ok",
+    result)`` or ``("err", "Type: message")``. A native crash simply ends the
+    process mid-reply -- the parent notices the closed pipe. Runs the build in
+    this process so an OCC fault cannot reach the parent."""
+    from solidifai_engine import materials
+    from solidifai_engine.session import Session
+
+    root = os.path.dirname(model_path) if model_path else None
+
+    session = Session(artifacts_dir, model_path=model_path)
+    try:
+        session.startup()  # reload last-good model + settings (never raises)
+    except Exception:  # noqa: BLE001 - belt and suspenders; startup already guards
+        log.exception("worker startup failed")
+    conn.send(("ready", None))
+
+    while True:
+        try:
+            method, args, kwargs, refresh = conn.recv()
+        except (EOFError, KeyboardInterrupt):
+            return
+        try:
+            if refresh and root is not None:
+                materials.configure_resolver(root)
+            result = getattr(session, method)(*args, **kwargs)
+            conn.send(("ok", result))
+        except Exception as exc:  # noqa: BLE001 - forward as a clean error, don't die
+            conn.send(("err", f"{type(exc).__name__}: {exc}"))
+
+
+class SessionProxy:
+    """Runs a ``Session`` in a crash-isolated worker; forwards attribute calls."""
+
+    def __init__(
+        self,
+        artifacts_dir: str,
+        model_path: str | None = None,
+        *,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ):
+        self._artifacts_dir = artifacts_dir
+        self._model_path = model_path
+        self._timeout = timeout
+        self._ctx = mp.get_context("spawn")  # fresh interpreter: safe cross-platform
+        self._proc: mp.process.BaseProcess | None = None
+        self._conn: Connection | None = None
+        self._closed = False
+
+    # -- worker lifecycle ---------------------------------------------------
+
+    def _spawn(self) -> None:
+        """Start a fresh worker and block until it has loaded the model."""
+        parent, child = self._ctx.Pipe()
+        proc = self._ctx.Process(
+            target=_worker_main,
+            args=(child, self._artifacts_dir, self._model_path),
+            daemon=True,
+            name="solidifai-build-worker",
+        )
+        proc.start()
+        child.close()  # only the worker keeps the child end
+        if not parent.poll(_SPAWN_READY_TIMEOUT):
+            _kill(proc)
+            parent.close()
+            raise KernelCrash("build worker did not start in time")
+        try:
+            tag, _ = parent.recv()
+        except EOFError:
+            _kill(proc)
+            parent.close()
+            raise KernelCrash("build worker died during startup") from None
+        if tag != "ready":  # pragma: no cover - protocol invariant
+            _kill(proc)
+            parent.close()
+            raise KernelCrash(f"build worker sent {tag!r} before ready")
+        self._proc, self._conn = proc, parent
+
+    def _ensure(self) -> None:
+        if self._closed:
+            raise KernelCrash("engine is shutting down")
+        if self._proc is None or not self._proc.is_alive():
+            self._teardown()
+            self._spawn()
+
+    def start(self) -> None:
+        """Bring the worker up (loading the model via the worker's own startup)
+        before serving, so the first client request isn't the one that spawns it.
+        A fresh worker after a crash reloads the last good model the same way."""
+        self._ensure()
+
+    def _teardown(self) -> None:
+        if self._proc is not None:
+            _kill(self._proc)
+        if self._conn is not None:
+            with _suppress():
+                self._conn.close()
+        self._proc, self._conn = None, None
+
+    def close(self) -> None:
+        self._closed = True
+        self._teardown()
+
+    # -- call forwarding ----------------------------------------------------
+
+    def _recv_result(self, conn: Connection, proc: mp.process.BaseProcess) -> tuple[str, Any]:
+        """Wait for the worker's reply, watching for death and the timeout.
+
+        Returns the raw ``(tag, payload)`` on a reply, or raises ``KernelCrash``
+        if the worker died (native fault) or overran the build timeout."""
+        deadline = time.monotonic() + self._timeout
+        while True:
+            if conn.poll(0.2):
+                try:
+                    return conn.recv()
+                except EOFError:
+                    raise KernelCrash("the modeling kernel crashed on that operation") from None
+            if not proc.is_alive():
+                # Died without sending: drain a possible in-flight reply, else crash.
+                if conn.poll(0):
+                    with _suppress():
+                        return conn.recv()
+                raise KernelCrash("the modeling kernel crashed on that operation")
+            if time.monotonic() > deadline:
+                raise KernelCrash(
+                    f"the build ran past the {int(self._timeout)}s limit and was stopped"
+                )
+
+    def _call(self, method: str, args: tuple, kwargs: dict) -> Any:
+        self._ensure()
+        assert self._conn is not None and self._proc is not None
+        refresh = method in REFRESH_METHODS
+        try:
+            self._conn.send((method, args, kwargs, refresh))
+        except (OSError, BrokenPipeError, ValueError):
+            self._teardown()
+            raise KernelCrash("the modeling kernel crashed on that operation") from None
+        try:
+            tag, payload = self._recv_result(self._conn, self._proc)
+        except KernelCrash:
+            # The worker is dead or wedged: drop it so the next call respawns a
+            # fresh one that reloads the last good model.
+            self._teardown()
+            raise
+        if tag == "ok":
+            return payload
+        # A Session method raised (a normal, caught error path): re-raise so the
+        # server's handler maps it to an {ok: false} response, exactly as before.
+        raise RuntimeError(str(payload))
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for names not defined on the proxy: every Session method.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+
+        def forward(*args: Any, **kwargs: Any) -> Any:
+            return self._call(name, args, kwargs)
+
+        return forward
+
+
+def _kill(proc: mp.process.BaseProcess) -> None:
+    with _suppress():
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+
+
+class _suppress:
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc: object) -> bool:
+        return True  # swallow everything: teardown must never raise

@@ -25,7 +25,7 @@ import threading
 from typing import Any
 
 from solidifai_engine import ipc, scratch
-from solidifai_engine.session import Session
+from solidifai_engine.worker import SessionProxy
 
 # -- parent-death detection ---------------------------------------------------
 # On unix a dead parent reparents the engine, so polling getppid() works. On
@@ -85,7 +85,10 @@ class Server:
         with contextlib.suppress(OSError):
             scratch.clear_scratch(artifacts_dir)
 
-        self._session = Session(artifacts_dir, model_path=model_path)
+        # The Session runs in a crash-isolated worker process (see worker.py): a
+        # native kernel fault (a degenerate fillet, a bad boolean) kills only the
+        # worker, which the proxy respawns, instead of taking the engine down.
+        self._session = SessionProxy(artifacts_dir, model_path=model_path)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._sock: socket.socket | None = None
@@ -128,13 +131,13 @@ class Server:
 
     def _load_startup_model(self) -> None:
         """Bring the workspace's model + saved settings live on startup. Never
-        crash the server if the model or settings fail to load.
+        crash the server if the worker or model fail to load.
 
-        Delegates entirely to ``Session.startup()`` (which itself never raises);
-        the try/except here is a belt-and-suspenders guard."""
+        Spawning the worker runs ``Session.startup()`` inside it exactly once
+        (which itself never raises); the try/except here guards the spawn."""
         try:
-            self._session.startup()
-        except Exception:  # noqa: BLE001 - never crash on a bad model
+            self._session.start()
+        except Exception:  # noqa: BLE001 - never crash on a bad model / worker
             logging.getLogger(__name__).exception("startup failed")
 
     def _start_parent_watchdog(self) -> None:
@@ -203,6 +206,9 @@ class Server:
         self._stop.set()
         # Nudge accept() loop and clean up the socket file.
         self._close()
+        # Tear down the build worker so it doesn't linger.
+        with contextlib.suppress(Exception):
+            self._session.close()
 
     def _close(self) -> None:
         if self._sock is not None:
@@ -284,10 +290,9 @@ class Server:
             handler = _HANDLERS.get(method)
             if handler is None:
                 raise ValueError(f"unknown method: {method!r}")
-            # Script, material, and import changes need the material resolver
-            # pointed at the current workspace before the session method runs.
-            if method in _REFRESH_BEFORE:
-                self._refresh_resolver()
+            # The material resolver is refreshed inside the worker before the
+            # methods that build/render (worker.REFRESH_METHODS), since that is
+            # where geometry now runs; nothing to do here.
             return handler(self, params)
 
 
@@ -502,24 +507,6 @@ _HANDLERS: dict[str, Any] = {
     "abort_round": lambda srv, p: srv._session.abort_round(),
 }
 
-# Methods that mutate script/material/import state and so need the material
-# resolver refreshed against the current workspace before they run.
-_REFRESH_BEFORE = frozenset(
-    {
-        "execute_script",
-        "run_file",
-        "render",
-        "set_params",
-        "set_part_material",
-        "import_reference",
-        "remove_import",
-        "set_skeleton",
-        "set_part",
-        "attach",
-        "set_inputs",
-        "remove_part",
-        "add_subassembly",
-        "build_part",
-        "end_round",
-    }
-)
+# The set of methods that need the material resolver refreshed before they run
+# now lives in worker.py (worker.REFRESH_METHODS): the resolver is configured in
+# the worker process, where the build/render actually happens.
