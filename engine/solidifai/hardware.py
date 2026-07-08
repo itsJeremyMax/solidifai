@@ -117,6 +117,12 @@ def counterbore(size: str, depth: float):
     """A stepped cutter: a clearance bore of ``depth`` plus a head recess sized
     for the socket head, opening upward. Subtract from a part."""
     t = dims(size)
+    min_depth = t["head_height"] + 0.2
+    if depth < min_depth:
+        raise ValueError(
+            f"counterbore depth {depth} is shallower than the {size} head recess; "
+            f"use at least {min_depth} so the head pocket does not overshoot the bore."
+        )
     bore = Cylinder(t["clearance_medium"] / 2, depth, align=(Align.CENTER, Align.CENTER, Align.MAX))
     # The head recess must open the SAME way as the bore (downward from the cut
     # face at Z=0), or subtracting from a top-referenced plate leaves the recess

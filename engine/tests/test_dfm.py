@@ -142,6 +142,34 @@ def test_inner_fillet_is_not_a_small_hole():
     assert _rules(rep, "small_hole") == []
 
 
+def _part_with_slotted_hole(slot_width):
+    # A 1.5 mm through-hole bisected by a thin slot, so the single cylinder splits
+    # into two arc-faces on the same axis (each arc spanning less than the full 2*pi).
+    with BuildPart() as bp:
+        Box(20, 20, 10)
+        Cylinder(radius=0.75, height=10, mode=Mode.SUBTRACT)
+        Box(40, slot_width, 10, mode=Mode.SUBTRACT)
+    return bp.part
+
+
+def test_split_below_min_hole_flags_once():
+    # R1: a below-minimum hole bisected into two arcs (each ~2.32 rad) must still
+    # be flagged -- and exactly once, not dropped as two sub-full partial cylinders.
+    rep = dfm.analyze_part(_part_with_slotted_hole(0.6), process="fdm")
+    holes = _rules(rep, "small_hole")
+    assert len(holes) == 1
+    assert holes[0]["measured"]["value"] == 1.5
+
+
+def test_wider_split_hole_is_not_double_counted():
+    # B7: when each half-cylinder spans past the old per-arc guard (~2.6 rad), the
+    # hole must be reported once, not twice at the two arc-face centroids.
+    rep = dfm.analyze_part(_part_with_slotted_hole(0.4), process="fdm")
+    holes = _rules(rep, "small_hole")
+    assert len(holes) == 1
+    assert holes[0]["measured"]["value"] == 1.5
+
+
 # -- wall thickness (sampled ray cast) --------------------------------------
 
 

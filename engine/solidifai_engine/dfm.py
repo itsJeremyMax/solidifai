@@ -200,37 +200,56 @@ def _check_small_holes(shape, cfg) -> list[dict]:
     except Exception:  # noqa: BLE001
         return out
     min_d = cfg["min_hole_diameter_mm"]
-    seen: set = set()
+    # An intersecting feature (e.g. a slot) can bisect one hole into several arc-faces
+    # on the *same* cylinder, so decide per axis, not per arc: group concave cylindrical
+    # faces by their shared axis line + radius and sum the arc U-spans. A lone inner
+    # fillet stays a single ~pi/2 arc (rejected); a whole or split hole reconstructs well
+    # past that, so it is flagged exactly once -- neither dropped nor double-counted.
+    groups: dict = {}
     for f in faces:
         try:
             if "CYLINDER" not in str(f.geom_type):
                 continue
         except Exception:  # noqa: BLE001
             continue
-        # Skip partial cylinders (a concave fillet spans ~pi/2 rad; a real hole
-        # spans a full 2*pi, or ~pi per half when split), so an inner fillet is
-        # never misread as a too-small hole.
-        try:
-            from OCP.BRepTools import BRepTools
-
-            umin, umax, _vmin, _vmax = BRepTools.UVBounds_s(f.wrapped)
-            if (umax - umin) < 2.5:
-                continue
-        except Exception:  # noqa: BLE001
-            pass
         if not _is_hole(f, center):
             continue
-        r = _cylinder_radius(f)
-        if r is None:
+        try:
+            from OCP.BRepAdaptor import BRepAdaptor_Surface
+            from OCP.BRepTools import BRepTools
+
+            cyl = BRepAdaptor_Surface(f.wrapped).Cylinder()
+            axis = cyl.Axis()
+            loc, direction = axis.Location(), axis.Direction()
+            r = float(cyl.Radius())
+            umin, umax, _vmin, _vmax = BRepTools.UVBounds_s(f.wrapped)
+        except Exception:  # noqa: BLE001
             continue
-        d = round(r * 2.0, 2)
+        key = (
+            round(loc.X(), 2),
+            round(loc.Y(), 2),
+            round(loc.Z(), 2),
+            round(abs(direction.X()), 2),
+            round(abs(direction.Y()), 2),
+            round(abs(direction.Z()), 2),
+            round(r, 3),
+        )
+        c = f.center()
+        g = groups.setdefault(key, {"span": 0.0, "r": r, "x": 0.0, "y": 0.0, "z": 0.0, "n": 0})
+        g["span"] += umax - umin
+        g["x"] += c.X
+        g["y"] += c.Y
+        g["z"] += c.Z
+        g["n"] += 1
+    for g in groups.values():
+        # a lone concave fillet spans ~pi/2; a hole (whole 2*pi, or split into arcs) sums well past.
+        if g["span"] < 2.5:
+            continue
+        d = round(g["r"] * 2.0, 2)
         if d >= min_d:
             continue
-        c = f.center()
-        key = (round(c.X, 2), round(c.Y, 2), round(c.Z, 2), d)
-        if key in seen:  # a through-hole can split into half-cylinders
-            continue
-        seen.add(key)
+        n = g["n"]
+        loc = [round(g["x"] / n, 4), round(g["y"] / n, 4), round(g["z"] / n, 4)]
         out.append(
             {
                 "rule": "small_hole",
@@ -239,7 +258,7 @@ def _check_small_holes(shape, cfg) -> list[dict]:
                 f"reliable-print minimum.",
                 "measured": {"value": d, "unit": "mm"},
                 "threshold": {"value": min_d, "unit": "mm"},
-                "location": _loc(c),
+                "location": loc,
                 "source": "tool_default",
                 "hint": "Enlarge the hole, or drill it as a post-process.",
             }

@@ -86,3 +86,10 @@ def test_counterbore_cuts_a_stepped_head_pocket():
     plain_bore = math.pi * (t["clearance_medium"] / 2) ** 2 * 8
     # the stepped pocket removes clearly more than a plain bore of the same depth
     assert removed > plain_bore * 1.3
+
+
+def test_counterbore_rejects_depth_shallower_than_head():
+    """A counterbore shallower than the head recess would overshoot the bore, so
+    it must raise rather than silently cut past the requested depth."""
+    with pytest.raises(ValueError, match="shallower than"):
+        hardware.counterbore("M3", depth=2)  # M3 head recess needs 3.2
