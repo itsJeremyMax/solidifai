@@ -19,7 +19,6 @@ import traceback
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import solidifai
-from solidifai import _registry
 from solidifai_engine import (
     build_brief,
     montage,
@@ -54,7 +53,7 @@ from solidifai_engine.exploration import Exploration
 from solidifai_engine.exports import export as exports_export
 from solidifai_engine.fabrication.service import Fabrication
 from solidifai_engine.import_manager import ImportManager
-from solidifai_engine.render import _compound_from_registry, _node_ids, render_to
+from solidifai_engine.render import _compound_from_registry, _node_ids, _slug, render_to
 from solidifai_engine.reporting import Reporting
 
 if TYPE_CHECKING:
@@ -214,6 +213,15 @@ class Session:
                 # that did not fire), reuse that registry — it IS the default build.
                 # Only build ourselves when the script defined build() but did not
                 # call it (registry empty), so we never run the kernel twice.
+                #
+                # Known limitation: a self-contradictory script that calls build()
+                # at module level with NON-default args (e.g. `build(size=50)` while
+                # PARAMS.size defaults to 20) makes get_params/model.json report the
+                # declared defaults while the geometry reflects the hardcoded args.
+                # We can't recover the module-level call's kwargs post-hoc, and a
+                # reset+rebuild would run the kernel twice; convention-following
+                # scripts (which guard the call with __name__ == "__main__", never
+                # matched here) never hit this, so we accept the reused build.
                 if not list(solidifai._registry()):
                     build_fn(**self._param_values)
                 params_block = self._params_block()
@@ -311,8 +319,10 @@ class Session:
         render.py writes into model.json."""
         if self._is_assembly_mode() and (guard := self._round_guard()) is not None:
             return guard  # a round composes once at end_round; no mid-round re-render
-        # In assembly mode the global registry is empty; objects live in self._objects.
-        objects = (self._objects or []) if self._is_assembly_mode() else list(_registry())
+        # Validate against the last-good snapshot (self._objects), not the live
+        # global registry: a failed build can leave partial/stale objects in the
+        # registry, and render() below re-renders from self._objects anyway.
+        objects = self._objects or []
         valid_ids = set(_node_ids(objects))
         if part_id not in valid_ids:
             return {"ok": False, "error": f"unknown part id {part_id!r}"}
@@ -545,10 +555,17 @@ class Session:
 
     # -- history: geometric diff + build report -----------------------------
 
-    def _build_compound(self, code: str, param_values: dict | None):
+    def _build_compound(
+        self, code: str, param_values: dict | None, *, apply_references: bool = True
+    ):
         """Build a Compound from ``code`` (+ optional params) in a fresh registry.
         Used to reconstruct a checkpoint or restore the live model; the caller
-        orders the calls so the live registry ends in the right state."""
+        orders the calls so the live registry ends in the right state.
+
+        Applies the workspace's reference fixtures like the normal build path, so
+        a diff does not report a solid reference's volume as a phantom change and
+        restoring the live registry does not strip references from the next render.
+        """
         solidifai.reset_registry()
         solidifai.set_workspace_root(self.root)
         ns: dict = {}
@@ -559,6 +576,8 @@ class Session:
             merged = {k: v.get("value") for k, v in schema.items() if isinstance(v, dict)}
             merged.update(param_values or {})
             build_fn(**merged)
+        if apply_references:
+            self._apply_references()
         return _compound_from_registry(solidifai._registry())
 
     def diff_against(self, index: int) -> dict:
@@ -675,15 +694,24 @@ class Session:
         return info
 
     def render(self) -> dict:
-        """Re-render the current model with the next buildId."""
-        if self.code is None:
+        """Re-render the LAST-GOOD model with the next buildId.
+
+        Renders the last successful build's snapshot (``self._objects``), not the
+        live global registry: a failed build can leave partial geometry in the
+        registry, and re-rendering that would overwrite the last-good artifacts and
+        flip ``last_ok`` back to True while ``model.py`` on disk still holds the
+        good source. Mirrors capture_views, which also reads ``self._objects``."""
+        if self.code is None or self._objects is None:
             return {"ok": False, "error": "no model loaded"}
         next_build = self.build_id + 1
-        params_block = self._params_block()
         try:
-            # render() re-renders without rebuilding, so model + features are
-            # snapshotted from the registries left by the last successful build.
-            self._render_and_snapshot(next_build, params=params_block, duration_ms=None)
+            render_to(
+                self.artifacts_dir,
+                next_build,
+                params=self._params_block(),
+                overrides=self._material_overrides,
+                objects=self._objects,
+            )
         except Exception as exc:  # noqa: BLE001
             return self._build_failed(exc)
         self.build_id = next_build
@@ -956,8 +984,10 @@ class Session:
             sha = self.history.commit(str(message), amend=True)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"checkpoint failed: {exc}"}
-        # Snap compliance into the sidecar; advisory, never blocks the checkpoint.
+        # Seal any open param-commit burst so the next set_params starts a fresh
+        # commit instead of amending (and silently discarding) this checkpoint.
         if sha is not None:
+            self._last_param_commit_t = 0.0
             try:
                 cr = self.check_requirements()
                 summary = cr.get("summary", {})
@@ -1302,7 +1332,15 @@ class Session:
                 man = manifest_mod.load_manifest(self.root)
                 one = self._build_one_part(manifest_mod.child_by_id(man, part_id), man)
                 res = self._record_round_build(one, part_id)
-                if not res.get("ok"):
+                if not res.get("ok") and prior_src is not None:
+                    # A failed EDIT was rolled back to its prior-good version, which
+                    # is present and valid: report it as built, not failed. (A failed
+                    # NEW part is left in `failed` with its source removed -- isolated
+                    # per the round contract, see _rollback_part.)
+                    self._rollback_part(dest, prior_man, prior_src)
+                    self._round["failed"].pop(part_id, None)
+                    self._round["built"].add(part_id)
+                elif not res.get("ok"):
                     self._rollback_part(dest, prior_man, prior_src)
                 return res
             res = self._build_assembly(params=self._param_values)
@@ -1766,10 +1804,14 @@ class Session:
         # first segment is its child id.
         objects = self._objects or []
         ids = compose.path_ids(objects) if objects else []
+        # Path ids are slugged per segment (compose.path_ids == render._node_ids),
+        # so slug the raw manifest id too, or a part id with an uppercase letter or
+        # hyphen ('Lid', 'my-part') never matches and reports solids=0.
+        target = _slug(part_id)
         solids = sum(
             len(o.shape.solids())
             for o, pid in zip(objects, ids, strict=True)
-            if pid == part_id or pid.split("/", 1)[0] == part_id
+            if pid == target or pid.split("/", 1)[0] == target
         )
         return {
             "ok": True,
@@ -1794,7 +1836,7 @@ class Session:
         from solidifai_engine.assembly import flatten
 
         try:
-            code = flatten.flatten_to_model(self.root)
+            code = flatten.flatten_to_model(self.root, self._param_values)
         except Exception as exc:  # noqa: BLE001 - never raise across the RPC boundary
             return {
                 "ok": False,

@@ -63,16 +63,24 @@ def _collect_node(node_dir: str, node_key: str, nodes: dict) -> dict:
     return spec
 
 
-def flatten_to_model(root: str) -> str:
+def flatten_to_model(root: str, param_values: dict | None = None) -> str:
     """Return the source of a self-contained ``model.py`` that reproduces the
     assembly rooted at ``root``. Raises if there is no root skeleton (an assembly
-    with no skeleton has no shared PARAMS to surface)."""
+    with no skeleton has no shared PARAMS to surface).
+
+    ``param_values`` (the session's live values) is overlaid onto the skeleton's
+    static PARAMS defaults, so the export reproduces the CURRENT composed model
+    after any set_params, not just the skeleton's authored defaults. Sliders stay
+    overridable (the emitted PARAMS keep their min/max/step)."""
     nodes: dict = {}
     _collect_node(root, "root", nodes)
     root_spec = nodes["root"]
     params = {}
     if root_spec["skeleton_src"]:
         params = _extract_params(root_spec["skeleton_src"])
+    for name, val in (param_values or {}).items():
+        if isinstance(params.get(name), dict):
+            params[name] = {**params[name], "value": val}
 
     nodes_literal = json.dumps(nodes, indent=4)
     params_literal = json.dumps(params, indent=4)
