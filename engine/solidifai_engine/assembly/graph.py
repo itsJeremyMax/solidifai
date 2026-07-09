@@ -144,8 +144,18 @@ def build_node(
             workspace_root=ws_root,
             features_out=child_feats,
         )
-        frame = skel.frame_for(child.attach)
-        placed.extend(compose.place(objs, at=frame, path_prefix=child.id))
-        if features_out is not None and child_feats:
-            features_out.extend(compose.place_features(child_feats, at=frame, path_prefix=child.id))
+        # Build ONCE (above), then place the single built result at each occurrence.
+        # A legacy child (no occurrences) resolves to exactly one occurrence at
+        # `attach`, so this loop is a no-op wrapper for the single-placement case.
+        occs = manifest_mod.effective_occurrences(child)
+        prefixes = compose.occurrence_prefixes(child.id, len(occs))
+        for occ, prefix in zip(occs, prefixes, strict=True):
+            frame = skel.frame_for(occ.frame)
+            placed.extend(compose.place(objs, at=frame, path_prefix=prefix, mirror=occ.mirror))
+            if features_out is not None and child_feats:
+                features_out.extend(
+                    compose.place_features(
+                        child_feats, at=frame, path_prefix=prefix, mirror=occ.mirror
+                    )
+                )
     return placed

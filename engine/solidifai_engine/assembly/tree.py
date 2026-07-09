@@ -26,6 +26,9 @@ def _skeleton_desc(node_dir: str, man, parent: dict | None) -> dict | None:
         "scalars": sorted(result.scalars.keys()),
         "frames": sorted(result.frames.keys()),
         "shapes": sorted(result.shapes.keys()),
+        # Declared joints (full records: kind/frame/axis/limits/between) so
+        # check_interfaces can validate them and check_motion can drive them.
+        "joints": list(getattr(result, "joints", []) or []),
     }
 
 
@@ -41,6 +44,12 @@ def assembly_tree(node_dir: str, *, parent: dict | None = None) -> dict:
             "attach": c.attach,
             "inputs": list(c.inputs),
             "shape_inputs": list(c.shape_inputs),
+            # Every placement of this one definition: [{frame, mirror}, ...]. A
+            # legacy single-placement child resolves to one occurrence at attach.
+            "occurrences": [
+                {"frame": o.frame, "mirror": o.mirror}
+                for o in manifest_mod.effective_occurrences(c)
+            ],
         }
         if c.kind == "assembly":
             # The sub-skeleton only needs its input keys present to run and

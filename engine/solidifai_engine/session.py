@@ -724,15 +724,18 @@ class Session:
 
     def check_motion(
         self,
-        part: str,
+        part: str | None = None,
         kind: str = "revolute",
         axis_origin=None,
         axis_dir=None,
-        start: float = 0.0,
-        stop: float = 90.0,
+        start=None,
+        stop=None,
         steps: int = 12,
+        joint: str | None = None,
     ) -> dict:
-        return self._exploration.check_motion(part, kind, axis_origin, axis_dir, start, stop, steps)
+        return self._exploration.check_motion(
+            part, kind, axis_origin, axis_dir, start, stop, steps, joint=joint
+        )
 
     def converge_to_spec(
         self, objective: str = "min_mass", apply: bool = False, max_evals: int = 24
@@ -1939,7 +1942,9 @@ class Session:
 
         The attach frame is not part of the geometry cache key, so the child is
         reused from cache and only re-placed (a recompose, not a rebuild). Pass
-        None to attach at the node origin."""
+        None to attach at the node origin. When the child has occurrences, this
+        re-points the PRIMARY occurrence (occurrences[0]); use set_occurrences to
+        change the full instance list."""
         return self._reattach_or_rewire(part_id, attach=frame, set_attach=True)
 
     def set_inputs(self, part_id: str, inputs: list[str]) -> dict:
@@ -1949,22 +1954,59 @@ class Session:
         child against the new scalar set."""
         return self._reattach_or_rewire(part_id, inputs=list(inputs), set_inputs=True)
 
+    def set_occurrences(self, part_id: str, occurrences: list) -> dict:
+        """Place one part definition at several frames (instancing), then recompose.
+
+        ``occurrences`` is a list of ``{"frame": <skeleton frame name | null>,
+        "mirror": <null | "xy" | "yz" | "zx">}``. The part is BUILT ONCE (the
+        content cache dedupes N uses to one build) and placed at each occurrence;
+        a mirrored occurrence is reflected about the named local plane first. This
+        is a recompose, not a rebuild (occurrences are not in the geometry key), so
+        it reuses the cached part. attach is re-pointed to occurrences[0].frame."""
+        from solidifai_engine.assembly import manifest as manifest_mod
+
+        if not isinstance(occurrences, list) or not occurrences:
+            return {"ok": False, "error": "occurrences must be a non-empty list"}
+        normalized: list[manifest_mod.Occurrence] = []
+        for i, occ in enumerate(occurrences):
+            if not isinstance(occ, dict):
+                return {"ok": False, "error": f"occurrence {i} must be an object"}
+            frame = occ.get("frame")
+            if frame is not None and not isinstance(frame, str):
+                return {
+                    "ok": False,
+                    "error": f"occurrence {i} frame must be a frame name or null",
+                }
+            mirror = occ.get("mirror")
+            if mirror not in manifest_mod._MIRROR_PLANES:
+                return {
+                    "ok": False,
+                    "error": f"occurrence {i} mirror {mirror!r} must be null, 'xy', 'yz', or 'zx'",
+                }
+            normalized.append(manifest_mod.Occurrence(frame=frame, mirror=mirror))
+        return self._reattach_or_rewire(part_id, occurrences=normalized, set_occurrences=True)
+
     def _reattach_or_rewire(
         self,
         part_id: str,
         *,
         attach=None,
         inputs=None,
+        occurrences=None,
         set_attach: bool = False,
         set_inputs: bool = False,
+        set_occurrences: bool = False,
     ) -> dict:
-        """Shared body for attach/set_inputs: mutate one manifest field, rebuild."""
+        """Shared body for attach/set_inputs/set_occurrences: mutate one manifest
+        field, rebuild, roll back atomically on failure."""
         if self.root is None or not self._is_assembly_mode():
             return {"ok": False, "error": "not an assembly workspace"}
         if (guard := self._round_guard()) is not None:
             return guard
         if not self._valid_child_id(part_id):
             return self._bad_id_error(part_id)
+        from dataclasses import replace
+
         from solidifai_engine.assembly import manifest as manifest_mod
 
         # Snapshot the prior manifest so a failed rewire (a bad frame / a non-scalar
@@ -1979,15 +2021,28 @@ class Session:
                 existing = manifest_mod.child_by_id(man, part_id)
                 # Presence was verified against the same manifest content above.
                 assert existing is not None
+                new_occurrences = occurrences if set_occurrences else existing.occurrences
+                new_attach = attach if set_attach else existing.attach
+                # Keep attach and occurrences[0] in lockstep: set_occurrences points
+                # attach at the primary instance; attach re-points the primary when
+                # the child already has an occurrence list.
+                if set_occurrences and new_occurrences:
+                    new_attach = new_occurrences[0].frame
+                elif set_attach and new_occurrences:
+                    new_occurrences = [
+                        replace(new_occurrences[0], frame=new_attach),
+                        *new_occurrences[1:],
+                    ]
                 manifest_mod.upsert_child(
                     man,
                     manifest_mod.ChildEntry(
                         id=existing.id,
                         kind=existing.kind,
                         source=existing.source,
-                        attach=attach if set_attach else existing.attach,
+                        attach=new_attach,
                         inputs=inputs if set_inputs else list(existing.inputs),
                         shape_inputs=list(existing.shape_inputs),
+                        occurrences=new_occurrences,
                     ),
                 )
 
@@ -1997,7 +2052,11 @@ class Session:
                 manifest_mod.write_manifest(self.root, prior_man)
                 self._build_assembly(params=self._param_values)  # restore last-good
                 return res
-            verb = "attach" if set_attach else "rewire inputs of"
+            verb = (
+                "set occurrences of"
+                if set_occurrences
+                else ("attach" if set_attach else "rewire inputs of")
+            )
             return self._after_assembly_edit(res, f"{verb} part {part_id}")
         except Exception as exc:  # noqa: BLE001
             with contextlib.suppress(Exception):
@@ -2154,17 +2213,18 @@ class Session:
                 source = f.read()
         # Last-good geometry summary: composed object path ids are "<child>/..."
         # (compose.path_ids == render._node_ids), so a part owns every id whose
-        # first segment is its child id.
+        # first segment is its child id OR one of its occurrence prefixes
+        # (wheel, wheel@2, ...). Path ids are slugged per segment, so slug each
+        # prefix too, or a part id with an uppercase letter or hyphen ('Lid',
+        # 'my-part') and the '@' occurrence marker never match and report solids=0.
+        occurrences = manifest_mod.effective_occurrences(entry)
+        prefixes = {_slug(p) for p in compose.occurrence_prefixes(part_id, len(occurrences))}
         objects = self._objects or []
         ids = compose.path_ids(objects) if objects else []
-        # Path ids are slugged per segment (compose.path_ids == render._node_ids),
-        # so slug the raw manifest id too, or a part id with an uppercase letter or
-        # hyphen ('Lid', 'my-part') never matches and reports solids=0.
-        target = _slug(part_id)
         solids = sum(
             len(o.shape.solids())
             for o, pid in zip(objects, ids, strict=True)
-            if pid == target or pid.split("/", 1)[0] == target
+            if pid in prefixes or pid.split("/", 1)[0] in prefixes
         )
         return {
             "ok": True,
@@ -2173,6 +2233,7 @@ class Session:
             "attach": entry.attach,
             "inputs": list(entry.inputs),
             "shape_inputs": list(entry.shape_inputs),
+            "occurrences": [{"frame": o.frame, "mirror": o.mirror} for o in occurrences],
             "source": source,
             "solids": solids,
         }
@@ -2250,18 +2311,37 @@ class Session:
         frames = set(skel.get("frames") or [])
         scalars = set(skel.get("scalars") or [])
         shapes = set(skel.get("shapes") or [])
+        child_ids = {c["id"] for c in (node.get("children") or [])}
         for child in node.get("children") or []:
             cid = f"{prefix}{child['id']}"
-            attach = child.get("attach")
-            if attach is not None and attach not in frames:
-                issues.append(
-                    {
-                        "id": cid,
-                        "issue": "missing_attach_frame",
-                        "name": attach,
-                        "detail": f"attach frame {attach!r} is not published by the skeleton",
-                    }
-                )
+            # Every occurrence frame (or the single attach) must name a published
+            # frame. effective occurrences are exposed by tree.py, so a child with
+            # no explicit occurrences reports one entry at its attach frame.
+            occurrences = child.get("occurrences")
+            if occurrences:
+                for i, occ in enumerate(occurrences):
+                    oframe = occ.get("frame")
+                    if oframe is not None and oframe not in frames:
+                        issues.append(
+                            {
+                                "id": cid,
+                                "issue": "missing_attach_frame",
+                                "name": oframe,
+                                "detail": f"occurrence {i} frame {oframe!r} is not "
+                                f"published by the skeleton",
+                            }
+                        )
+            else:
+                attach = child.get("attach")
+                if attach is not None and attach not in frames:
+                    issues.append(
+                        {
+                            "id": cid,
+                            "issue": "missing_attach_frame",
+                            "name": attach,
+                            "detail": f"attach frame {attach!r} is not published by the skeleton",
+                        }
+                    )
             for name in child.get("inputs") or []:
                 if name not in scalars:
                     issues.append(
@@ -2311,6 +2391,32 @@ class Session:
                     "children": child.get("children") or [],
                 }
                 Session._collect_interface_issues(sub_node, prefix=f"{cid}/", issues=issues)
+
+        # Declared joints: every joint frame must be published, and any `between`
+        # ids must name children at this node -- so a mistyped joint frame/child is
+        # reported before check_motion tries to drive it.
+        for joint in skel.get("joints") or []:
+            jid = f"{prefix}{joint.get('name')}"
+            jframe = joint.get("frame")
+            if jframe is not None and jframe not in frames:
+                issues.append(
+                    {
+                        "id": jid,
+                        "issue": "missing_joint_frame",
+                        "name": jframe,
+                        "detail": f"joint frame {jframe!r} is not published by the skeleton",
+                    }
+                )
+            for bid in joint.get("between") or []:
+                if bid not in child_ids:
+                    issues.append(
+                        {
+                            "id": jid,
+                            "issue": "unknown_joint_between",
+                            "name": bid,
+                            "detail": f"joint between {bid!r} does not name a child of this node",
+                        }
+                    )
 
     def _persist_model(self, code: str) -> None:
         """Write ``code`` to ``self.model_path`` atomically (temp + replace)."""

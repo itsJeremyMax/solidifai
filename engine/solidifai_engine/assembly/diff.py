@@ -42,8 +42,19 @@ def _load_manifest_children(text: str | None) -> dict[str, dict]:
             "inputs": list(raw.get("inputs") or []),
             "shape_inputs": list(raw.get("shape_inputs") or []),
             "source": raw.get("source"),
+            # Normalize occurrences to a comparable form (absent key -> None) so a
+            # change in placement count/frames/mirrors reads as a rewiring.
+            "occurrences": _norm_occurrences(raw.get("occurrences")),
         }
     return out
+
+
+def _norm_occurrences(raw) -> list | None:
+    if not isinstance(raw, list):
+        return None
+    return [
+        {"frame": o.get("frame"), "mirror": o.get("mirror")} for o in raw if isinstance(o, dict)
+    ]
 
 
 def _wiring_changed(a: dict, b: dict) -> bool:
@@ -51,6 +62,7 @@ def _wiring_changed(a: dict, b: dict) -> bool:
         a.get("attach") != b.get("attach")
         or a.get("inputs") != b.get("inputs")
         or a.get("shape_inputs") != b.get("shape_inputs")
+        or a.get("occurrences") != b.get("occurrences")
     )
 
 

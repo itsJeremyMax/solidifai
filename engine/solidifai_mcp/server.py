@@ -455,20 +455,27 @@ def optimize(
 
 @mcp.tool()
 def check_motion(
-    part: str,
+    part: str | None = None,
     kind: str = "revolute",
     axis_origin: list | None = None,
     axis_dir: list | None = None,
-    start: float = 0.0,
-    stop: float = 90.0,
+    start: float | None = None,
+    stop: float | None = None,
     steps: int = 12,
+    joint: str | None = None,
 ) -> Any:
-    """Sweep one shown part through its range of motion and find where it collides
-    with the other parts. kind is "revolute" (rotate start..stop degrees about the
+    """Sweep a moving part, or a declared joint, through its range of motion and
+    find where it collides with the other parts.
+
+    Part mode (pass part): kind is "revolute" (rotate start..stop degrees about the
     axis through axis_origin along axis_dir) or "prismatic" (translate start..stop
-    mm along axis_dir). Returns whether and where it first collides and how far it
-    moves clear. Use it to check a hinge clears, a slider doesn't jam, or a lid
-    opens fully. Read-only; nothing changes the model."""
+    mm along axis_dir). Joint mode (pass joint, the name of a joint the skeleton
+    declared with s.joint(...)): drives that joint through its declared limits (or
+    start..stop if you pass them), rotating or sliding every occurrence of its first
+    `between` child about/along the joint frame axis. Returns whether and where it
+    first collides and how far it moves clear (clearThrough). Use it to check a
+    hinge clears, a slider doesn't jam, or a lid opens fully. Read-only; nothing
+    changes the model."""
     return _call(
         "check_motion",
         {
@@ -479,6 +486,7 @@ def check_motion(
             "start": start,
             "stop": stop,
             "steps": steps,
+            "joint": joint,
         },
     )
 
@@ -815,16 +823,18 @@ def set_part(
 
 @mcp.tool()
 def get_assembly_tree() -> Any:
-    """Return the nested assembly structure: the skeleton's params, scalars and
-    frames, and every child (parts and sub-assemblies) with its attach frame and
-    declared inputs. Use this to see how the assembly is wired before editing."""
+    """Return the nested assembly structure: the skeleton's params, scalars, frames
+    and declared joints, and every child (parts and sub-assemblies) with its attach
+    frame, declared inputs, and occurrences (every placement of that one part
+    definition). Use this to see how the assembly is wired before editing."""
     return _call("get_assembly_tree")
 
 
 @mcp.tool()
 def get_part_info(id: str) -> Any:
     """Return one part's source code, its attach frame, the skeleton inputs it
-    reads, and a summary of its last build (solid count)."""
+    reads, its occurrences (all placements of this one definition), and a summary
+    of its last build (solid count across every occurrence)."""
     return _call("get_part_info", {"id": id})
 
 
@@ -832,8 +842,22 @@ def get_part_info(id: str) -> Any:
 def attach(id: str, frame: str | None = None) -> Any:
     """Place a child at a different skeleton frame. This is a recompose, not a
     rebuild: the part geometry is reused and only re-placed at the new frame.
-    Pass frame=None to attach at the node origin."""
+    Pass frame=None to attach at the node origin. If the part has occurrences,
+    this re-points the primary one; use set_occurrences to change them all."""
     return _call("attach", {"id": id, "frame": frame})
+
+
+@mcp.tool()
+def set_occurrences(id: str, occurrences: list) -> Any:
+    """Place ONE part definition at several frames (instancing). N identical parts
+    are ONE part plus N occurrences, never N copies of the file. occurrences is a
+    list of {"frame": <skeleton frame name, or null for the origin>, "mirror":
+    <null, "xy", "yz", or "zx">}; a mirrored occurrence is reflected about that
+    local plane (use it for a left/right handed pair). The part is built once and
+    placed at each occurrence, so this is a cheap recompose, not N rebuilds.
+    Occurrence bodies are named id, id@2, id@3 ... and each is a distinct body for
+    interference and motion checks. attach re-points to the first occurrence."""
+    return _call("set_occurrences", {"id": id, "occurrences": occurrences})
 
 
 @mcp.tool()
@@ -902,9 +926,11 @@ def export_flat_model(write: bool = False) -> Any:
 @mcp.tool()
 def check_interfaces() -> Any:
     """Validate the assembly's declared wiring and summarize geometric fit. Reports
-    any child whose attach names a frame the skeleton does not publish
-    (missing_attach_frame) or whose inputs name a scalar the skeleton does not
-    publish (missing_input), recursively through sub-assemblies, and folds in the
+    any child whose attach or occurrence frame names a frame the skeleton does not
+    publish (missing_attach_frame) or whose inputs name a scalar the skeleton does
+    not publish (missing_input), plus any declared joint whose frame is not
+    published (missing_joint_frame) or whose `between` does not name a child
+    (unknown_joint_between), recursively through sub-assemblies. Folds in the
     composed-model interference summary under `interference`. Read-only."""
     return _call("check_interfaces")
 

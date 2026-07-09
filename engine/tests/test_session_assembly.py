@@ -81,6 +81,28 @@ def test_assembly_param_values_present_in_model_json_at_startup(tmp_path):
     assert set(model["params"]["values"]) == {"body_w", "body_h", "wall"}
 
 
+def test_assembly_set_params_validates_against_skeleton_schema(tmp_path):
+    # The assembly branch of set_params must validate against the skeleton PARAMS
+    # schema exactly like the single-model branch: unknown/bool/out-of-range keys
+    # get a clean error, never a raw TypeError from build(**merged).
+    root, artifacts = _ws(tmp_path)
+    sess = Session(str(artifacts), model_path=str(root / "assembly.json"))
+    sess.startup()
+
+    r_unknown = sess.set_params({"nope": 3})
+    assert r_unknown["ok"] is False and "unknown parameter" in r_unknown["error"]
+
+    r_bool = sess.set_params({"body_w": True})
+    assert r_bool["ok"] is False and "number" in r_bool["error"]
+
+    r_range = sess.set_params({"body_w": 9999.0})
+    assert r_range["ok"] is False and "out of range" in r_range["error"]
+
+    # A rejected value never entered the live params, and a valid one still builds.
+    assert sess.get_params()["values"]["body_w"] == 60.0
+    assert sess.set_params({"body_w": 80.0})["ok"] is True
+
+
 def test_saved_settings_apply_on_reopen(tmp_path):
     root, artifacts = _ws(tmp_path)
     sess = Session(str(artifacts), model_path=str(root / "assembly.json"))

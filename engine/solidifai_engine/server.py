@@ -577,13 +577,14 @@ _HANDLERS: dict[str, Any] = {
         p.get("values"),
     ),
     "check_motion": lambda srv, p: srv._session.check_motion(
-        srv._require(p, "part"),
+        p.get("part"),
         p.get("kind", "revolute"),
         p.get("axis_origin"),
         p.get("axis_dir"),
-        float(p.get("start", 0.0)),
-        float(p.get("stop", 90.0)),
+        p.get("start"),
+        p.get("stop"),
         int(p.get("steps", 12)),
+        joint=p.get("joint"),
     ),
     "analyze_import": lambda srv, p: srv._session.analyze_import(p.get("name")),
     "diff_against": lambda srv, p: srv._session.diff_against(int(srv._require(p, "index"))),
@@ -652,6 +653,9 @@ _HANDLERS: dict[str, Any] = {
     ),
     "check_interfaces": lambda srv, p: srv._session.check_interfaces(),
     "attach": lambda srv, p: srv._session.attach(srv._require(p, "id"), p.get("frame")),
+    "set_occurrences": lambda srv, p: srv._session.set_occurrences(
+        srv._require(p, "id"), srv._require(p, "occurrences")
+    ),
     "set_inputs": lambda srv, p: srv._session.set_inputs(
         srv._require(p, "id"), p.get("inputs") or []
     ),

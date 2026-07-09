@@ -258,21 +258,31 @@ class Exploration:
 
     def check_motion(
         self,
-        part: str,
+        part: str | None = None,
         kind: str = "revolute",
         axis_origin=None,
         axis_dir=None,
-        start: float = 0.0,
-        stop: float = 90.0,
+        start=None,
+        stop=None,
         steps: int = 12,
+        joint: str | None = None,
     ) -> dict:
-        """Sweep one shown part through a range and report where it collides with
-        the other parts. ``kind`` is ``revolute`` (rotate start..stop degrees about
-        the axis) or ``prismatic`` (translate start..stop mm along axis_dir).
-        Read-only: never renders or bumps buildId. ``clearThrough`` is how far from
-        ``start`` the motion stays collision-free."""
+        """Sweep a moving part (or a declared joint) through a range and report
+        where it collides with the other parts.
+
+        Part mode (``part`` named): ``kind`` is ``revolute`` (rotate start..stop
+        degrees about the axis) or ``prismatic`` (translate start..stop mm along
+        axis_dir). Joint mode (``joint`` named): drive a skeleton-declared joint
+        through its limits (or a passed start/stop), moving every occurrence of the
+        joint's first ``between`` child. Read-only: never renders or bumps buildId.
+        ``clearThrough`` is how far from ``start`` the motion stays collision-free."""
         from build123d import Axis, Vector
 
+        if joint is not None:
+            return self._check_motion_joint(joint, start=start, stop=stop, steps=steps)
+
+        if part is None:
+            return {"ok": False, "error": "check_motion needs a part name or a joint name"}
         objs = self.s._objects or []
         moving = next((o for o in objs if o.name == part), None)
         if moving is None:
@@ -286,6 +296,21 @@ class Exploration:
         if direction.length == 0:
             return {"ok": False, "error": "axis_dir must be a non-zero vector"}
         axis = Axis(origin, direction)
+        lo = 0.0 if start is None else float(start)
+        hi = 90.0 if stop is None else float(stop)
+
+        def transform(at):
+            if kind == "prismatic":
+                return [moving.shape.translate(direction.normalized() * at)]
+            return [moving.shape.rotate(axis, at)]
+
+        body = self._sweep(transform, others, lo, hi, steps)
+        return {"ok": True, "part": part, "kind": kind, **body}
+
+    def _sweep(self, transform, statics: list, start: float, stop: float, steps: int) -> dict:
+        """Step a set of moving bodies (produced by ``transform(at)``) through
+        start..stop and test each against ``statics`` for overlap at every step.
+        Shared by part-mode and joint-mode check_motion so both report identically."""
         n = max(2, int(steps))
         span = float(stop) - float(start)
         samples: list[dict[str, Any]] = []
@@ -295,21 +320,22 @@ class Exploration:
         for i in range(n):
             at = float(start) + span * i / (n - 1)
             try:
-                if kind == "prismatic":
-                    shape = moving.shape.translate(direction.normalized() * at)
-                else:
-                    shape = moving.shape.rotate(axis, at)
+                moved = transform(at)
             except Exception as exc:  # noqa: BLE001 - a degenerate pose fails its step only
                 samples.append({"at": round(at, 3), "collides": False, "error": str(exc)})
                 continue
-            hit = next(
-                (
-                    o.name
-                    for o in others
-                    if itf.classify_pair(shape, o.shape).get("relation") == "overlap"
-                ),
-                None,
-            )
+            hit = None
+            for shape in moved:
+                hit = next(
+                    (
+                        o.name
+                        for o in statics
+                        if itf.classify_pair(shape, o.shape).get("relation") == "overlap"
+                    ),
+                    None,
+                )
+                if hit is not None:
+                    break
             step: dict[str, Any] = {"at": round(at, 3), "collides": hit is not None}
             if hit is not None:
                 step["with"] = hit
@@ -321,12 +347,120 @@ class Exploration:
                 last_clear = at
             samples.append(step)
         return {
-            "ok": True,
-            "part": part,
-            "kind": kind,
             "range": [float(start), float(stop)],
             "collides": collides,
             "firstCollision": first,
             "clearThrough": clear_through,
             "steps": samples,
         }
+
+    def _root_skeleton(self):
+        """Run the root skeleton at the live params to read its frames + joints, or
+        None when the workspace has no root skeleton."""
+        import os
+
+        from solidifai_engine.assembly import manifest as manifest_mod
+        from solidifai_engine.assembly import runner
+
+        root = self.s.root
+        if root is None:
+            return None
+        man = manifest_mod.load_manifest(root)
+        if not man.skeleton:
+            return None
+        return runner.run_skeleton(
+            os.path.join(root, man.skeleton), params=self.s._param_values, parent=None
+        )
+
+    @staticmethod
+    def _belongs_to_child(name: str, child_id: str) -> bool:
+        """True when a composed object name belongs to ``child_id`` or one of its
+        occurrences (``wheel/...`` or ``wheel@2/...``). Matches on the raw path name
+        (not the slugged node id) so the ``@`` occurrence marker is exact."""
+        first = name.split("/", 1)[0]
+        return first == child_id or first.startswith(f"{child_id}@")
+
+    def _check_motion_joint(self, joint_name: str, *, start, stop, steps: int) -> dict:
+        """Drive a skeleton-declared joint through its range and report collisions.
+
+        Sweeps the joint's DOF (rotation for revolute/cylindrical/ball, translation
+        for slider/planar) about/along its frame axis, transforming every occurrence
+        of the joint's first ``between`` child per step and testing it against the
+        rest of the model."""
+        from build123d import Axis, Location, Pos, Vector
+
+        if self.s.root is None or not self.s._is_assembly_mode():
+            return {"ok": False, "error": "joint motion needs an assembly workspace"}
+        skel = self._root_skeleton()
+        if skel is None:
+            return {"ok": False, "error": "assembly has no skeleton; no joints to drive"}
+        joints = getattr(skel, "joints", []) or []
+        jrec = next((j for j in joints if j.get("name") == joint_name), None)
+        if jrec is None:
+            avail = ", ".join(j.get("name", "?") for j in joints) or "(none)"
+            return {"ok": False, "error": f"joint '{joint_name}' not found; declared: {avail}"}
+
+        kind = jrec["kind"]
+        if kind == "rigid":
+            return {
+                "ok": True,
+                "joint": joint_name,
+                "kind": kind,
+                "range": [0.0, 0.0],
+                "collides": False,
+                "firstCollision": None,
+                "clearThrough": 0.0,
+                "steps": [],
+                "note": "rigid joint has no degree of freedom to sweep",
+            }
+        between = jrec.get("between")
+        if not between:
+            return {
+                "ok": False,
+                "error": f"joint '{joint_name}' has no `between`; declare "
+                f"between=[moving_id, ground_id] so motion knows which child to sweep",
+            }
+        moving_id = between[0]
+        frame_name = jrec.get("frame")
+        if frame_name not in skel.frames:
+            return {
+                "ok": False,
+                "error": f"joint frame '{frame_name}' is not published by the skeleton",
+            }
+        floc = skel.frames[frame_name]
+        origin = floc.position
+        # The joint axis is in the frame's LOCAL orientation; rotate it into world.
+        local_axis = Vector(*jrec.get("axis", [0.0, 0.0, 1.0]))
+        rot_only = Location((0.0, 0.0, 0.0), floc.orientation)
+        world_dir = (rot_only * Pos(local_axis.X, local_axis.Y, local_axis.Z)).position
+        if world_dir.length == 0:
+            world_dir = local_axis
+        axis = Axis(origin, world_dir)
+
+        objs = self.s._objects or []
+        moving = [o for o in objs if self._belongs_to_child(o.name, moving_id)]
+        if not moving:
+            return {"ok": False, "error": f"joint child '{moving_id}' has no composed geometry"}
+        statics = [
+            o
+            for o in objs
+            if not self._belongs_to_child(o.name, moving_id)
+            and getattr(o, "role", "part") != "reference"
+        ]
+        if not statics:
+            return {"ok": False, "error": "need another part for the joint to move against"}
+
+        rotary = kind in ("revolute", "cylindrical", "ball")
+        lims = jrec.get("limits")
+        default_hi = 90.0 if rotary else 10.0
+        lo = float(start) if start is not None else (float(lims[0]) if lims else 0.0)
+        hi = float(stop) if stop is not None else (float(lims[1]) if lims else default_hi)
+
+        def transform(at):
+            if rotary:
+                return [o.shape.rotate(axis, at) for o in moving]
+            offset = world_dir.normalized() * at
+            return [o.shape.translate(offset) for o in moving]
+
+        body = self._sweep(transform, statics, lo, hi, steps)
+        return {"ok": True, "joint": joint_name, "kind": kind, "moving": moving_id, **body}

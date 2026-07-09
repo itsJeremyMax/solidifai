@@ -29,8 +29,8 @@ yields a file that runs anywhere ``solidifai`` + ``build123d`` are importable.
 
 from __future__ import annotations
 
-import json
 import os
+import pprint
 
 from solidifai_engine.assembly import manifest as manifest_mod
 
@@ -55,6 +55,12 @@ def _collect_node(node_dir: str, node_key: str, nodes: dict) -> dict:
             "kind": child.kind,
             "attach": child.attach,
             "inputs": list(child.inputs),
+            # Placements of this one definition. Resolved to the explicit list or a
+            # single occurrence at attach, so the template has one uniform code path.
+            "occurrences": [
+                {"frame": o.frame, "mirror": o.mirror}
+                for o in manifest_mod.effective_occurrences(child)
+            ],
         }
         if child.kind == "part":
             entry["shape_inputs"] = list(child.shape_inputs)
@@ -87,8 +93,12 @@ def flatten_to_model(root: str, param_values: dict | None = None) -> str:
         if isinstance(params.get(name), dict):
             params[name] = {**params[name], "value": val}
 
-    nodes_literal = json.dumps(nodes, indent=4)
-    params_literal = json.dumps(params, indent=4)
+    # Embed as Python literals (not JSON): occurrence entries carry None (mirror /
+    # origin frame), which JSON renders as the bare word `null` -- invalid Python
+    # once inlined as source. pformat emits None/True/False and escapes the inlined
+    # part sources correctly, so the file execs standalone.
+    nodes_literal = pprint.pformat(nodes, indent=1, width=100, sort_dicts=False)
+    params_literal = pprint.pformat(params, indent=1, width=100, sort_dicts=False)
     return _TEMPLATE.format(nodes=nodes_literal, params=params_literal)
 
 
@@ -124,8 +134,12 @@ Self-contained: depends only on solidifai + build123d. Regenerate with
 export_flat_model; hand-edits here do not flow back to the assembly sources.
 """
 from solidifai import skeleton, show, build_scope, SkeletonResult
+from build123d import Plane
 
 PARAMS = {params}
+
+# Occurrence mirror name -> build123d plane ("zx" aliases XZ).
+_MIRROR_TO_PLANE = {{"xy": Plane.XY, "yz": Plane.YZ, "zx": Plane.XZ}}
 
 # Each node: its skeleton source (or None) and its children (part sources inline).
 _NODES = {nodes}
@@ -162,11 +176,13 @@ def _run_part(src, inputs, part_id):
     return objs
 
 
-def _place(objects, at, prefix):
+def _place(objects, at, prefix, mirror=None):
+    plane = _MIRROR_TO_PLANE.get(mirror) if mirror else None
     out = []
     for o in objects:
         name = prefix + "/" + o.name if prefix else o.name
-        out.append(_Shown(name, o.shape.moved(at), o.material, o.color, o.role))
+        shape = o.shape.mirror(plane) if plane is not None else o.shape
+        out.append(_Shown(name, shape.moved(at), o.material, o.color, o.role))
     return out
 
 
@@ -179,14 +195,19 @@ def _run_node(node_key, params, parent):
     placed = []
     for child in spec["children"]:
         inputs = skel.resolve_inputs(child["inputs"])
-        at = skel.frame_for(child["attach"])
         if child["kind"] == "part":
             inputs = dict(inputs)
             inputs.update(skel.resolve_shapes(child.get("shape_inputs", [])))
             objs = _run_part(child["src"], inputs, child["id"])
         else:
             objs = _run_node(child["node"], {{}}, inputs)
-        placed.extend(_place(objs, at, child["id"]))
+        # Place the one built result at each occurrence (single-placement children
+        # resolve to one occurrence at attach). First keeps the bare id; the rest
+        # are <id>@2, <id>@3 ... matching the engine composer's naming.
+        occurrences = child.get("occurrences") or [{{"frame": child["attach"], "mirror": None}}]
+        for i, occ in enumerate(occurrences):
+            prefix = child["id"] if i == 0 else child["id"] + "@" + str(i + 1)
+            placed.extend(_place(objs, skel.frame_for(occ["frame"]), prefix, occ.get("mirror")))
     return placed
 
 
