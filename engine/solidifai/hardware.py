@@ -123,7 +123,12 @@ def counterbore(size: str, depth: float):
             f"counterbore depth {depth} is shallower than the {size} head recess; "
             f"use at least {min_depth} so the head pocket does not overshoot the bore."
         )
-    bore = Cylinder(t["clearance_medium"] / 2, depth, align=(Align.CENTER, Align.CENTER, Align.MAX))
+    # Resolve the bore through the same profile-aware path as clearance_hole so a
+    # tight/normal/loose workspace gets the matching bore, not a hardcoded medium.
+    from solidifai_engine import standards as _std
+
+    bore_dia = _std.clearance_hole(size, workspace_root=workspace_root())
+    bore = Cylinder(bore_dia / 2, depth, align=(Align.CENTER, Align.CENTER, Align.MAX))
     # The head recess must open the SAME way as the bore (downward from the cut
     # face at Z=0), or subtracting from a top-referenced plate leaves the recess
     # in the air above the part and cuts a plain hole with no head pocket.

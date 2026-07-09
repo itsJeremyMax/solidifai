@@ -21,10 +21,13 @@ part is returned unchanged rather than failing the build.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
 _SEARCH_ITERS = 14  # binary-search steps; ~0.06 mm resolution over a 1 mm span
+
+_LOG = logging.getLogger(__name__)
 
 
 def _bevel_errors() -> tuple[type[BaseException], ...]:
@@ -51,6 +54,19 @@ def _edge_list(objects: Any) -> list:
         return [objects]
 
 
+def _noop_on_empty(objects: Any, op: str) -> Any:
+    """No-op result for an empty edge selection (a ``filter_by`` that matched
+    nothing) -- common enough that failing the build would violate this module's
+    never-raise contract, and build123d itself raises a raw IndexError here. Warn,
+    then return the active builder context part when one is live (so ``bp.part``
+    stays unchanged and valid), else the caller's ``objects`` unchanged."""
+    from build123d import Builder
+
+    _LOG.warning("safe_%s: empty edge selection, skipping bevel (no-op)", op)
+    ctx: Any = Builder._get_context(None)
+    return ctx._obj if ctx is not None else objects
+
+
 def _resolve_target(edges: list) -> Any:
     """The solid the ``edges`` actually belong to.
 
@@ -60,9 +76,17 @@ def _resolve_target(edges: list) -> Any:
     silently clamped to a no-op on the wrong part. Falls back to the active context
     only when an edge has no parent recorded. A ``BasePartObject`` (a bare ``Box``)
     is re-wrapped as a plain ``Part`` exactly as build123d's own op does, so its
-    ``fillet``/``chamfer`` does not try to reconstruct the primitive from a shape."""
+    ``fillet``/``chamfer`` does not try to reconstruct the primitive from a shape.
+
+    Edges spanning more than one solid have no single target: beveling only the
+    first (as ``edges[0]`` implies) silently drops the rest, so raise instead."""
     from build123d import BasePartObject, Builder, Part
 
+    parents = {id(e.topo_parent): e.topo_parent for e in edges if e.topo_parent is not None}
+    if len(parents) > 1:
+        raise ValueError(
+            "edges belong to multiple solids; call safe_fillet/safe_chamfer once per solid"
+        )
     target = edges[0].topo_parent
     if target is None:
         ctx: Any = Builder._get_context(None)
@@ -124,7 +148,7 @@ def safe_fillet(objects: Any, radius: float, *, min_radius: float = 0.1) -> Any:
 
     edges = _edge_list(objects)
     if not edges:
-        return fillet(objects, radius)  # let build123d raise its own "no objects" error
+        return _noop_on_empty(objects, "fillet")
     target = _resolve_target(edges)
     if target is None:
         return objects  # edges own no solid and no active part: nothing to bevel
@@ -152,7 +176,7 @@ def safe_chamfer(
 
     edges = _edge_list(objects)
     if not edges:
-        return chamfer(objects, length, length2)
+        return _noop_on_empty(objects, "chamfer")
     target = _resolve_target(edges)
     if target is None:
         return objects  # edges own no solid and no active part: nothing to bevel

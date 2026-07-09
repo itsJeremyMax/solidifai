@@ -9,7 +9,7 @@ the biggest size that works so the model just builds.
 """
 
 import pytest
-from build123d import Align, Axis, Box, BuildPart, Edge, Locations, chamfer, fillet
+from build123d import Align, Axis, Box, BuildPart, Edge, Locations, Pos, chamfer, fillet
 
 from solidifai import safe_chamfer, safe_fillet
 
@@ -95,6 +95,42 @@ def test_degrades_to_no_op_when_even_min_fails():
     out = safe_fillet(edges, 30.0, min_radius=25.0)
     assert out.is_valid
     assert out.volume == pytest.approx(part.volume, rel=1e-9)
+
+
+def test_empty_selection_is_noop_not_crash():
+    """An empty edge selection (a filter that matched nothing) is common and must
+    never fail the build: no-op instead of the raw IndexError build123d throws
+    from ShapeList internals on an empty objects list."""
+    part = Box(40, 40, 40)
+    empty = part.edges().filter_by(Axis.Z).filter_by(Axis.X)  # contradictory -> empty
+    assert len(empty) == 0  # precondition
+    assert safe_fillet(empty, 2.0) is empty  # algebra, no context: objects unchanged
+    assert safe_chamfer(empty, 2.0) is empty
+
+
+def test_empty_selection_in_builder_is_noop():
+    """The same empty selection inside a live BuildPart must leave the context
+    part untouched and valid, not raise."""
+    with BuildPart() as bp:
+        Box(40, 40, 40)
+        before = bp.part.volume
+        safe_fillet(bp.edges().filter_by(Axis.Z).filter_by(Axis.X), 2.0)
+        safe_chamfer(bp.edges().filter_by(Axis.Z).filter_by(Axis.X), 2.0)
+    assert bp.part.is_valid
+    assert bp.part.volume == pytest.approx(before, rel=1e-9)
+
+
+def test_mixed_parent_edges_raise_a_clear_error():
+    """Edges from two different solids in one call silently beveled only the first
+    solid before; now it must raise a clear, actionable error instead of dropping
+    the rest."""
+    a = Box(20, 20, 20)
+    b = Pos(50, 0, 0) * Box(20, 20, 20)
+    mixed = a.edges().group_by(Axis.Z)[-1] + b.edges().group_by(Axis.Z)[-1]
+    with pytest.raises(ValueError, match="multiple solids"):
+        safe_fillet(mixed, 1.0)
+    with pytest.raises(ValueError, match="multiple solids"):
+        safe_chamfer(mixed, 1.0)
 
 
 def test_parentless_edge_is_noop_not_crash():

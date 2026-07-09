@@ -88,6 +88,41 @@ def test_counterbore_cuts_a_stepped_head_pocket():
     assert removed > plain_bore * 1.3
 
 
+def test_counterbore_bore_follows_the_profile_fit():
+    """The counterbore bore must resolve the manufacturing profile's fit like
+    clearance_hole does, not hardcode the medium series. A tighter profile shrinks
+    the bore diameter; the default normal fit keeps the historical medium bore."""
+    from build123d import Align, Cylinder
+
+    from solidifai_engine import manufacturing_profile
+
+    top = (Align.CENTER, Align.CENTER, Align.MAX)
+
+    def removed_under_fit(fit_profile):
+        orig = manufacturing_profile.builtin_defaults
+        manufacturing_profile.builtin_defaults = lambda: {"design": {"fit": fit_profile}}
+        try:
+            plate = Box(30, 30, 10, align=top)  # top face at Z=0
+            return plate.volume - (plate - hardware.counterbore("M6", depth=8)).volume
+        finally:
+            manufacturing_profile.builtin_defaults = orig
+
+    # A tight profile (close series) removes strictly less than the normal (medium).
+    assert removed_under_fit("tight") < removed_under_fit("normal")
+
+    # Default normal fit is byte-for-byte the old medium-bore counterbore: build the
+    # reference cutter the same way counterbore does and compare removed volumes.
+    t = hardware.dims("M6")
+    ref_bore = Cylinder(t["clearance_medium"] / 2, 8, align=top)
+    ref_recess = Cylinder(t["head_dia"] / 2 + 0.2, t["head_height"] + 0.2, align=top)
+    ref = ref_bore + ref_recess
+    plate_a = Box(30, 30, 10, align=top)
+    plate_b = Box(30, 30, 10, align=top)
+    removed_default = plate_a.volume - (plate_a - hardware.counterbore("M6", depth=8)).volume
+    removed_ref = plate_b.volume - (plate_b - ref).volume
+    assert math.isclose(removed_default, removed_ref, rel_tol=1e-6)
+
+
 def test_counterbore_rejects_depth_shallower_than_head():
     """A counterbore shallower than the head recess would overshoot the bore, so
     it must raise rather than silently cut past the requested depth."""
