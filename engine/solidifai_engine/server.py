@@ -418,8 +418,13 @@ class Server:
         except RemoteSessionError as exc:
             # The worker already formatted the Session error as "<Type>: message";
             # surface it verbatim so the original exception type isn't buried under
-            # a second (RemoteSessionError) prefix.
-            return {"id": req_id, "ok": False, "error": str(exc)}
+            # a second (RemoteSessionError) prefix. Route through _failure_response
+            # so a raised error also gets scriptLine + a trimmed traceback when the
+            # worker shipped one, matching the {ok: false} return path.
+            result: dict[str, Any] = {"ok": False, "error": str(exc)}
+            if exc.traceback:
+                result["traceback"] = exc.traceback
+            return _failure_response(req_id, result)
         except Exception as exc:  # noqa: BLE001
             return {"id": req_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

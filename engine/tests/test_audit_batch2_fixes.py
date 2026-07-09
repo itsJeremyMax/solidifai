@@ -11,12 +11,18 @@ Each test reproduces a concrete failure the audit found and pins the fix:
   8. diff_against reports the true (per-solid) volume for mirrored geometry
 """
 
+import json
 import os
 
 import pytest
 
 from solidifai_engine.session import Session
-from solidifai_engine.worker import _STARTUP_SENTINEL, KernelCrash, SessionProxy
+from solidifai_engine.worker import (
+    _STARTUP_SENTINEL,
+    KernelCrash,
+    RemoteSessionError,
+    SessionProxy,
+)
 
 # -- fixtures ---------------------------------------------------------------
 
@@ -288,3 +294,67 @@ def test_diff_against_reports_true_mirrored_volume(tmp_path):
     # signed volume cancels to ~0; per-solid aggregation reports the true 2000.
     assert r["currentVolume"] == pytest.approx(2000.0, rel=1e-3)
     assert r["checkpointVolume"] == pytest.approx(1000.0, rel=1e-3)
+
+
+# -- Add-on: raised Session errors ship their traceback over the worker pipe --
+
+
+def test_raised_session_error_carries_traceback_over_the_pipe(tmp_path):
+    # A Session method that RAISES (not {ok:false}) inside the worker must ship its
+    # traceback alongside the "<Type>: message" so the server can attach scriptLine.
+    (tmp_path / ".solidifai").mkdir()
+    proxy = SessionProxy(
+        str(tmp_path / ".solidifai" / "artifacts"), model_path=str(tmp_path / "model.py")
+    )
+    try:
+        # 'notadict' makes set_requirements iterate a string -> AttributeError, a
+        # normal caught error (RemoteSessionError), not a native crash.
+        with pytest.raises(RemoteSessionError) as excinfo:
+            proxy.set_requirements("notadict")
+        assert str(excinfo.value).startswith("AttributeError:")  # original type kept
+        assert excinfo.value.traceback is not None
+        assert "Traceback (most recent call last):" in excinfo.value.traceback
+        assert "AttributeError" in excinfo.value.traceback
+    finally:
+        proxy.close()
+
+
+def test_raised_error_surfaces_script_line_through_envelope(tmp_path):
+    # End to end: a raised error whose traceback has a user-script frame surfaces
+    # scriptLine + a trimmed traceback through the failure envelope, exactly like a
+    # {ok:false} build failure. Drive _handle_line with a crafted RemoteSessionError
+    # so the assertion is deterministic regardless of which method raised.
+    from solidifai_engine.server import Server
+
+    (tmp_path / ".solidifai").mkdir()
+    srv = Server(
+        socket_path=str(tmp_path / "sock"),
+        artifacts_dir=str(tmp_path / ".solidifai" / "artifacts"),
+        model_path=str(tmp_path / "model.py"),
+    )
+    try:
+        crafted_tb = (
+            "Traceback (most recent call last):\n"
+            '  File "/eng/solidifai_engine/session.py", line 42, in _run\n'
+            "    build(**values)\n"
+            '  File "<solidifai-script>", line 7, in build\n'
+            '    raise ValueError("bad param")\n'
+            "ValueError: bad param\n"
+        )
+
+        def boom(method, params):
+            raise RemoteSessionError("ValueError: bad param", crafted_tb)
+
+        srv._dispatch = boom
+        line = json.dumps({"id": 5, "method": "measure", "params": {}}).encode("utf-8")
+        resp = srv._handle_line(line)
+
+        assert resp["ok"] is False
+        assert resp["error"] == "ValueError: bad param"  # no double prefix
+        assert resp["scriptLine"] == 7  # the deepest user-script frame
+        assert "ValueError: bad param" in resp["traceback"]
+        # the engine frame is trimmed out, the user frame is kept
+        assert "solidifai_engine/session.py" not in resp["traceback"]
+        assert "<solidifai-script>" in resp["traceback"]
+    finally:
+        srv._session.close()

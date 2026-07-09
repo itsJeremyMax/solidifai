@@ -28,6 +28,7 @@ import logging
 import multiprocessing as mp
 import os
 import time
+import traceback
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -105,7 +106,14 @@ class KernelCrash(RuntimeError):
 class RemoteSessionError(RuntimeError):
     """A ``Session`` method raised inside the worker (a normal, caught error).
     Carries the worker's already-formatted ``"<Type>: message"`` string verbatim
-    so the server surfaces it without prepending a second type prefix."""
+    so the server surfaces it without prepending a second type prefix, plus the
+    worker's formatted ``traceback`` (when shipped) so the server can attach
+    ``scriptLine`` + a trimmed traceback for raised errors too, not only for the
+    ``{ok: false}`` returns that already carry one."""
+
+    def __init__(self, message: str, traceback_str: str | None = None):
+        super().__init__(message)
+        self.traceback = traceback_str
 
 
 def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -> None:
@@ -174,7 +182,9 @@ def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -
             result = getattr(session, method)(*args, **kwargs)
             conn.send(("ok", result))
         except Exception as exc:  # noqa: BLE001 - forward as a clean error, don't die
-            conn.send(("err", f"{type(exc).__name__}: {exc}"))
+            # Ship the traceback alongside the message so the server can attach
+            # scriptLine + a trimmed traceback for a raised error too.
+            conn.send(("err", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
 
 class SessionProxy:
@@ -258,13 +268,12 @@ class SessionProxy:
 
     # -- call forwarding ----------------------------------------------------
 
-    def _recv_result(
-        self, conn: Connection, proc: mp.process.BaseProcess, timeout: float
-    ) -> tuple[str, Any]:
+    def _recv_result(self, conn: Connection, proc: mp.process.BaseProcess, timeout: float) -> tuple:
         """Wait for the worker's reply, watching for death and the timeout.
 
-        Returns the raw ``(tag, payload)`` on a reply, or raises ``KernelCrash``
-        if the worker died (native fault) or overran the build timeout."""
+        Returns the raw reply tuple -- ``("ok", result)`` or ``("err", message,
+        traceback)`` -- on a reply, or raises ``KernelCrash`` if the worker died
+        (native fault) or overran the build timeout."""
         deadline = time.monotonic() + timeout
         while True:
             if conn.poll(0.2):
@@ -343,7 +352,7 @@ class SessionProxy:
                 self._rollback_journal(journal)
             raise KernelCrash("the modeling kernel crashed on that operation") from None
         try:
-            tag, payload = self._recv_result(self._conn, self._proc, timeout)
+            reply = self._recv_result(self._conn, self._proc, timeout)
         except KernelCrash as exc:
             # The worker is dead or wedged: drop it so the next call respawns a
             # fresh one that reloads the last good model. For a journaled mutation,
@@ -354,13 +363,16 @@ class SessionProxy:
                 self._rollback_journal(journal)
                 raise KernelCrash(f"{exc}; the {method} was rolled back") from None
             raise
-        if tag == "ok":
-            return payload
+        if reply[0] == "ok":
+            return reply[1]
         # A Session method raised (a normal, caught error path): re-raise so the
         # server's handler maps it to an {ok: false} response, exactly as before.
-        # The payload is already "<Type>: message"; RemoteSessionError lets the
-        # server emit it as-is instead of prepending its own RuntimeError prefix.
-        raise RemoteSessionError(str(payload))
+        # The message is already "<Type>: message" (RemoteSessionError lets the
+        # server emit it as-is, no second prefix); the traceback (when the worker
+        # shipped one) lets the server attach scriptLine for raised errors too.
+        message = reply[1] if len(reply) > 1 else "the modeling kernel reported an error"
+        tb = reply[2] if len(reply) > 2 else None
+        raise RemoteSessionError(str(message), tb)
 
     def __getattr__(self, name: str) -> Any:
         # Only reached for names not defined on the proxy: every Session method.
