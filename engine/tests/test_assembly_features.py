@@ -133,6 +133,28 @@ def test_features_survive_cache_round_trip(tmp_path):
     assert feats[0]["driven_by"] == ["bore"] and feats[0]["bbox"] is not None
 
 
+def test_assembly_set_params_rejects_unknown_key(tmp_path):
+    # Assembly-mode set_params validates against the skeleton PARAMS before building,
+    # so a bad key is a clean error, not a raw TypeError, and nothing is mutated.
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL)
+    s.set_part("pin", PLATE, attach="f0", inputs=["bore"])
+    b0 = s.build_id
+    res = s.set_params({"nope": 5})
+    assert res["ok"] is False and "nope" in res["error"]
+    assert s.build_id == b0  # no rebuild
+    assert s.get_params()["values"] == {"bore": 6.0}  # unchanged
+
+
+def test_assembly_set_params_rejects_bool_for_numeric(tmp_path):
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL)
+    s.set_part("pin", PLATE, attach="f0", inputs=["bore"])
+    res = s.set_params({"bore": True})  # bool is not a valid number
+    assert res["ok"] is False and "bore" in res["error"]
+    assert s.get_params()["values"] == {"bore": 6.0}
+
+
 def test_serialize_feature_round_trip(tmp_path):
     # Direct serialize/load_features round-trip (BREP faces + metadata).
     from build123d import Box, BuildPart, Hole, Locations

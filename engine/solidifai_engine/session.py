@@ -360,6 +360,11 @@ class Session:
         if self._is_assembly_mode():
             if (guard := self._round_guard()) is not None:
                 return guard
+            # Validate against the skeleton's PARAMS schema before rebuilding so an
+            # unknown/invalid key returns a clean error instead of a raw TypeError
+            # from build(**merged) -- same discipline as the single-model branch.
+            if (err := self._validate_param_values(values or {})) is not None:
+                return err
             merged = dict(self._param_values)
             merged.update(values or {})
             res = self._build_assembly(params=merged)
