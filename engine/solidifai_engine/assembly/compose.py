@@ -9,6 +9,31 @@ from dataclasses import replace
 from solidifai import ShownObject
 
 
+def place_features(features: list, *, at, path_prefix: str) -> list:
+    """Namespace + place a child's declared features onto the parent frame,
+    mirroring place() for objects: move each feature's faces by the attach frame
+    ``at`` (so its geometry lands in composed coordinates) and prefix its name
+    with the child id. ``part`` accumulates the owning child path so a nested
+    feature reads "hinge/pin/<name>". The faces move via Shape.moved() (COMPOSE),
+    exactly like a part's own placement, so nesting composes to arbitrary depth."""
+    placed: list = []
+    for f in features:
+        name = f"{path_prefix}/{f.name}" if path_prefix else f.name
+        moved_faces = [face.moved(at) for face in (getattr(f, "faces", []) or [])]
+        owner = getattr(f, "part", None)
+        part = f"{path_prefix}/{owner}" if owner else path_prefix
+        placed.append(
+            replace(
+                f,
+                name=name,
+                faces=moved_faces,
+                part=part,
+                _tess_cache=None,  # geometry moved: drop any stale per-build tess cache
+            )
+        )
+    return placed
+
+
 def place(objects: list[ShownObject], *, at, path_prefix: str) -> list[ShownObject]:
     """Apply the attach frame to each object and prefix its path id. Uses
     Shape.moved() (COMPOSE) rather than .located() (REPLACE), so a child's own

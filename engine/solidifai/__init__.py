@@ -122,6 +122,9 @@ class FeatureRecord:
     kind: str | None = None
     driven_by: list = field(default_factory=list)
     source_line: int | None = None
+    # In assembly mode, the owning child path ("pin" or "hinge/pin"); None for a
+    # single-model feature. The addressable name is namespaced ("<part>/<name>").
+    part: str | None = None
     # Raw build123d faces this block created (set-diff capture); never serialized,
     # interpreted engine-side. Empty when there is no active builder.
     faces: list = field(default_factory=list)
@@ -208,34 +211,100 @@ class feature:
         except Exception:  # noqa: BLE001 - never fail the build on capture
             return []
 
+    @staticmethod
+    def _same_surface(fa, fb) -> bool:
+        """True when two faces lie on the same underlying surface.
+
+        Used to tell a genuinely-new feature surface (a hole wall, a fillet
+        round) apart from a face that merely inherited a pre-existing surface
+        (the plate face a hole punched through, which is a *new* topological face
+        on the same plane). Handles the two surfaces blends/holes create — planes
+        and cylinders; any other pair is treated as distinct (best-effort)."""
+        try:
+            ta, tb = str(fa.geom_type), str(fb.geom_type)
+            if ta != tb:
+                return False
+            if "PLANE" in ta:
+                na, nb = fa.normal_at(), fb.normal_at()
+                if abs(na.dot(nb)) < 0.999:  # not parallel
+                    return False
+                pa, pb = fa.position_at(0.5, 0.5), fb.position_at(0.5, 0.5)
+                return abs((pa - pb).dot(nb)) < 1e-6  # same offset
+            if "CYLINDER" in ta:
+                aa, ab = fa.axis_of_rotation, fb.axis_of_rotation
+                if aa is None or ab is None or abs(fa.radius - fb.radius) > 1e-6:
+                    return False
+                if abs(aa.direction.dot(ab.direction)) < 0.999:  # axes not parallel
+                    return False
+                d = aa.position - ab.position
+                perp = d - ab.direction * d.dot(ab.direction)
+                return perp.length < 1e-6  # axes collinear
+            return False
+        except Exception:  # noqa: BLE001 - coincidence test is best-effort
+            return False
+
+    def _novel_after_faces(self) -> list:
+        """After-block faces whose surface did not exist before the block.
+
+        These are the actual new feature surfaces (a hole wall, a fillet's
+        rounded surface) with re-faced pre-existing surfaces (the plate a hole
+        went through) filtered out. This makes a blend's rounded surface
+        directly targetable by feature_at even when the removed-material sliver
+        lies off the true surface. Best-effort; returns ``[]`` on any problem."""
+        if self._builder is None or self._faces_before is None:
+            return []
+        try:
+            before = self._faces_before
+            new_faces = set(self._builder.faces()) - before
+            return [f for f in new_faces if not any(self._same_surface(f, b) for b in before)]
+        except Exception:  # noqa: BLE001 - never fail the build on capture
+            return []
+
+    @staticmethod
+    def _union_faces(a, b) -> list:
+        """Concatenate two face lists, dropping identity duplicates, order stable."""
+        seen: set = set()
+        out: list = []
+        for f in list(a) + list(b):
+            if id(f) not in seen:
+                seen.add(id(f))
+                out.append(f)
+        return out
+
     def _capture_faces(self) -> list:
         """Capture the faces this feature block created.
 
         Prefers a boolean delta against the pre-block solid so a subtractive op
         (e.g. ``Hole``) yields just the removed plug (wall + caps) and an
         additive op yields just the added body — instead of the set-diff, which
-        also picks up the whole punched plate faces. Falls back to the set-diff,
-        then ``[]``; never raises.
+        also picks up the whole punched plate faces. The delta is unioned with
+        the block's genuinely-new after-faces (``_novel_after_faces``) so a
+        blend's rounded surface is captured even though the removed sliver sits
+        up to a radius off it; the novel set excludes re-faced flats, so a hole's
+        plug still summarizes to the hole (not the whole plate). Falls back to
+        the set-diff, then ``[]``; never raises.
         """
         try:
+            novel = self._novel_after_faces()
             if self._solid_before is not None:
                 after = self._builder.part
                 # Subtractive: the material removed (the plug — wall + caps).
                 try:
                     removed = self._solid_before - after
                     if removed is not None and removed.volume > 1e-6:
-                        return list(removed.faces())
+                        return self._union_faces(removed.faces(), novel)
                 except Exception:  # noqa: BLE001 - try the additive branch next
                     pass
                 # Additive: the material added (the new body).
                 try:
                     added = after - self._solid_before
                     if added is not None and added.volume > 1e-6:
-                        return list(added.faces())
-                except Exception:  # noqa: BLE001 - fall back to set-diff below
+                        return self._union_faces(added.faces(), novel)
+                except Exception:  # noqa: BLE001 - fall back below
                     pass
-            # No before-solid, or neither delta had volume: use the set-diff.
-            return self._set_diff_faces()
+            # No before-solid, or neither delta had volume: prefer the novel
+            # surfaces, else the set-diff.
+            return novel or self._set_diff_faces()
         except Exception:  # noqa: BLE001 - never fail the build on capture
             return self._set_diff_faces()
 

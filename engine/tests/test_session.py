@@ -337,6 +337,140 @@ def test_feature_at_hits_and_misses(tmp_path):
     assert miss["match"] is None
 
 
+DUP_FEATURE_SCRIPT = """
+from build123d import BuildPart, Box, Locations, Hole
+from solidifai import show, feature
+
+PARAMS = {
+    "a": {"value": 5.0, "min": 2.0, "max": 9.0, "step": 1.0, "unit": "mm"},
+    "b": {"value": 5.0, "min": 2.0, "max": 9.0, "step": 1.0, "unit": "mm"},
+}
+
+def build(a, b):
+    with BuildPart() as p:
+        Box(60, 30, 10)
+        with feature("port", driven_by="a"), Locations((-15, 0)):
+            Hole(radius=a / 2)
+        with feature("port", driven_by="b"), Locations((15, 0)):
+            Hole(radius=b / 2)
+    show(p.part, name="Plate")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
+def test_duplicate_feature_names_are_disambiguated(tmp_path):
+    # Finding 3: two feature("port") blocks must each be addressable, not collapse.
+    sess = Session(str(tmp_path))
+    assert sess.execute_script(DUP_FEATURE_SCRIPT)["ok"] is True
+    names = [f["name"] for f in sess.inspect_features()["features"]]
+    assert names == ["port", "port_2"]
+
+
+def test_set_feature_targets_disambiguated_duplicate(tmp_path):
+    sess = Session(str(tmp_path))
+    sess.execute_script(DUP_FEATURE_SCRIPT)
+    res = sess.set_feature("port_2", {"b": 8})
+    assert res["ok"] is True
+    assert sess.get_params()["values"]["b"] == 8
+    # the raw (now-ambiguous) reference to a missing name lists the disambiguated ones
+    bad = sess.set_feature("port_9", {"a": 8})
+    assert bad["ok"] is False and "port_2" in bad["error"]
+
+
+def test_feature_at_resolves_second_duplicate(tmp_path):
+    sess = Session(str(tmp_path))
+    sess.execute_script(DUP_FEATURE_SCRIPT)
+    hit = sess.feature_at([15.0, 0.0, 0.0], tolerance_mm=5.0)  # second port at x=+15
+    assert hit["match"] is not None and hit["match"]["name"] == "port_2"
+
+
+TYPO_DRIVEN_BY_SCRIPT = """
+from build123d import BuildPart, Box, Locations, Hole
+from solidifai import show, feature
+
+PARAMS = {"bore": {"value": 6.0, "min": 2.0, "max": 18.0, "step": 1.0, "unit": "mm"}}
+
+def build(bore):
+    with BuildPart() as p:
+        Box(40, 40, 12)
+        with feature("center_hole", driven_by="boer"):  # typo: real param is "bore"
+            with Locations((0, 0)):
+                Hole(radius=bore / 2)
+    show(p.part, name="Plate")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
+def test_inspect_features_flags_unknown_driven_by(tmp_path):
+    # Finding 5: a driven_by that names no real param is surfaced as a warning.
+    sess = Session(str(tmp_path))
+    assert sess.execute_script(TYPO_DRIVEN_BY_SCRIPT)["ok"] is True
+    f = sess.inspect_features()["features"][0]
+    assert f["driven_by"] == ["boer"]
+    assert f.get("warning") and "boer" in f["warning"]
+
+
+def test_set_feature_rejects_unknown_driven_by(tmp_path):
+    sess = Session(str(tmp_path))
+    sess.execute_script(TYPO_DRIVEN_BY_SCRIPT)
+    res = sess.set_feature("center_hole", {"boer": 8})
+    assert res["ok"] is False
+    assert "boer" in res["error"] and "bore" in res["error"]
+
+
+def test_feature_at_success_envelope_has_ok_true(tmp_path):
+    # Finding 6: the success payload carries ok: true (additive; the existing
+    # "match" key stays), matching the bad-input branch that returns ok: false.
+    sess = Session(str(tmp_path))
+    sess.execute_script(FEATURE_SCRIPT)
+    res = sess.feature_at([1000.0, 1000.0, 1000.0])
+    assert res["ok"] is True
+    assert res["match"] is None
+    bad = sess.feature_at([1, 2])
+    assert bad["ok"] is False
+
+
+FILLET_FEATURE_SCRIPT = """
+from build123d import BuildPart, Box, fillet, Axis
+from solidifai import show, feature
+
+with BuildPart() as p:
+    Box(200, 200, 100)
+    top = p.edges().filter_by(Axis.X).group_by(Axis.Z)[-1].sort_by(Axis.Y)[-1]
+    with feature("lip", kind="fillet"):
+        fillet(top, radius=3)
+
+show(p.part, name="Block")
+"""
+
+
+def test_feature_at_finds_filleted_edge(tmp_path):
+    # Finding 4: a 3mm-filleted edge declared as a feature is resolvable by a
+    # click on the rounded surface (adaptive tolerance on a large model).
+    import math
+
+    sess = Session(str(tmp_path))
+    assert sess.execute_script(FILLET_FEATURE_SCRIPT)["ok"] is True
+    assert [f.name for f in sess._features] == ["lip"]
+    # a point dead-on the quarter-round surface (top edge at y=100, z=50)
+    py = 100 - 3 + 3 * math.cos(math.radians(45))
+    pz = 50 - 3 + 3 * math.sin(math.radians(45))
+    hit = sess.feature_at([0.0, py, pz])
+    assert hit["match"] is not None and hit["match"]["name"] == "lip"
+
+
+def test_feature_at_tolerance_mm_override(tmp_path):
+    sess = Session(str(tmp_path))
+    sess.execute_script(FEATURE_SCRIPT)
+    # The bore center sits in empty space ~6mm (radius) from the nearest wall: a
+    # generous explicit tolerance resolves it, a tight one does not.
+    center = [0.0, 0.0, 0.0]
+    assert sess.feature_at(center, tolerance_mm=8.0)["match"] is not None
+    assert sess.feature_at(center, tolerance_mm=2.0)["match"] is None
+
+
 LITERAL_FEATURE_SCRIPT = """
 from build123d import BuildPart, Box, Locations, Hole
 from solidifai import show, feature

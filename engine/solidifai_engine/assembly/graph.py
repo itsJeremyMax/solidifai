@@ -12,7 +12,14 @@ from solidifai_engine.assembly import manifest as manifest_mod
 
 
 def build_child(
-    node_dir: str, skel, child, *, cache=None, disk=None, workspace_root: str | None = None
+    node_dir: str,
+    skel,
+    child,
+    *,
+    cache=None,
+    disk=None,
+    workspace_root: str | None = None,
+    features_out: list | None = None,
 ) -> tuple[list, str | None]:
     """Build (or fetch from cache) one part child's local-frame objects against an
     already-run skeleton. Returns (objects, key); key is the content-cache key for a
@@ -21,6 +28,11 @@ def build_child(
     This is the single source of truth for the per-part cache key and the L1->L2
     get / run / put sequence, so an isolated build (the authoring round) and the
     whole-assembly compose use IDENTICAL keys and reuse each other's results.
+
+    When ``features_out`` is given it is extended with the child's declared
+    FeatureRecords in the SAME frame as the returned objects (local for a part,
+    sub-node-placed for a sub-assembly), unprefixed by this child's id -- the
+    caller's place_features applies this child's frame + id, symmetric with place().
 
     workspace_root is the tree root, threaded down so nested parts resolve assets
     against it (not their node dir)."""
@@ -37,6 +49,7 @@ def build_child(
                 cache=cache,
                 disk=disk,
                 workspace_root=workspace_root,
+                features_out=features_out,
             ),
             None,
         )
@@ -47,6 +60,7 @@ def build_child(
 
     part_path = os.path.join(node_dir, child.source)
     objs = None
+    features: list = []
     key = None
     if cache is not None or disk is not None:
         # compute key only when a cache layer is active
@@ -57,18 +71,24 @@ def build_child(
         key = part_key(src, inputs)
         if cache is not None:
             objs = cache.get(key)
+            if objs is not None:
+                features = cache.features(key)
         if objs is None and disk is not None:
             objs = disk.get(key)
-            if objs is not None and cache is not None:
-                # promote L2 hit into L1 for subsequent calls this session, carrying
-                # L2's asset fingerprint so the promoted entry revalidates an edited
-                # asset exactly like a direct-build entry (a reopened workspace has a
-                # cold L1 but warm L2, so this is the only place the fingerprint lands).
-                cache.put(key, objs, disk.fingerprint(key))
+            if objs is not None:
+                features = disk.features(key)
+                if cache is not None:
+                    # promote L2 hit into L1 for subsequent calls this session, carrying
+                    # L2's asset fingerprint so the promoted entry revalidates an edited
+                    # asset exactly like a direct-build entry (a reopened workspace has a
+                    # cold L1 but warm L2, so this is the only place the fingerprint lands).
+                    cache.put(key, objs, disk.fingerprint(key), features)
     if objs is None:
         from solidifai_engine.assembly.cache import asset_fingerprint
 
-        objs, assets = runner.run_part(part_path, inputs=inputs, workspace_root=workspace_root)
+        objs, assets, features = runner.run_part(
+            part_path, inputs=inputs, workspace_root=workspace_root
+        )
         # A part that shows nothing (or only non-solids) has no geometry to
         # compose. Catch it here with a readable message rather than letting
         # an empty Compound reach export_brep, which raises an opaque OCC
@@ -77,9 +97,11 @@ def build_child(
             raise ValueError(f"part {child.id!r} produced no geometry; did you forget show()?")
         assets_fp = asset_fingerprint(assets)
         if key is not None and cache is not None:
-            cache.put(key, objs, assets_fp)
+            cache.put(key, objs, assets_fp, features)
         if key is not None and disk is not None:
-            disk.put(key, objs, assets_fp)
+            disk.put(key, objs, assets_fp, features)
+    if features_out is not None and features:
+        features_out.extend(features)
     return objs, key
 
 
@@ -91,6 +113,7 @@ def build_node(
     cache=None,
     disk=None,
     workspace_root: str | None = None,
+    features_out: list | None = None,
 ) -> list:
     # The root call passes no workspace_root; this node IS the tree root, so its dir
     # becomes the root that every nested node resolves assets against.
@@ -109,8 +132,20 @@ def build_node(
 
     placed: list = []
     for child in man.children:
+        # Collect this child's features (child frame) then place them onto our frame
+        # + prefix with the child id, exactly as we do the child's objects.
+        child_feats: list | None = [] if features_out is not None else None
         objs, _key = build_child(
-            node_dir, skel, child, cache=cache, disk=disk, workspace_root=ws_root
+            node_dir,
+            skel,
+            child,
+            cache=cache,
+            disk=disk,
+            workspace_root=ws_root,
+            features_out=child_feats,
         )
-        placed.extend(compose.place(objs, at=skel.frame_for(child.attach), path_prefix=child.id))
+        frame = skel.frame_for(child.attach)
+        placed.extend(compose.place(objs, at=frame, path_prefix=child.id))
+        if features_out is not None and child_feats:
+            features_out.extend(compose.place_features(child_feats, at=frame, path_prefix=child.id))
     return placed

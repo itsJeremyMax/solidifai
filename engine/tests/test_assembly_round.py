@@ -128,6 +128,35 @@ def test_end_round_without_round_is_error(tmp_path):
     assert s.abort_round()["ok"] is False
 
 
+def test_abort_round_removes_part_added_during_round(tmp_path):
+    # Finding 7: a part written via set_part during a round must not survive an abort.
+    from solidifai_engine.assembly import manifest as m
+
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL_2FRAME)
+    s.begin_round()
+    s.set_part("base", BASE_PART, attach="base_frame", inputs=["body_w", "wall"])
+    assert os.path.exists(tmp_path / "parts" / "base.py")
+    assert m.child_by_id(m.load_manifest(str(tmp_path)), "base") is not None
+    assert s.abort_round()["ok"] is True
+    # the source file and the manifest child are both gone
+    assert not os.path.exists(tmp_path / "parts" / "base.py")
+    assert m.child_by_id(m.load_manifest(str(tmp_path)), "base") is None
+
+
+def test_abort_round_restores_edited_part_source(tmp_path):
+    # Finding 7: editing an existing part during a round then aborting restores it.
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL_2FRAME)
+    s.set_part("base", BASE_PART, attach="base_frame", inputs=["body_w", "wall"])
+    original = (tmp_path / "parts" / "base.py").read_text(encoding="utf-8")
+    s.begin_round()
+    s.set_part("base", LID_PART, attach="base_frame", inputs=["body_w", "wall"])
+    assert (tmp_path / "parts" / "base.py").read_text(encoding="utf-8") != original
+    assert s.abort_round()["ok"] is True
+    assert (tmp_path / "parts" / "base.py").read_text(encoding="utf-8") == original
+
+
 def test_build_part_defers_in_round(tmp_path):
     s = _mk(tmp_path)
     s.set_skeleton(SKEL_2FRAME)

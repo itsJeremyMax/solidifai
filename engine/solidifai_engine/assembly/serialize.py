@@ -14,18 +14,106 @@ import os
 
 from build123d import export_brep, import_brep
 
-from solidifai import ShownObject
+from solidifai import FeatureRecord, ShownObject
 from solidifai_engine.render import compound_of
 
-SIDECAR_FORMAT = 2  # bump when the sidecar shape changes so stale entries re-serialize
+SIDECAR_FORMAT = 3  # bump when the sidecar shape changes so stale entries re-serialize
 
 
 def _brep_path(dir_: str, key: str) -> str:
     return os.path.join(dir_, f"{key}.brep")
 
 
+def _feature_brep_path(dir_: str, key: str, idx: int) -> str:
+    return os.path.join(dir_, f"{key}.feat{idx}.brep")
+
+
 def _meta_path(dir_: str, key: str) -> str:
     return os.path.join(dir_, f"{key}.json")
+
+
+def _features_meta(features: list) -> list:
+    """Per-feature sidecar metadata (name/kind/driven_by/source_line + whether the
+    feature carries geometry, so load knows to read its per-feature BREP)."""
+    out: list = []
+    for rec in features or []:
+        faces = getattr(rec, "faces", []) or []
+        out.append(
+            {
+                "name": rec.name,
+                "kind": rec.kind,
+                "driven_by": list(rec.driven_by),
+                "source_line": rec.source_line,
+                "has_faces": bool(faces),
+                "inferred": bool(getattr(rec, "inferred", False)),
+                "confidence": getattr(rec, "confidence", None),
+                "part": getattr(rec, "part", None),
+            }
+        )
+    return out
+
+
+def _remove_feature_breps(dir_: str, key: str) -> None:
+    """Delete every per-feature BREP for ``key`` (stale-entry cleanup). Faces from
+    distinct feature blocks can be coincident, so one file per feature avoids a
+    fragile shared-count re-split that OCC face-merging would break on reload."""
+    prefix, suffix = f"{key}.feat", ".brep"
+    with contextlib.suppress(OSError):
+        for name in os.listdir(dir_):
+            if name.startswith(prefix) and name.endswith(suffix):
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.join(dir_, name))
+
+
+def _dump_feature_faces(dir_: str, key: str, features: list) -> None:
+    """Write each feature's faces to its own content BREP. One file per feature so
+    reload never depends on a shared face count (coincident faces across features
+    would otherwise collapse and misalign a single-file re-split)."""
+    _remove_feature_breps(dir_, key)
+    for i, rec in enumerate(features or []):
+        faces = list(getattr(rec, "faces", []) or [])
+        if not faces:
+            continue
+        final = _feature_brep_path(dir_, key, i)
+        tmp = final + ".tmp"
+        export_brep(compound_of(faces), tmp)
+        os.replace(tmp, final)
+
+
+def load_features(dir_: str, key: str) -> list:
+    """Reconstruct the FeatureRecords stored with ``key`` (each feature's faces
+    re-imported from its own BREP). A torn/missing per-feature file degrades that
+    feature to metadata-only (no faces) so inspect_features/set_feature still work
+    while feature_at/highlight are the only things affected -- never misattributed."""
+    meta = load_meta(dir_, key)
+    if meta is None or meta.get("cacheable") is False:
+        return []
+    fmeta = meta.get("features") or []
+    if not fmeta:
+        return []
+    out: list = []
+    for i, e in enumerate(fmeta):
+        faces: list = []
+        if e.get("has_faces"):
+            fpath = _feature_brep_path(dir_, key, i)
+            if os.path.exists(fpath):
+                try:
+                    faces = list(import_brep(fpath).faces())
+                except Exception:  # noqa: BLE001 - torn file: metadata-only
+                    faces = []
+        out.append(
+            FeatureRecord(
+                name=e["name"],
+                kind=e.get("kind"),
+                driven_by=list(e.get("driven_by") or []),
+                source_line=e.get("source_line"),
+                part=e.get("part"),
+                faces=faces,
+                inferred=bool(e.get("inferred", False)),
+                confidence=e.get("confidence"),
+            )
+        )
+    return out
 
 
 def _solid_info(shape) -> tuple[int, bool]:
@@ -45,7 +133,9 @@ def _solid_info(shape) -> tuple[int, bool]:
         return n, (n == 0)
 
 
-def dump_result(dir_: str, key: str, objects: list, *, assets: dict | None = None) -> None:
+def dump_result(
+    dir_: str, key: str, objects: list, *, assets: dict | None = None, features: list | None = None
+) -> None:
     os.makedirs(dir_, exist_ok=True)
     infos = [_solid_info(o.shape) for o in objects]
     meta_final = _meta_path(dir_, key)
@@ -54,7 +144,9 @@ def dump_result(dir_: str, key: str, objects: list, *, assets: dict | None = Non
     if any(non_solid for _, non_solid in infos):
         # At least one object holds geometry that cannot round-trip through
         # solids(). Persist a non-cacheable marker (no BREP) so load is a clean
-        # miss forever for this content -- never a silent misattribution.
+        # miss forever for this content -- never a silent misattribution. A
+        # non-cacheable entry re-runs the part on load, which regenerates its
+        # features, so none are serialized here.
         marker = {"format": SIDECAR_FORMAT, "cacheable": False, "assets": assets or {}}
         with open(meta_tmp, "w", encoding="utf-8") as f:
             json.dump(marker, f)
@@ -62,6 +154,7 @@ def dump_result(dir_: str, key: str, objects: list, *, assets: dict | None = Non
         # Drop any stale BREP left from an earlier (differing) serialization.
         with contextlib.suppress(OSError):
             os.remove(_brep_path(dir_, key))
+        _remove_feature_breps(dir_, key)
         return
 
     # Wrap COPIES: these shapes come from the in-memory node cache and are reused;
@@ -87,7 +180,11 @@ def dump_result(dir_: str, key: str, objects: list, *, assets: dict | None = Non
             }
             for o, (n, _) in zip(objects, infos, strict=True)
         ],
+        "features": _features_meta(features or []),
     }
+    # Feature faces (targetable geometry) travel in their own content BREP so a
+    # cached-part rebuild still yields inspect_features/feature_at/highlight.
+    _dump_feature_faces(dir_, key, features or [])
     with open(meta_tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f)
     os.replace(meta_tmp, meta_final)

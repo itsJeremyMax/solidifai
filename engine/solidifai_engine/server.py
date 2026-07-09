@@ -598,7 +598,9 @@ _HANDLERS: dict[str, Any] = {
     "set_feature": lambda srv, p: srv._session.set_feature(
         srv._require(p, "name"), srv._require(p, "values")
     ),
-    "feature_at": lambda srv, p: srv._session.feature_at(srv._require(p, "point")),
+    "feature_at": lambda srv, p: srv._session.feature_at(
+        srv._require(p, "point"), tolerance_mm=p.get("tolerance_mm")
+    ),
     "set_params": lambda srv, p: srv._session.set_params(srv._require(p, "values")),
     "set_part_material": lambda srv, p: srv._session.set_part_material(
         srv._require(p, "part_id"), p.get("material")

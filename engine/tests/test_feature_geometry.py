@@ -130,6 +130,33 @@ def test_feature_at_resolves_a_point_on_the_bore_wall():
     assert miss is None
 
 
+def test_infer_ignores_fillets_on_plain_box():
+    from build123d import Box, BuildPart, fillet
+
+    with BuildPart() as p:
+        Box(40, 40, 20)
+        fillet(p.edges(), radius=3)
+    recs = features.infer(p.part)
+    # A plain filleted box has no holes or bosses -- every cylindrical face is a
+    # blend and must not be mistaken for one.
+    assert all(r.kind not in ("hole", "boss") for r in recs), [r.kind for r in recs]
+
+
+def test_infer_finds_holes_despite_fillets():
+    from build123d import Axis, Box, BuildPart, Hole, Locations, fillet
+
+    with BuildPart() as p:
+        Box(40, 40, 20)
+        with Locations((0, 0)):
+            Hole(radius=5)
+        # Fillet only the vertical corner edges so the through-hole stays a full
+        # cylinder (a mixed part: real hole + real fillets).
+        fillet(p.edges().filter_by(Axis.Z), radius=3)
+    recs = features.infer(p.part)
+    assert any(r.kind == "hole" for r in recs), "the real hole must still be inferred"
+    assert not any(r.kind == "boss" for r in recs), "fillets must not become phantom bosses"
+
+
 def test_nearest_caches_tessellation(monkeypatch):
     rec = _build_hole()  # existing helper in this file
     calls = {"n": 0}

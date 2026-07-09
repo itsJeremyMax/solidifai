@@ -536,14 +536,41 @@ class Session:
         workspace_metadata.write_metadata(self.root, new)
         return {"ok": True, "metadata": new}
 
-    def feature_at(self, point) -> dict:
+    def feature_at(self, point, tolerance_mm=None) -> dict:
         """Return the named feature nearest ``point`` (build123d Z-up mm), as
-        ``{"match": <feature dict> | null}``. The app converts a viewport click
-        (GLB Y-up) to this frame before calling — see the design spec."""
+        ``{"ok": True, "match": <feature dict> | null}``. The app converts a
+        viewport click (GLB Y-up) to this frame before calling — see the design spec.
+
+        The hit radius is adaptive: it scales with the model's bounding-box
+        diagonal (floored at 1mm) so a click that lands slightly off a surface on
+        a large model still resolves. Pass ``tolerance_mm`` to override it with an
+        explicit hit radius in millimetres."""
         if not point or len(point) != 3:
             return {"ok": False, "error": "point must be [x, y, z] in mm (Z-up)"}
-        rec = feature_geom.nearest(self._features, point)
-        return {"match": self._feature_to_dict(rec) if rec is not None else None}
+        tol = self._feature_at_tolerance(tolerance_mm)
+        rec = feature_geom.nearest(self._features, point, tol=tol)
+        return {"ok": True, "match": self._feature_to_dict(rec) if rec is not None else None}
+
+    def _model_diagonal(self) -> float:
+        """Bounding-box diagonal of the current model in mm (0.0 if unavailable)."""
+        try:
+            bb = self._model.bounding_box()
+            return (bb.size.X**2 + bb.size.Y**2 + bb.size.Z**2) ** 0.5
+        except Exception:  # noqa: BLE001 - no model / unmeasurable
+            return 0.0
+
+    def _feature_at_tolerance(self, tolerance_mm) -> float:
+        """Resolve the feature_at hit radius: an explicit positive ``tolerance_mm``
+        wins; otherwise scale with the model diagonal, floored at the base tolerance."""
+        if tolerance_mm is not None:
+            try:
+                t = float(tolerance_mm)
+                if t > 0:
+                    return t
+            except (TypeError, ValueError):
+                pass
+        adaptive = self._model_diagonal() * feature_geom.FEATURE_AT_DIAG_FRACTION
+        return max(feature_geom.FEATURE_AT_TOLERANCE, adaptive)
 
     def set_feature(self, name, values) -> dict:
         """Change a named feature by adjusting the parameter(s) that drive it.
@@ -577,6 +604,17 @@ class Session:
                 "error": f"feature {name!r} is not parameter-driven; edit its "
                 f"source with execute_script, or wrap it with "
                 f"feature(driven_by=...) to make it settable",
+            }
+        # A driven_by typo would otherwise reach build(**merged) as a raw TypeError
+        # (skeleton/param build). Catch it here with the available param names.
+        unknown = self._unknown_driven_by(rec)
+        if unknown:
+            valid = ", ".join(sorted(self._param_values)) or "(none)"
+            return {
+                "ok": False,
+                "error": f"feature {name!r} declares driven_by {unknown} which are "
+                f"not parameters; available: {valid}. Fix the "
+                f"feature(driven_by=...) declaration.",
             }
         bad = [k for k in values if k not in driven]
         if bad:
@@ -808,17 +846,40 @@ class Session:
         final model (never fails the build)."""
         declared = list(solidifai._feature_registry())
         if declared:
-            self._features = declared
+            self._features = self._dedupe_feature_names(declared)
             return
         try:
-            self._features = feature_geom.infer(self._model) if self._model is not None else []
+            inferred = feature_geom.infer(self._model) if self._model is not None else []
+            self._features = self._dedupe_feature_names(inferred)
         except Exception:  # noqa: BLE001 - inference is best-effort
             self._features = []
 
     @staticmethod
-    def _feature_to_dict(f: solidifai.FeatureRecord) -> dict:
+    def _dedupe_feature_names(records: list) -> list:
+        """Auto-suffix duplicate feature names in place so each feature is
+        individually addressable (a second ``port`` becomes ``port_2``), matching
+        the show()/node-id dedup convention. The first occurrence keeps its bare
+        name; collisions with an existing suffix are re-bumped until unique."""
+        counts: dict = {}
+        used: set = set()
+        for rec in records:
+            base = rec.name
+            name = base
+            while name in used:
+                counts[base] = counts.get(base, 1) + 1
+                name = f"{base}_{counts[base]}"
+            used.add(name)
+            rec.name = name
+        return records
+
+    def _unknown_driven_by(self, f: solidifai.FeatureRecord) -> list:
+        """driven_by names on ``f`` that are not declared parameters (a typo in the
+        feature declaration). Empty for a well-wired or non-parametric feature."""
+        return [d for d in getattr(f, "driven_by", []) if d not in self._param_values]
+
+    def _feature_to_dict(self, f: solidifai.FeatureRecord) -> dict:
         summary = feature_geom.summarize(getattr(f, "faces", []) or [])
-        return {
+        out = {
             "name": f.name,
             "kind": f.kind,
             "driven_by": list(f.driven_by),
@@ -829,6 +890,18 @@ class Session:
             "inferred": bool(getattr(f, "inferred", False)),
             "confidence": getattr(f, "confidence", None),
         }
+        part = getattr(f, "part", None)
+        if part is not None:
+            out["part"] = part
+        # Surface a mis-wired declaration so the agent sees it before trying to set it.
+        unknown = self._unknown_driven_by(f)
+        if unknown:
+            valid = ", ".join(sorted(self._param_values)) or "(none)"
+            out["warning"] = (
+                f"driven_by names {unknown} which are not parameters; "
+                f"available: {valid}. Fix the feature(driven_by=...) declaration."
+            )
+        return out
 
     def get_model_info(self) -> dict:
         """Return the last-GOOD ``model.json`` contents, or an empty dict if no
@@ -1279,6 +1352,7 @@ class Session:
 
         # Assembly build path: the workspace always has a root here.
         assert self.root is not None
+        assembly_features: list = []
         try:
             objects = graph.build_node(
                 self.root,
@@ -1286,6 +1360,7 @@ class Session:
                 parent=None,
                 cache=self._node_cache,
                 disk=self._disk_cache,
+                features_out=assembly_features,
             )
             # Empty composition: branch explicitly on a typed signal (no children vs
             # children-but-no-geometry) instead of matching a render error string.
@@ -1322,9 +1397,24 @@ class Session:
             }
         self._model = _compound_from_registry(objects)
         self._objects = objects
+        self._snapshot_assembly_features(assembly_features)
         self.build_id = next_build
         self.last_ok = True
         return {"ok": True, "buildId": self.build_id}
+
+    def _snapshot_assembly_features(self, declared: list) -> None:
+        """Snapshot the composed assembly's feature inventory. Per-part declared
+        features (already namespaced ``<part>/<name>`` and placed in composed
+        coordinates by the graph) win; when the whole assembly declares none, fall
+        back to best-effort inference over the composed model. Never fails the build."""
+        if declared:
+            self._features = self._dedupe_feature_names(declared)
+            return
+        try:
+            inferred = feature_geom.infer(self._model) if self._model is not None else []
+            self._features = self._dedupe_feature_names(inferred)
+        except Exception:  # noqa: BLE001 - inference is best-effort
+            self._features = []
 
     # -- assembly authoring helpers -----------------------------------------
 
@@ -1474,6 +1564,16 @@ class Session:
             # Snapshot prior state so a build failure is a clean no-op (a broken part
             # must not poison the manifest or leave a half-written source file).
             prior_man = manifest_mod.load_manifest(self.root)
+            # Refuse to silently convert an existing sub-assembly into a part: that
+            # would rewrite its kind and orphan its <id>/ directory. Make the caller
+            # remove it explicitly first.
+            existing_child = manifest_mod.child_by_id(prior_man, part_id)
+            if existing_child is not None and existing_child.kind != kind:
+                return {
+                    "ok": False,
+                    "error": f"{part_id!r} is a sub-assembly; remove_part it first "
+                    f"to replace it with a part",
+                }
             prior_src = None
             with contextlib.suppress(OSError), open(dest, encoding="utf-8") as f:
                 prior_src = f.read()
@@ -1710,8 +1810,62 @@ class Session:
             "skeleton_result": skel_result,
             "built": set(),
             "failed": {},
+            # Snapshot the manifest + part sources so abort_round rolls back the
+            # structural writes a set_part makes during the round (new parts get
+            # removed, edited parts reverted). Without this, aborted parts persist
+            # uncommitted and a later undo silently deletes them.
+            "sources_snapshot": self._snapshot_round_sources(),
         }
         return {"ok": True, "skeleton": tree_mod.assembly_tree(self.root)["skeleton"]}
+
+    def _snapshot_round_sources(self) -> dict:
+        """Capture assembly.json + every parts/*.py source (as text) at begin_round.
+        abort_round replays this to restore the exact pre-round fileset."""
+        assert self.root is not None
+        paths_ = self._assembly_root_paths()
+        manifest_text: str | None = None
+        with contextlib.suppress(OSError), open(paths_["manifest"], encoding="utf-8") as f:
+            manifest_text = f.read()
+        sources: dict = {}
+        parts_dir = paths_["parts_dir"]
+        if os.path.isdir(parts_dir):
+            for name in os.listdir(parts_dir):
+                path = os.path.join(parts_dir, name)
+                if os.path.isfile(path):
+                    with contextlib.suppress(OSError), open(path, encoding="utf-8") as f:
+                        sources[path] = f.read()
+        return {"manifest": manifest_text, "sources": sources}
+
+    def _restore_round_sources(self, snap: dict) -> None:
+        """Restore assembly.json + parts/*.py to the begin_round snapshot: revert
+        edited/known files, delete parts written during the round, recreate any that
+        were removed. All writes stay inside the workspace root (defense in depth)."""
+        assert self.root is not None
+        paths_ = self._assembly_root_paths()
+        manifest_text = snap.get("manifest")
+        if manifest_text is not None and self._within_root(paths_["manifest"]):
+            tmp = paths.write_temp_text(paths_["manifest"], manifest_text)
+            paths.atomic_finalize(tmp, paths_["manifest"])
+        sources: dict = snap.get("sources", {})
+        parts_dir = paths_["parts_dir"]
+        current: set = set()
+        if os.path.isdir(parts_dir):
+            current = {
+                os.path.join(parts_dir, n)
+                for n in os.listdir(parts_dir)
+                if os.path.isfile(os.path.join(parts_dir, n))
+            }
+        # Delete parts that did not exist at begin_round (written during the round).
+        for path in current - set(sources):
+            if self._within_root(path):
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+        # Restore the snapshot contents (reverts edits, recreates deletions).
+        for path, text in sources.items():
+            if self._within_root(path):
+                with contextlib.suppress(OSError):
+                    tmp = paths.write_temp_text(path, text)
+                    paths.atomic_finalize(tmp, path)
 
     def end_round(self) -> dict:
         """Leave deferred-compose mode and compose plus render the whole assembly
@@ -1738,12 +1892,19 @@ class Session:
         return res
 
     def abort_round(self) -> dict:
-        """Leave deferred-compose mode without composing (discard the round). Parts
-        already written during the round stay on disk; the model still reflects the
-        last successful compose."""
+        """Leave deferred-compose mode without composing (discard the round).
+
+        Rolls back the structural writes made during the round: parts added via
+        set_part are deleted, edited parts are reverted, and the manifest is
+        restored to its begin_round state. The model already reflects the last
+        successful compose (compose is deferred during a round), so no rebuild is
+        needed."""
         if not self._round.get("active"):
             return {"ok": False, "error": "no active round"}
+        snap = self._round.get("sources_snapshot")
         self._round = {"active": False}
+        if snap is not None:
+            self._restore_round_sources(snap)
         return {"ok": True}
 
     @staticmethod
@@ -1903,6 +2064,17 @@ class Session:
         from solidifai_engine.assembly import manifest as manifest_mod
 
         try:
+            # Refuse to silently convert an existing part into a sub-assembly: that
+            # would orphan its parts/<id>.py source. Make the caller remove it first.
+            existing_child = manifest_mod.child_by_id(
+                manifest_mod.load_manifest(self.root), child_id
+            )
+            if existing_child is not None and existing_child.kind != "assembly":
+                return {
+                    "ok": False,
+                    "error": f"{child_id!r} is a part; remove_part it first "
+                    f"to replace it with a sub-assembly",
+                }
             sub_dir = os.path.join(self.root, child_id)
             if not self._within_root(sub_dir):  # defense in depth (id already validated)
                 return self._bad_id_error(child_id)

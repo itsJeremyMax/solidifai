@@ -268,8 +268,11 @@ def inspect_features() -> Any:
     with a ``confidence``) for detected round features; these have no driving
     parameter and cannot be changed by ``set_feature`` until you name them in
     the script with a ``feature(...)`` block. Declared features take precedence.
-    In assembly mode feature listing is currently unavailable (the engine
-    returns an empty list)."""
+
+    In assembly mode features are listed too, namespaced ``<part>/<name>`` (e.g.
+    ``pin/center_bore``) and carrying a ``part`` field. A feature whose
+    ``driven_by`` names a skeleton parameter is settable via ``set_feature``;
+    a mis-wired ``driven_by`` shows a ``warning`` naming the available params."""
     return _call("inspect_features")
 
 
@@ -568,21 +571,26 @@ def set_feature(name: str, values: dict) -> Any:
     the feature's ``driven_by`` names. Rebuilds the model. A feature that isn't
     parameter-driven (including an inferred/auto-detected one) returns an
     error directing you to name it with ``feature(...)`` or edit its source
-    instead. In assembly mode feature listing is currently unavailable, so
-    there is nothing to target."""
+    instead. In assembly mode, target the namespaced name (``pin/center_bore``);
+    a feature driven by a skeleton parameter rebuilds the assembly through it,
+    while a part-local (non-parameter) feature returns a clear error."""
     return _call("set_feature", {"name": name, "values": values})
 
 
 @mcp.tool()
-def feature_at(point: list[float]) -> Any:
+def feature_at(point: list[float], tolerance_mm: float | None = None) -> Any:
     """Resolve a 3D point to the feature at that location: the "which feature
     is here" lookup. ``point`` is ``[x, y, z]`` in millimetres (build123d Z-up).
-    Returns ``{"match": <feature dict>}`` for the nearest feature whose mesh is
-    within ~1 mm of the point, or ``{"match": null}`` when none is that close.
-    Retarget the matched feature with ``set_feature`` (name it first if it is
-    inferred). In assembly mode feature listing is currently unavailable, so
-    this returns no match."""
-    return _call("feature_at", {"point": point})
+    Returns ``{"ok": true, "match": <feature dict>}`` for the nearest feature
+    whose mesh is near the point, or ``match: null`` when none is close enough.
+    The hit radius adapts to model size (floored at ~1 mm); pass ``tolerance_mm``
+    to set an explicit hit radius when a click keeps missing a small or offset
+    surface. Retarget the matched feature with ``set_feature`` (name it first if
+    it is inferred). In assembly mode features are namespaced ``<part>/<name>``."""
+    args: dict[str, Any] = {"point": point}
+    if tolerance_mm is not None:
+        args["tolerance_mm"] = tolerance_mm
+    return _call("feature_at", args)
 
 
 @mcp.tool()

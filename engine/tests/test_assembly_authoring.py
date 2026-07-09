@@ -44,6 +44,31 @@ def test_set_skeleton_initializes_assembly(tmp_path):
     assert block["values"]["w"] == 50.0
 
 
+def test_set_part_over_subassembly_id_is_rejected(tmp_path):
+    # Finding 8: set_part must not silently convert a sub-assembly to a part and
+    # orphan its directory.
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL)
+    assert s.add_subassembly("hinge", attach="base_frame")["ok"] is True
+    res = s.set_part("hinge", PART, attach="base_frame", inputs=["w"])
+    assert res["ok"] is False
+    assert "sub-assembly" in res["error"] and "remove_part" in res["error"]
+    assert os.path.isdir(tmp_path / "hinge")  # the sub-assembly dir is intact
+    assert not os.path.exists(tmp_path / "parts" / "hinge.py")  # no orphan part source
+
+
+def test_add_subassembly_over_part_id_is_rejected(tmp_path):
+    # Finding 8: the reverse direction must not orphan parts/<id>.py.
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL)
+    assert s.set_part("base", PART, attach="base_frame", inputs=["w"])["ok"] is True
+    res = s.add_subassembly("base", attach="base_frame")
+    assert res["ok"] is False
+    assert "part" in res["error"] and "remove_part" in res["error"]
+    assert os.path.exists(tmp_path / "parts" / "base.py")  # part source not orphaned
+    assert not os.path.isdir(tmp_path / "base")  # no stray sub-assembly dir
+
+
 def test_set_part_adds_child_and_builds(tmp_path):
     s = _mk(tmp_path)
     s.set_skeleton(SKEL)

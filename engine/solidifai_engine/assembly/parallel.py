@@ -69,8 +69,10 @@ def _build_one(args):
     on any failure (the part is left for the in-process fallback)."""
     part_path, inputs, key, cache_dir = args
     try:
-        objs, assets = runner.run_part(part_path, inputs=inputs)
-        serialize.dump_result(cache_dir, key, objs, assets=asset_fingerprint(assets))
+        objs, assets, features = runner.run_part(part_path, inputs=inputs)
+        serialize.dump_result(
+            cache_dir, key, objs, assets=asset_fingerprint(assets), features=features
+        )
         return key
     except Exception:  # noqa: BLE001 - a worker failure must never break the build
         return None

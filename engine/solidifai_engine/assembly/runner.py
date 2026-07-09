@@ -53,10 +53,12 @@ def run_skeleton(
 
 
 def run_part(part_path: str, *, inputs: dict, workspace_root: str | None = None):
-    """Build one part in an isolated scope and return (objects, assets). The part
-    sees only `inputs`; its show() calls are captured by build_scope(), so the
-    build is a pure function of (source, inputs) with no global side effects.
-    assets is the list of import_cad paths recorded by the scope.
+    """Build one part in an isolated scope and return (objects, assets, features).
+    The part sees only `inputs`; its show()/feature() calls are captured by
+    build_scope(), so the build is a pure function of (source, inputs) with no
+    global side effects. assets is the list of import_cad paths recorded by the
+    scope; features are the FeatureRecords declared inside the part (local frame),
+    carried out so the composer can namespace + place them onto the assembly.
 
     workspace_root is the TREE root. A nested sub-assembly part lives at
     <root>/<node>/parts/<id>.py, so dirname(dirname(part_path)) is the NODE dir,
@@ -69,4 +71,4 @@ def run_part(part_path: str, *, inputs: dict, workspace_root: str | None = None)
         raise ValueError(f"{part_path!r}: part defines no build(inputs)")
     with solidifai.build_scope() as scope:
         build_fn(dict(inputs))
-        return list(scope.objects), list(scope.assets)
+        return list(scope.objects), list(scope.assets), list(scope.features)

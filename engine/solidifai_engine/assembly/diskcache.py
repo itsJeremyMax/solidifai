@@ -56,5 +56,10 @@ class DiskCache:
             return None
         return meta.get("assets")
 
-    def put(self, key: str, objects: list, assets_fp: dict) -> None:
-        serialize.dump_result(self.dir, key, objects, assets=assets_fp)
+    def features(self, key: str) -> list:
+        """The FeatureRecords stored with ``key`` (faces re-imported), or []. Called
+        only after a get() hit, so the sidecar is known present and asset-valid."""
+        return serialize.load_features(self.dir, key)
+
+    def put(self, key: str, objects: list, assets_fp: dict, features: list | None = None) -> None:
+        serialize.dump_result(self.dir, key, objects, assets=assets_fp, features=features)

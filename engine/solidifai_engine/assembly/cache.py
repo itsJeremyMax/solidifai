@@ -131,7 +131,7 @@ class NodeCache:
     checked before L2)."""
 
     def __init__(self) -> None:
-        self._store: dict[str, tuple[list, dict | None]] = {}
+        self._store: dict[str, tuple[list, dict | None, list]] = {}
         self.hits = 0
         self.misses = 0
 
@@ -140,7 +140,7 @@ class NodeCache:
         if entry is None:
             self.misses += 1
             return None
-        objects, assets_fp = entry
+        objects, assets_fp, _features = entry
         if assets_fp and asset_fingerprint(list(assets_fp)) != assets_fp:
             # a recorded asset changed on disk: stale entry, treat as a miss
             self.misses += 1
@@ -148,5 +148,13 @@ class NodeCache:
         self.hits += 1
         return objects
 
-    def put(self, key: str, objects: list, assets_fp: dict | None = None) -> None:
-        self._store[key] = (objects, assets_fp)
+    def features(self, key: str) -> list:
+        """The declared FeatureRecords stored with ``key`` (live faces, part-local
+        frame), or [] when there is no entry. Consulted only after a get() hit."""
+        entry = self._store.get(key)
+        return list(entry[2]) if entry is not None else []
+
+    def put(
+        self, key: str, objects: list, assets_fp: dict | None = None, features: list | None = None
+    ) -> None:
+        self._store[key] = (objects, assets_fp, list(features or []))

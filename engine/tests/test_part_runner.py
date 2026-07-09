@@ -13,7 +13,9 @@ def build(inputs):
 
 def test_part_build_returns_shown_objects(tmp_path):
     (tmp_path / "base.py").write_text(PART, encoding="utf-8")
-    objs, _assets = runner.run_part(str(tmp_path / "base.py"), inputs={"body_w": 80.0, "wall": 2.4})
+    objs, _assets, _features = runner.run_part(
+        str(tmp_path / "base.py"), inputs={"body_w": 80.0, "wall": 2.4}
+    )
     assert [o.name for o in objs] == ["Base"]
     assert objs[0].shape.bounding_box().size.X == 80.0
 

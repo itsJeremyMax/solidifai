@@ -16,8 +16,42 @@ from build123d import Compound
 from solidifai import FeatureRecord
 
 TESS_TOLERANCE = 0.1
-FEATURE_AT_TOLERANCE = 1.0  # mm — a point within this of a feature's mesh "hits" it
+FEATURE_AT_TOLERANCE = 1.0  # mm — floor for a point-to-feature "hit" (small models)
+# Adaptive slack: on a large model a fixed 1mm hit radius is too tight for a
+# click that lands slightly off the tessellated surface. Scale the tolerance
+# with the model's bbox diagonal, never below FEATURE_AT_TOLERANCE.
+FEATURE_AT_DIAG_FRACTION = 0.005
 INFERENCE_CONFIDENCE = 0.5  # flat heuristic for auto-detected features (low-trust, flagged)
+# A cylindrical face sweeping less than this fraction of a full turn is a blend
+# (fillet/round), not a hole or boss: a hole/boss is a full revolution, while a
+# fillet along an edge is a partial arc (a quarter-round sweeps ~90 degrees).
+BLEND_MAX_SWEEP = 0.7
+
+
+def _angular_sweep_fraction(face) -> float | None:
+    """Fraction of a full turn a cylindrical face's U parameter spans.
+
+    ~1.0 for a full bore or boss, ~0.25 for a quarter-round fillet. Returns
+    ``None`` when the sweep cannot be measured (treated as non-blend so a real
+    hole is never dropped on a measurement failure)."""
+    try:
+        from OCP.BRepTools import BRepTools
+
+        u0, u1, _v0, _v1 = BRepTools.UVBounds_s(face.wrapped)
+        return abs(u1 - u0) / (2.0 * math.pi)
+    except Exception:  # noqa: BLE001 - best-effort; unknown => not a blend
+        return None
+
+
+def _is_blend_face(face) -> bool:
+    """True when a cylindrical face is a fillet/round rather than a hole or boss.
+
+    A hole or boss is a full (or near-full) revolution; a fillet along an edge is
+    a partial arc. Angular extent is the strongest single blend signal and needs
+    no adjacent-face tangency walk. Toroidal corner blends are already excluded
+    upstream (only cylindrical faces reach ``infer``'s classifier)."""
+    frac = _angular_sweep_fraction(face)
+    return frac is not None and frac < BLEND_MAX_SWEEP
 
 
 def _classify_cylinder(face) -> tuple:
@@ -107,6 +141,10 @@ def infer(compound) -> list:
         except Exception:  # noqa: BLE001
             continue
         if is_cyl:
+            # A blend (fillet/round) is a cylindrical face too; exclude it so it is
+            # never emitted as a phantom boss/hole (declared feature() still wins).
+            if _is_blend_face(f):
+                continue
             kind, confidence = _classify_cylinder(f)
             prefix = "cyl" if kind == "cylindrical" else kind
             kind_counts[prefix] = kind_counts.get(prefix, 0) + 1
