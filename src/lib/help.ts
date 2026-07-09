@@ -8,6 +8,9 @@
  * for questions and anything else. GitHub reads form-field prefills from query
  * params keyed by each field's `id`; a value that doesn't match (e.g. an OS we
  * can't disambiguate) is silently ignored, so partial prefill is always safe.
+ *
+ * The engine mirrors this same field-id contract in
+ * engine/solidifai_engine/issue.py for Sol's terminal path; keep the two in sync.
  */
 import { ISSUES_URL } from "./appInfo";
 
