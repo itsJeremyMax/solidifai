@@ -307,7 +307,7 @@ class Reporting:
         the current model. References are excluded (a manufacturing drawing shows
         your parts only). Writes into the workspace ``exports/`` (or ``path``) and
         returns the file paths + chosen scale. Read-only on the model."""
-        from build123d import Compound
+        from solidifai_engine.render import compound_of
 
         if not self.s._objects:
             return {"ok": False, "error": "no model -- run execute_script first"}
@@ -315,7 +315,7 @@ class Reporting:
         if not objects:
             return {"ok": False, "error": "nothing to draw: the model is only reference imports"}
 
-        compound = Compound(children=[o.shape for o in objects])
+        compound = compound_of([o.shape for o in objects])
         spec = self._drawing_spec(objects, compound)
         groups = spec.get("groups") or []
         try:

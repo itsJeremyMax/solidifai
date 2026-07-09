@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import os
 
-from build123d import Compound, export_brep, import_brep
+from build123d import export_brep, import_brep
 
 from solidifai import ShownObject
+from solidifai_engine.render import compound_of
 
 
 def _brep_path(dir_: str, key: str) -> str:
@@ -23,7 +24,9 @@ def _meta_path(dir_: str, key: str) -> str:
 
 def dump_result(dir_: str, key: str, objects: list, *, assets: dict | None = None) -> None:
     os.makedirs(dir_, exist_ok=True)
-    compound = Compound(children=[o.shape for o in objects])
+    # Wrap COPIES: these shapes come from the in-memory node cache and are reused;
+    # a plain Compound(children=...) would reparent them out of the cache.
+    compound = compound_of([o.shape for o in objects])
     # Atomic write: write to a .tmp then os.replace so a crash mid-write never
     # leaves a torn file that would corrupt the cache on the next open.
     brep_final = _brep_path(dir_, key)

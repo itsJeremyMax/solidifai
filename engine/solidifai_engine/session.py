@@ -231,6 +231,13 @@ class Session:
         solidifai.set_workspace_root(self.root)
         ns: dict[str, Any] = {"__name__": "__solidifai_script__"}
 
+        # Stash the live parametric state so a failed build can restore it: a
+        # failure must leave get_params/set_params pointed at the last-good model,
+        # not the wiped-empty block this build cleared before running (same
+        # last-good discipline as self._last_params_block).
+        prior_schema = self._params_schema
+        prior_values = self._param_values
+        prior_build_fn = self._build_fn
         try:
             self._params_schema = {}
             self._param_values = {}
@@ -272,6 +279,9 @@ class Session:
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._render_and_snapshot(next_build, params=params_block, duration_ms=duration_ms)
         except Exception as exc:  # noqa: BLE001 - report any script/render error
+            self._params_schema = prior_schema
+            self._param_values = prior_values
+            self._build_fn = prior_build_fn
             return self._build_failed(exc)
 
         # Success: persist the durable model (only on success, never on
@@ -615,6 +625,10 @@ class Session:
         if callable(build_fn) and isinstance(schema, dict):
             merged = {k: v.get("value") for k, v in schema.items() if isinstance(v, dict)}
             merged.update(param_values or {})
+            # Always rebuild explicitly at the merged params. A conventional script
+            # runs build(**defaults) at module level during exec, so reset first or
+            # this second build stacks a duplicate set of solids onto the registry.
+            solidifai.reset_registry()
             build_fn(**merged)
         if apply_references:
             self._apply_references()
@@ -741,7 +755,10 @@ class Session:
         registry, and re-rendering that would overwrite the last-good artifacts and
         flip ``last_ok`` back to True while ``model.py`` on disk still holds the
         good source. Mirrors capture_views, which also reads ``self._objects``."""
-        if self.code is None or self._objects is None:
+        # Gate on the snapshot, not self.code: the assembly path composes into
+        # self._objects but never sets self.code, so a code-only gate wrongly
+        # reports "no model loaded" for a healthy assembly.
+        if not self._objects:
             return {"ok": False, "error": "no model loaded"}
         next_build = self.build_id + 1
         try:
@@ -864,7 +881,10 @@ class Session:
         workspace. An absolute ``path`` is honored as given. For a bare session
         (no workspace root) the default falls back to the artifacts scratch dir.
         Returns the resolved path."""
-        if self.code is None:
+        # Export the last-good snapshot (self._objects), never the live registry:
+        # a failed build can leave partial geometry there, and the assembly path
+        # never sets self.code. Gating on the snapshot serves both modes.
+        if not self._objects:
             return {"ok": False, "error": "no model loaded"}
         base = (
             os.path.join(self.root, "exports")
@@ -877,7 +897,7 @@ class Session:
         elif not os.path.isabs(path):
             path = os.path.join(base, path)
         try:
-            out = exports_export(format, path, options)
+            out = exports_export(format, path, options, objects=self._objects)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         return {"ok": True, "path": out}
@@ -1124,8 +1144,6 @@ class Session:
     def _build_assembly(self, *, params: dict | None = None) -> dict:
         """Build the assembly DAG, render the composed model, and snapshot session
         state. Mirrors execute_script's bookkeeping for the assembly path."""
-        from build123d import Compound
-
         from solidifai_engine.assembly import compose, graph
         from solidifai_engine.render import render_to
 
@@ -1182,7 +1200,7 @@ class Session:
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(),
             }
-        self._model = Compound(children=[o.shape for o in objects])
+        self._model = _compound_from_registry(objects)
         self._objects = objects
         self.build_id = next_build
         self.last_ok = True
@@ -1623,9 +1641,7 @@ class Session:
         """Axis-aligned bounds of a part's objects ({min, max, size}), or None."""
         if not objects:
             return None
-        from build123d import Compound
-
-        bb = Compound(children=[o.shape for o in objects]).bounding_box()
+        bb = _compound_from_registry(objects).bounding_box()
         return {
             "min": [bb.min.X, bb.min.Y, bb.min.Z],
             "max": [bb.max.X, bb.max.Y, bb.max.Z],

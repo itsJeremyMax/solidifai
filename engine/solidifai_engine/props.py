@@ -53,6 +53,26 @@ def properties(shape: Any) -> dict:
     }
 
 
+def build_volume_com(shapes) -> tuple[float, list[float]]:
+    """Build-level volume and center of mass aggregated per solid.
+
+    A Compound's own volume/CoM come from OCC's SIGNED volume integration, which
+    cancels mirrored (negative-determinant) solids to a wrong total and a garbage
+    center. Each solid's own ``.volume`` is unsigned and correct, so sum those and
+    take the volume-weighted mean of the per-solid centers of mass instead.
+    """
+    total = 0.0
+    weighted = np.zeros(3)
+    for s in shapes:
+        v = float(s.volume)
+        c = s.center(CenterOf.MASS)
+        total += v
+        weighted += v * np.array([c.X, c.Y, c.Z], float)
+    if total <= 0:
+        return round(total, 4), [0.0, 0.0, 0.0]
+    return round(total, 4), _round4((weighted / total).tolist())
+
+
 def _gprops(shape):
     """Volume + surface GProp_GProps for a build123d shape (about the origin)."""
     vol = GProp_GProps()

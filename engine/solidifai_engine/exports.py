@@ -26,6 +26,7 @@ from build123d import (
 )
 
 from solidifai import _registry
+from solidifai_engine.render import compound_of
 
 # -- enum maps (engine string -> build123d enum) ---------------------------
 
@@ -254,15 +255,22 @@ _WRITERS = {
 }
 
 
-def _current_compound() -> Compound:
-    objects = list(_registry())
+def _compound_from_objects(objects) -> Compound:
+    """Build the export compound from a ShownObject list, dropping references and
+    validating there is printable geometry. Wraps COPIES so exporting never steals
+    the shapes out of the caller's live snapshot compound."""
+    objects = list(objects)
     if not objects:
         raise ValueError("nothing to export: registry is empty (did you call show()?)")
     # Reference imports are fixtures you fit around, not your part -- never export them.
     shapes = [o.shape for o in objects if getattr(o, "role", "part") != "reference"]
     if not shapes:
         raise ValueError("nothing to export: the model is only reference imports")
-    return Compound(children=shapes)
+    return compound_of(shapes)
+
+
+def _current_compound() -> Compound:
+    return _compound_from_objects(_registry())
 
 
 def export(
@@ -270,14 +278,24 @@ def export(
     path: str,
     options: dict | None = None,
     shape: Any | None = None,
+    objects: list | None = None,
 ) -> str:
     """Export ``shape`` (or the current model) to ``path`` in ``format`` using
-    ``options``. ``format`` is one of ``SUPPORTED``. Returns ``path``."""
+    ``options``. ``format`` is one of ``SUPPORTED``. Returns ``path``.
+
+    Pass ``objects`` (a ShownObject snapshot) to export the last-good model rather
+    than the live global registry, which a failed build can leave holding partial
+    geometry. When both are omitted the live registry is used."""
     fmt = format.lower()
     if fmt not in _SCHEMA:
         raise ValueError(f"Unsupported format {format!r}; expected one of {', '.join(SUPPORTED)}.")
     resolved = validate_options(fmt, options)
-    target = shape if shape is not None else _current_compound()
+    if shape is not None:
+        target = shape
+    elif objects is not None:
+        target = _compound_from_objects(objects)
+    else:
+        target = _current_compound()
     # Normalize once so the directory we create and the file the writer opens
     # agree; otherwise a '..' path writes through a still-missing dir and fails
     # silently. Ensure the parent exists (e.g. a fresh "exports" folder) too.

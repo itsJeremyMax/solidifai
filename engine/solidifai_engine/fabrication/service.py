@@ -101,7 +101,11 @@ class Fabrication:
         """Export a temp 3MF, call provider.quote(), return slice estimate."""
         tmp_path = self._export_temp_3mf()
         if tmp_path is None:
-            return self._geometric_estimate()
+            est = self._geometric_estimate()
+            reason = getattr(self, "_last_3mf_error", None)
+            if reason and est.get("ok"):
+                est["note"] = f"used geometric estimate: 3MF export unavailable ({reason})"
+            return est
 
         try:
             profile = {
@@ -122,15 +126,19 @@ class Fabrication:
         return {"ok": True, "source": "slice", "estimate": est_dict}
 
     def _export_temp_3mf(self) -> str | None:
-        """Export the current model to a temp 3MF file. Returns path or None."""
+        """Export the last-good model snapshot to a temp 3MF file. Returns the path,
+        or None on failure (recording the reason in ``self._last_3mf_error`` so the
+        caller can report why it degraded to the geometric estimate)."""
+        self._last_3mf_error = None
         try:
             from solidifai_engine.exports import export as exports_export
 
             fd, tmp_path = tempfile.mkstemp(suffix=".3mf", prefix="sf_fab_")
             os.close(fd)
-            exports_export("3mf", tmp_path)
+            exports_export("3mf", tmp_path, objects=getattr(self.s, "_objects", None))
             return tmp_path
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self._last_3mf_error = f"{type(exc).__name__}: {exc}"
             return None
 
     def _price_per_kg(self) -> float:
@@ -212,12 +220,12 @@ class Fabrication:
             return {"ok": False, "error": "no printable parts (only reference imports)"}
 
         try:
-            from build123d import Compound
+            from solidifai_engine.render import compound_of
 
             if len(non_ref) == 1:
                 shape = non_ref[0].shape
             else:
-                shape = Compound(children=[o.shape for o in non_ref])
+                shape = compound_of([o.shape for o in non_ref])
 
             result = orient_mod.best_orientation(shape, overhang_deg=overhang_deg)
         except Exception as exc:  # noqa: BLE001
@@ -273,7 +281,7 @@ class Fabrication:
             slug = scratch.slug(name)
             path = os.path.join(base, f"{slug}-fab.3mf")
             os.makedirs(base, exist_ok=True)
-            exports_export("3mf", path)
+            exports_export("3mf", path, objects=getattr(self.s, "_objects", None))
             return path
         except Exception:  # noqa: BLE001
             return None

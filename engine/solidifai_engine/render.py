@@ -10,6 +10,7 @@ artifact.
 from __future__ import annotations
 
 import contextlib
+import copy
 import math
 import os
 import re
@@ -21,7 +22,7 @@ from build123d import Compound, Unit, export_gltf
 from solidifai import _registry
 from solidifai_engine import materials as _materials
 from solidifai_engine import paths
-from solidifai_engine.props import mass_grams, properties
+from solidifai_engine.props import build_volume_com, mass_grams, properties
 
 UNITS = "mm"
 
@@ -90,9 +91,19 @@ def _node_ids(objects) -> list[str]:
     return ids
 
 
+def compound_of(shapes) -> Compound:
+    """Wrap ``shapes`` in a Compound WITHOUT stealing them from their current tree.
+
+    build123d's ``Compound(children=...)`` reparents each child via anytree, which
+    empties whatever registry/snapshot compound already owns those shapes (and fails
+    outright when the same shape appears twice). ``copy.copy`` shares the underlying
+    TopoDS (cheap) but hands back a fresh tree node, so the originals stay put. This
+    is the trap ``capture.py`` documents and avoids per-mesh."""
+    return Compound(children=[copy.copy(s) for s in shapes])
+
+
 def _compound_from_registry(objects) -> Compound:
-    shapes = [o.shape for o in objects]
-    return Compound(children=shapes)
+    return compound_of([o.shape for o in objects])
 
 
 def render_to(
@@ -167,7 +178,13 @@ def render_to(
         # computed from part-role objects only -- a reference is an open surface
         # (an STL Face) that would otherwise flip manifold and stretch the bbox.
         part_objects = [o for o in objects if getattr(o, "role", "part") != "reference"]
+        summary_objects = part_objects or objects
         props = properties(_compound_from_registry(part_objects) if part_objects else compound)
+        # Volume + center of mass come from per-object aggregation, not the
+        # compound's own integrals: OCC integrates SIGNED volume, so a mirrored
+        # (negative-determinant) solid cancels out and reports garbage. Each solid's
+        # own .volume is unsigned and correct (this is also how mass is summed).
+        agg_volume, agg_com = build_volume_com([o.shape for o in summary_objects])
 
         json_objects = []
         total_mass = 0.0
@@ -224,8 +241,8 @@ def render_to(
             },
             "objects": json_objects,
             "bbox": props["bbox"],
-            "volume": props["volume"],
-            "centerOfMass": props["centerOfMass"],
+            "volume": agg_volume,
+            "centerOfMass": agg_com,
             "mass": {
                 "value": round(total_mass, 4),
                 "material": build_label,
