@@ -52,6 +52,14 @@ show(Box(10, 10, 10), name="A")
 show(Pos(5, 0, 0) * Box(10, 10, 10), name="B")
 """
 
+# Raises at line 5 of the script (the leading newline makes the raise line 5).
+BAD_SCRIPT = """
+from build123d import Box
+from solidifai import show
+
+raise ValueError("boom in the script")
+"""
+
 
 def _send(sock_path, request):
     c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -422,6 +430,103 @@ def test_set_feature_over_socket(tmp_path):
         assert "x" in res["error"]
     finally:
         server.shutdown()
+
+
+def test_failed_script_returns_line_and_trimmed_traceback(tmp_path):
+    """A failing execute_script surfaces the user-script line and a traceback
+    trimmed to the user's frames, not just a one-line error."""
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(
+            sock_path,
+            {"id": 3, "method": "execute_script", "params": {"code": BAD_SCRIPT}},
+        )
+        assert resp["ok"] is False
+        assert "ValueError" in resp["error"]
+        # The deepest user-script frame is the raise on line 5.
+        assert resp["scriptLine"] == 5
+        tb = resp["traceback"]
+        assert "<solidifai-script>" in tb
+        assert "ValueError: boom in the script" in tb
+        # Engine internals are trimmed away.
+        assert "session.py" not in tb
+    finally:
+        server.shutdown()
+
+
+def test_script_line_extracts_deepest_user_frame():
+    from solidifai_engine.server import _script_line
+
+    tb = (
+        "Traceback (most recent call last):\n"
+        '  File "/x/solidifai_engine/session.py", line 247, in execute_script\n'
+        "    exec(compiled, ns)\n"
+        '  File "<solidifai-script>", line 12, in <module>\n'
+        "    build()\n"
+        '  File "<solidifai-script>", line 30, in build\n'
+        "    raise ValueError('x')\n"
+        "ValueError: x\n"
+    )
+    assert _script_line(tb) == 30
+    assert _script_line("no frames here") is None
+    assert _script_line(None) is None
+
+
+def test_trim_traceback_drops_internal_frames_keeps_user():
+    from solidifai_engine.server import _trim_traceback
+
+    tb = (
+        "Traceback (most recent call last):\n"
+        '  File "/x/solidifai_engine/session.py", line 247, in execute_script\n'
+        "    exec(compiled, ns)\n"
+        '  File "<solidifai-script>", line 12, in <module>\n'
+        "    raise ValueError('x')\n"
+        "ValueError: x"
+    )
+    trimmed = _trim_traceback(tb)
+    assert "session.py" not in trimmed
+    assert "exec(compiled" not in trimmed
+    assert '  File "<solidifai-script>", line 12, in <module>' in trimmed
+    assert "raise ValueError('x')" in trimmed
+    assert "ValueError: x" in trimmed
+    assert trimmed.startswith("Traceback (most recent call last):")
+
+
+def test_trim_traceback_falls_back_when_all_internal():
+    from solidifai_engine.server import _trim_traceback
+
+    tb = (
+        "Traceback (most recent call last):\n"
+        '  File "/x/solidifai_engine/session.py", line 10, in f\n'
+        "    boom()\n"
+        "RuntimeError: internal"
+    )
+    # No user frame present: keep the full traceback so a location is not lost.
+    assert _trim_traceback(tb) == tb
+
+
+def test_failure_response_passes_structured_extras_through():
+    """A handler's structured extras (end_round's failed map, composeEmpty) ride
+    the failed envelope; error/traceback/scriptLine are additive."""
+    from solidifai_engine.server import _failure_response
+
+    result = {
+        "ok": False,
+        "error": "assembly has children but composed to no geometry",
+        "composeEmpty": True,
+        "failed": {"lid": "ValueError: bad radius"},
+        "built": ["base"],
+    }
+    resp = _failure_response(7, result)
+    assert resp["id"] == 7
+    assert resp["ok"] is False
+    assert resp["error"] == "assembly has children but composed to no geometry"
+    assert resp["composeEmpty"] is True
+    assert resp["failed"] == {"lid": "ValueError: bad radius"}
+    assert resp["built"] == ["base"]
+    # No traceback -> no scriptLine/traceback keys are invented.
+    assert "scriptLine" not in resp
+    assert "traceback" not in resp
 
 
 def test_rpc_capture_views_forwards_new_params():

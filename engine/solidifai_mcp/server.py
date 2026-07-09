@@ -22,11 +22,27 @@ from solidifai_engine import ipc
 
 ENV_SOCK = "SOLIDIFAI_ENGINE_SOCK"
 
+# A hung engine must eventually fail a tool call instead of blocking it forever,
+# but long runs are legitimate: sweep/optimize/converge get up to
+# SOLIDIFAI_LONGRUN_TIMEOUT (1200s default) inside the engine worker, and a normal
+# build up to 180s. Sit comfortably above that ceiling so only a truly wedged
+# engine trips this timeout, never a real build.
+_LONGRUN_CEILING = float(os.environ.get("SOLIDIFAI_LONGRUN_TIMEOUT", "1200"))
+_SOCKET_TIMEOUT = _LONGRUN_CEILING + 600.0
+
 _id_counter = itertools.count(1)
 
 
 class EngineError(RuntimeError):
-    """Raised when the engine returns an error response or is unreachable."""
+    """Raised when the engine returns an error response or is unreachable.
+
+    ``payload`` carries the structured failure fields from an ok:false response
+    (scriptLine, traceback, a per-part ``failed`` map, ...) so the tool layer can
+    surface them instead of dropping everything but the message."""
+
+    def __init__(self, message: str, *, payload: dict | None = None):
+        super().__init__(message)
+        self.payload = payload or {}
 
 
 def _engine_sock_path() -> str:
@@ -39,8 +55,10 @@ def _engine_sock_path() -> str:
 def forward(method: str, params: dict | None = None) -> Any:
     """Send one RPC request to the engine and return its ``result``.
 
-    Raises ``EngineError`` if the engine reports ``ok == false`` or the socket
-    cannot be reached.
+    Raises ``EngineError`` if the engine reports ``ok == false``, the socket
+    cannot be reached, or the connection is interrupted or hangs. On an ok:false
+    response the raised error carries the engine's structured failure fields on
+    its ``payload`` (scriptLine, traceback, a per-part ``failed`` map, ...).
     """
     sock_path = _engine_sock_path()
     request = {"id": next(_id_counter), "method": method, "params": params or {}}
@@ -50,6 +68,10 @@ def forward(method: str, params: dict | None = None) -> Any:
     except OSError as exc:
         raise EngineError(f"cannot connect to engine at {sock_path}: {exc}") from exc
 
+    # Bound the round-trip so a truly hung engine fails cleanly instead of blocking
+    # the tool call forever (see _SOCKET_TIMEOUT: comfortably above the longest
+    # legal build, so a real long run is never cut off).
+    conn.settimeout(_SOCKET_TIMEOUT)
     try:
         conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
         buf = b""
@@ -58,25 +80,48 @@ def forward(method: str, params: dict | None = None) -> Any:
             if not chunk:
                 break
             buf += chunk
+    except TimeoutError as exc:
+        raise EngineError(
+            f"engine did not respond within {int(_SOCKET_TIMEOUT)}s; it may be hung, retry"
+        ) from exc
+    except OSError as exc:
+        raise EngineError("engine connection interrupted; retry") from exc
     finally:
         conn.close()
 
     if not buf:
         raise EngineError("engine closed the connection without responding")
 
-    response = json.loads(buf.decode("utf-8").splitlines()[0])
+    # A truncated line (the engine died mid-reply) is not valid JSON; surface it as
+    # a clean, retryable error instead of letting JSONDecodeError escape raw.
+    try:
+        response = json.loads(buf.decode("utf-8").splitlines()[0])
+    except (ValueError, UnicodeDecodeError, IndexError) as exc:
+        raise EngineError("engine connection interrupted; retry") from exc
+
     if not response.get("ok"):
-        raise EngineError(response.get("error", "engine returned an error"))
+        error = response.get("error", "engine returned an error")
+        # Keep every structured failure field the engine sent (scriptLine,
+        # traceback, failed map, ...) so _call can surface them to the agent.
+        extras = {k: v for k, v in response.items() if k not in ("id", "ok", "result", "error")}
+        raise EngineError(error, payload=extras)
     return response.get("result")
 
 
 def _call(method: str, params: dict | None = None) -> Any:
-    """Forward and convert engine errors into return text (MCP tools should not
-    raise raw transport exceptions at the agent)."""
+    """Forward and convert engine errors into a return value (MCP tools should not
+    raise raw transport exceptions at the agent). On a failed build the returned
+    dict includes the engine's structured fields (scriptLine, traceback, a per-part
+    ``failed`` map, ...), and the error text names the script line when known."""
     try:
         return forward(method, params)
     except EngineError as exc:
-        return {"error": str(exc)}
+        message = str(exc)
+        payload = exc.payload
+        line = payload.get("scriptLine")
+        if isinstance(line, int):
+            message = f"{message} (line {line})"
+        return {"error": message, **payload}
 
 
 mcp = FastMCP("solidifai")

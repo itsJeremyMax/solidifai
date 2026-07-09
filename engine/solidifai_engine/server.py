@@ -9,7 +9,17 @@ current model.
 Wire format (one JSON object per line):
   request:  {"id": int, "method": str, "params": obj}
   response: {"id": int, "ok": true, "result": any}
-        or  {"id": int, "ok": false, "error": str}
+        or  {"id": int, "ok": false, "error": str, <structured failure fields...>}
+
+A failed response always carries ``error`` (a string). It MAY also carry additive
+structured fields that help a caller debug without bisecting: ``scriptLine`` (the
+line in the user's script the failure traces to), ``traceback`` (trimmed to the
+user's own frames), and any structured extras the handler returned (e.g.
+end_round's per-part ``failed`` map, ``composeEmpty``/``empty`` markers). These are
+additive: every field beyond ``error`` is optional, and clients that read only
+``error`` keep working. The Rust shell parses with serde_json::Value reading only
+ok/result/error, and the MCP bridge ignores unknown fields, so no protocol bump is
+needed for a new failure field (bump PROTOCOL_VERSION only for method changes).
 """
 
 from __future__ import annotations
@@ -19,6 +29,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -70,6 +81,113 @@ def _wait_for_parent_exit(handle: int) -> bool:
     import ctypes
 
     return ctypes.windll.kernel32.WaitForSingleObject(handle, _INFINITE) == _WAIT_OBJECT_0
+
+
+# -- structured failure envelope ----------------------------------------------
+# A failed handler dict carries an error string and (for builds) a full traceback.
+# The helpers below distil that into fields an agent can act on: the line in its
+# own script, and a traceback trimmed to the user's frames. See the module
+# docstring for the wire contract (all fields beyond ``error`` are additive).
+
+# The filename session.execute_script passes to compile(); a traceback frame from
+# this file is a line in the user's own script.
+_USER_SCRIPT_FILE = "<solidifai-script>"
+
+# A traceback frame whose file path contains one of these markers is engine
+# internals (the package, the vendored kernel, the stdlib), not user source;
+# trimming drops those so only the user's frames remain.
+_INTERNAL_FRAME_MARKERS = (
+    "solidifai_engine",
+    "build123d",
+    "site-packages",
+    os.sep + "lib" + os.sep,
+)
+
+_TB_FILE_RE = re.compile(r'^  File "(?P<file>.*?)", line (?P<line>\d+)')
+
+
+def _script_line(tb: str | None) -> int | None:
+    """The line number of the last user-script frame in a formatted traceback, or
+    None when the traceback has no user-script frame. "Last" = the deepest user
+    frame, i.e. where the error actually surfaced in the user's code."""
+    if not tb:
+        return None
+    last: int | None = None
+    for raw in tb.splitlines():
+        m = _TB_FILE_RE.match(raw)
+        if m and m.group("file") == _USER_SCRIPT_FILE:
+            last = int(m.group("line"))
+    return last
+
+
+def _trim_traceback(tb: str | None) -> str | None:
+    """Trim a formatted traceback to the user's own frames.
+
+    Drops the engine-internal frames (the dispatch/exec plumbing, the kernel, the
+    stdlib) so the agent sees its script's frames and the final exception, not
+    pages of engine internals. Keeps the header, chaining notes, and the exception
+    line verbatim. Falls back to the full traceback when no user frame is present
+    (a purely internal error), so a location is never lost."""
+    if not tb:
+        return None
+    lines = tb.splitlines()
+    out: list[str] = []
+    kept_user_frame = False
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if line.startswith('  File "'):
+            m = _TB_FILE_RE.match(line)
+            file = m.group("file") if m else ""
+            # A frame is the `  File ...` header plus its more-indented source/caret
+            # continuation lines (which are not themselves `  File` headers).
+            block = [line]
+            j = i + 1
+            while j < n and lines[j].startswith("    ") and not lines[j].startswith('  File "'):
+                block.append(lines[j])
+                j += 1
+            internal = file != _USER_SCRIPT_FILE and any(
+                marker in file for marker in _INTERNAL_FRAME_MARKERS
+            )
+            if not internal:
+                out.extend(block)
+                kept_user_frame = True
+            i = j
+            continue
+        out.append(line)
+        i += 1
+    if not kept_user_frame:
+        return tb
+    return "\n".join(out)
+
+
+def _failure_response(req_id: Any, result: dict) -> dict:
+    """Build a failed RPC envelope that carries the handler's structured failure
+    fields through to the client.
+
+    The wire contract only guarantees ``error`` (a string), but both real clients
+    -- the Rust shell (rpc.rs parses with serde_json::Value, reading only
+    ok/result/error) and the MCP bridge -- ignore unknown fields, so these extras
+    are purely additive and need no protocol bump. ok:true payloads are untouched;
+    a client that reads only ``error`` keeps working."""
+    resp: dict[str, Any] = {
+        "id": req_id,
+        "ok": False,
+        "error": result.get("error", "build failed"),
+    }
+    tb = result.get("traceback")
+    line = _script_line(tb)
+    if line is not None:
+        resp["scriptLine"] = line
+    trimmed = _trim_traceback(tb)
+    if trimmed:
+        resp["traceback"] = trimmed
+    # Pass through any other structured fields the handler returned (end_round's
+    # `failed`/`built`, composeEmpty/empty markers, buildId, skeletonChanged, ...).
+    for key, value in result.items():
+        if key not in ("ok", "error", "traceback"):
+            resp.setdefault(key, value)
+    return resp
 
 
 class Server:
@@ -190,6 +308,15 @@ class Server:
         self._start_parent_watchdog()
         self._sock = self._bind()
         self._load_startup_model()
+        # Connections are served strictly one at a time: _handle_connection runs on
+        # this thread and blocks until the client disconnects. Both real clients
+        # (the Rust shell and the MCP bridge) open a connection, send one request,
+        # read the reply, and close, so serialization is fine in practice. The
+        # failure mode to know: a client that connects and then sits idle without
+        # sending would starve every other client until it disconnects. A
+        # concurrent-connection redesign is deliberately out of scope here; a per-
+        # connection worker-thread model would still need the session lock (held in
+        # _dispatch) as the single point that serializes builds.
         try:
             while not self._stop.is_set():
                 try:
@@ -276,9 +403,10 @@ class Server:
             return {"id": req_id, "ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
         # Methods that already return an {ok: false, error: ...} envelope
-        # (e.g. a failed build) are surfaced as a failed RPC response.
+        # (e.g. a failed build) are surfaced as a failed RPC response, carrying
+        # their structured failure fields through so the caller can debug.
         if isinstance(result, dict) and result.get("ok") is False:
-            return {"id": req_id, "ok": False, "error": result.get("error", "build failed")}
+            return _failure_response(req_id, result)
 
         return {"id": req_id, "ok": True, "result": result}
 

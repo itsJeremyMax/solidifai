@@ -3,6 +3,7 @@ import os
 import socket
 import sys
 import threading
+import time
 
 from mcp.server.fastmcp import Image as _McpImage
 from sockpath import short_socket_path
@@ -361,3 +362,137 @@ def test_capture_views_forwards_new_params(tmp_path, monkeypatch):
     assert p["resolution"] == 1024
     assert p["section"] == {"axis": "z", "offset_mm": 0.0}
     assert p["focus"] == "corner_hole"
+
+
+def _fake_engine_reply(sock_path, reply_bytes, ready, *, wait_before_reply=0.0):
+    """A one-shot fake engine that reads a request then sends raw ``reply_bytes``
+    (which may be a partial line, or empty to just hold the connection open)."""
+
+    def run():
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(sock_path)
+        srv.listen(1)
+        srv.settimeout(5)
+        ready.set()
+        conn, _ = srv.accept()
+        with conn:
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            if wait_before_reply:
+                time.sleep(wait_before_reply)
+            if reply_bytes:
+                conn.sendall(reply_bytes)
+        srv.close()
+
+    return run
+
+
+def _spawn_reply(sock_path, reply_bytes, **kwargs):
+    ready = threading.Event()
+    t = threading.Thread(
+        target=_fake_engine_reply(sock_path, reply_bytes, ready, **kwargs), daemon=True
+    )
+    t.start()
+    ready.wait(5)
+    return t
+
+
+def test_forward_ok_false_carries_structured_payload(tmp_path, monkeypatch):
+    """forward raises EngineError whose payload holds the engine's structured
+    failure fields (scriptLine/traceback/failed), not just the message."""
+    from solidifai_mcp.server import EngineError, forward
+
+    sock_path = short_socket_path(tmp_path)
+    reply = (
+        json.dumps(
+            {
+                "id": 1,
+                "ok": False,
+                "error": "ValueError: boom",
+                "scriptLine": 5,
+                "traceback": '  File "<solidifai-script>", line 5\nValueError: boom',
+                "failed": {"lid": "bad radius"},
+            }
+        )
+        + "\n"
+    ).encode()
+    t = _spawn_reply(sock_path, reply)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+
+    try:
+        forward("execute_script", {"code": "raise ValueError('boom')"})
+        raise AssertionError("expected EngineError")
+    except EngineError as exc:
+        assert "ValueError: boom" in str(exc)
+        assert exc.payload["scriptLine"] == 5
+        assert exc.payload["failed"] == {"lid": "bad radius"}
+        assert "id" not in exc.payload and "ok" not in exc.payload
+    t.join(timeout=5)
+
+
+def test_call_surfaces_line_and_extras(monkeypatch):
+    """_call names the script line in the error text and returns the structured
+    extras rather than dropping them."""
+    import solidifai_mcp.server as srv
+
+    def fake_forward(method, params=None):
+        raise srv.EngineError(
+            "ValueError: boom",
+            payload={"scriptLine": 5, "failed": {"lid": "bad radius"}},
+        )
+
+    monkeypatch.setattr(srv, "forward", fake_forward)
+    out = srv._call("execute_script", {"code": "x"})
+    assert out["error"] == "ValueError: boom (line 5)"
+    assert out["scriptLine"] == 5
+    assert out["failed"] == {"lid": "bad radius"}
+
+
+def test_forward_partial_reply_is_clean_error(tmp_path, monkeypatch):
+    """A truncated reply (engine died mid-write) becomes a clean EngineError,
+    not a raw JSONDecodeError."""
+    from solidifai_mcp.server import EngineError, forward
+
+    sock_path = short_socket_path(tmp_path)
+    # Non-empty but not valid JSON and no trailing newline: the engine died mid-reply.
+    t = _spawn_reply(sock_path, b'{"id": 1, "ok"')
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+
+    try:
+        forward("ping")
+        raise AssertionError("expected EngineError")
+    except EngineError as exc:
+        assert "interrupted" in str(exc)
+    t.join(timeout=5)
+
+
+def test_forward_hung_engine_times_out(tmp_path, monkeypatch):
+    """A hung engine (accepts, never replies) trips the socket timeout as a clean
+    EngineError instead of blocking forever."""
+    import solidifai_mcp.server as srv
+    from solidifai_mcp.server import EngineError, forward
+
+    sock_path = short_socket_path(tmp_path)
+    # Hold the connection open past the (shrunk) timeout without replying.
+    t = _spawn_reply(sock_path, b"", wait_before_reply=1.0)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+    monkeypatch.setattr(srv, "_SOCKET_TIMEOUT", 0.3)
+
+    try:
+        forward("ping")
+        raise AssertionError("expected EngineError")
+    except EngineError as exc:
+        assert "hung" in str(exc) or "did not respond" in str(exc)
+    t.join(timeout=5)
+
+
+def test_socket_timeout_sits_above_longrun_ceiling():
+    """The MCP socket timeout must never cut off a legal long run (sweep/optimize
+    get up to the worker's longrun ceiling)."""
+    import solidifai_mcp.server as srv
+
+    assert srv._SOCKET_TIMEOUT > srv._LONGRUN_CEILING
