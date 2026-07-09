@@ -317,6 +317,82 @@ def measure() -> Any:
 
 
 @mcp.tool()
+def measure_between(a: Any, b: Any, mode: str = "min") -> Any:
+    """Distance between two things in the current model: the "how far apart" tool.
+
+    Each of ``a`` and ``b`` is a TARGET, one of:
+      - a feature name: single-model ``"bore"`` or assembly/occurrence
+        ``"wheel@2/bore"`` (as listed by inspect_features),
+      - a part / object / occurrence name: ``"base"`` or ``"wheel@2"``,
+      - a face id from query_faces: ``"wheel@2:f13"``,
+      - a literal point: ``[x, y, z]`` in millimetres (build123d Z-up).
+
+    Returns ``min_distance`` (closest approach, exact B-rep, with the
+    ``closest_points`` pair), ``center_distance`` (between the targets' centers),
+    and ``distance`` (the value for the chosen ``mode``). When BOTH targets are
+    cylindrical (a hole, boss, pin, or a cylindrical face) it also returns
+    ``axis_distance`` (perpendicular distance between the two axis lines, for
+    bolt-pattern / bore-spacing reasoning) and ``axis_angle_deg`` (0 = parallel).
+
+    ``mode`` selects which value ``distance`` reports: ``"min"`` (default),
+    ``"center"``, or ``"axis"`` (requires two cylindrical targets). Read-only.
+
+    Example: ``measure_between("base/mount_hole", "wheel@2:f13")`` gives the gap
+    from a hole to a specific face; ``measure_between("hole_a", "hole_b",
+    mode="axis")`` gives the exact center-to-center spacing of two parallel bores.
+    Face ids are only valid until the next rebuild -- re-run query_faces after any
+    geometry change."""
+    return _call("measure_between", {"a": a, "b": b, "mode": mode})
+
+
+@mcp.tool()
+def query_faces(filter: dict | None = None) -> Any:
+    """Enumerate the current model's faces matching a filter: face-level
+    addressing without a GUI picker. ``filter`` is a dict, all keys optional:
+      - ``object``: restrict to one part/occurrence (``"wheel@2"``),
+      - ``type``: ``"planar"`` | ``"cylindrical"`` | ``"conical"`` |
+        ``"spherical"`` | ``"toroidal"`` | ``"other"``,
+      - ``axis``: ``[x, y, z]`` -- keep faces whose normal (planar) or rotation
+        axis (round) aligns with this direction, within ``axis_tol_deg``
+        (default 5),
+      - ``area_min`` / ``area_max``: face area bounds in mm^2,
+      - ``sort``: ``"area_desc"`` (default) or ``"area_asc"``,
+      - ``limit``: max hits (default 20).
+
+    Each hit is ``{id, object, type, center, normal_or_axis, area, bbox}`` plus
+    ``radius`` for round faces. The ``id`` (e.g. ``"wheel@2:f13"``) is a stable
+    index into a deterministic enumeration and is ONLY valid until the next
+    rebuild -- feed it straight into measure_between, then re-query after any
+    geometry change. ``total_matched`` reports how many matched before ``limit``.
+
+    Example: ``query_faces({"type": "planar", "axis": [0, 0, 1], "sort":
+    "area_desc"})`` finds the large up-facing flats (candidate top surfaces)."""
+    return _call("query_faces", {"filter": filter})
+
+
+@mcp.tool()
+def thickness_at(point: list[float], direction: list[float] | None = None) -> Any:
+    """Local material (wall) thickness at a point: the "how thick is the wall
+    here" tool. ``point`` is ``[x, y, z]`` in millimetres (build123d Z-up); it
+    snaps to the nearest part surface, then casts a ray through the solid and
+    measures to the far wall. Pass ``direction`` ``[x, y, z]`` to force the side
+    the ray enters from (it casts along the OPPOSITE direction, into the
+    material); by default it casts inward along the surface normal.
+
+    Returns ``{ok, thickness, object, point, direction}`` where ``point`` is the
+    surface point measured from. Read-only; works in single-model and assembly
+    modes and on mirrored occurrences.
+
+    Example: ``thickness_at([10, 0, 5])`` reports the wall thickness at that spot
+    (e.g. ``thickness: 2.4``). Get a candidate point from a query_faces hit's
+    ``center``."""
+    args: dict[str, Any] = {"point": point}
+    if direction is not None:
+        args["direction"] = direction
+    return _call("thickness_at", args)
+
+
+@mcp.tool()
 def stress_check() -> Any:
     """First-order stress check: flags sharp internal (re-entrant) corners where
     stress concentrates. Geometric heuristic, not a solved stress field, so it
@@ -594,7 +670,13 @@ def feature_at(point: list[float], tolerance_mm: float | None = None) -> Any:
     The hit radius adapts to model size (floored at ~1 mm); pass ``tolerance_mm``
     to set an explicit hit radius when a click keeps missing a small or offset
     surface. Retarget the matched feature with ``set_feature`` (name it first if
-    it is inferred). In assembly mode features are namespaced ``<part>/<name>``."""
+    it is inferred). In assembly mode features are namespaced ``<part>/<name>``.
+
+    When no named feature is within tolerance (``match: null``), the reply also
+    carries ``nearest_face``: the descriptor of the closest bare face (same shape
+    as a ``query_faces`` hit, plus its ``distance``) so you still get something
+    addressable to measure from. Example: ``feature_at([0, 0, 12])`` on a smooth
+    wall returns ``match: null`` with ``nearest_face.id`` = ``"base:f4"``."""
     args: dict[str, Any] = {"point": point}
     if tolerance_mm is not None:
         args["tolerance_mm"] = tolerance_mm

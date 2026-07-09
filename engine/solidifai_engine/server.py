@@ -554,6 +554,13 @@ _HANDLERS: dict[str, Any] = {
     "check_interferences": lambda srv, p: srv._session.check_interferences(),
     "analyze_dfm": lambda srv, p: srv._session.analyze_dfm(p.get("process")),
     "measure": lambda srv, p: srv._session.measure(),
+    "measure_between": lambda srv, p: srv._session.measure_between(
+        srv._require(p, "a"), srv._require(p, "b"), p.get("mode", "min")
+    ),
+    "query_faces": lambda srv, p: srv._session.query_faces(p.get("filter")),
+    "thickness_at": lambda srv, p: srv._session.thickness_at(
+        srv._require(p, "point"), p.get("direction")
+    ),
     "stress_check": lambda srv, p: srv._session.stress_check(),
     "tolerance_stack": lambda srv, p: srv._session.tolerance_stack(p.get("chain")),
     "get_workspace_meta": lambda srv, p: srv._session.get_workspace_meta(),

@@ -662,7 +662,7 @@ fn engine_version(interpreter: &Path) -> Result<String, String> {
 /// the app loaded is out of step with this shell (typically a stale `engine-dist`
 /// bundle that predates a feature). Bump this AND `PROTOCOL_VERSION` on the engine
 /// side together whenever the RPC method set changes.
-const EXPECTED_ENGINE_PROTOCOL: u32 = 10;
+const EXPECTED_ENGINE_PROTOCOL: u32 = 11;
 
 /// Read the engine's reported protocol version. A bundle that predates the
 /// constant (or can't import the engine) prints `0`, which `check_protocol` then

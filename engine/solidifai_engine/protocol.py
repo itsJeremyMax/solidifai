@@ -14,4 +14,4 @@ method contract changes (a handler added, removed, or renamed in
 
 from __future__ import annotations
 
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11

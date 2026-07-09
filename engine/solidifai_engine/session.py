@@ -57,6 +57,7 @@ from solidifai_engine.fabrication.service import Fabrication
 from solidifai_engine.import_manager import ImportManager
 from solidifai_engine.render import _compound_from_registry, _node_ids, _slug, render_to
 from solidifai_engine.reporting import Reporting
+from solidifai_engine.spatial import Spatial
 
 if TYPE_CHECKING:
     from build123d import Compound
@@ -171,6 +172,7 @@ class Session:
         self._fabrication = Fabrication(self)
         self._imports = ImportManager(self)
         self._reporting = Reporting(self)
+        self._spatial = Spatial(self)
         from solidifai_engine.assembly.cache import NodeCache
 
         self._node_cache = NodeCache()
@@ -554,7 +556,11 @@ class Session:
             return {"ok": False, "error": "point must be [x, y, z] in mm (Z-up)"}
         tol = self._feature_at_tolerance(tolerance_mm)
         rec = feature_geom.nearest(self._features, point, tol=tol)
-        return {"ok": True, "match": self._feature_to_dict(rec) if rec is not None else None}
+        if rec is not None:
+            return {"ok": True, "match": self._feature_to_dict(rec)}
+        # No named feature within tolerance: hand back the nearest bare face so the
+        # agent pointing at unfeatured geometry still gets something addressable.
+        return {"ok": True, "match": None, "nearest_face": self._spatial.nearest_face(point)}
 
     def _model_diagonal(self) -> float:
         """Bounding-box diagonal of the current model in mm (0.0 if unavailable)."""
@@ -654,6 +660,15 @@ class Session:
 
     def measure(self) -> dict:
         return self._analysis.measure()
+
+    def measure_between(self, a, b, mode: str = "min") -> dict:
+        return self._spatial.measure_between(a, b, mode)
+
+    def query_faces(self, filter: dict | None = None) -> dict:
+        return self._spatial.query_faces(filter)
+
+    def thickness_at(self, point, direction=None) -> dict:
+        return self._spatial.thickness_at(point, direction)
 
     def stress_check(self) -> dict:
         return self._analysis.stress_check()

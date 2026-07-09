@@ -351,6 +351,107 @@ def _first_exit_distance(inter, sx, sy, sz, dx, dy, dz, min_cos):
         return None
 
 
+def ray_exit_distance(shape, sx, sy, sz, dx, dy, dz, min_cos: float = -1.0):
+    """Distance from ``(sx,sy,sz)`` along unit ``(dx,dy,dz)`` to where a ray first
+    leaves ``shape`` (a build123d shape), or ``None``.
+
+    Shared primitive behind wall-thickness and the spatial ``thickness_at`` tool:
+    loads the intersector once, nudges the start off the origin facet, and reuses
+    ``_first_exit_distance``. ``min_cos`` defaults to -1.0 (accept any exit); pass
+    a higher value to demand a near-parallel opposing wall. Never raises."""
+    try:
+        from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+
+        inter = IntCurvesFace_ShapeIntersector()
+        inter.Load(shape.wrapped, 1e-6)
+    except Exception:  # noqa: BLE001 - OCP layout differs / bad shape -> no answer
+        return None
+    d = _first_exit_distance(
+        inter, sx + dx * WALL_EPS, sy + dy * WALL_EPS, sz + dz * WALL_EPS, dx, dy, dz, min_cos
+    )
+    return None if d is None else d + WALL_EPS
+
+
+def thickness_at(objects, point, direction=None) -> dict:
+    """Local material thickness of the shown parts at ``point`` (Z-up mm).
+
+    ``objects`` is the session's ``ShownObject`` snapshot. Finds the nearest part
+    surface to ``point``, then casts a ray into the solid — along ``-direction``
+    when ``direction`` is given (the side the ray enters), else along the inward
+    face normal — and measures to the first far-wall exit. Read-only; per-face
+    normals keep it correct on mirrored geometry. Returns an ``ok``-envelope dict.
+    """
+    if not point or len(point) != 3:
+        return {"ok": False, "error": "point must be [x, y, z] in mm (Z-up)"}
+    try:
+        from build123d import Vector
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+        from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+        from OCP.gp import gp_Pnt
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"geometry backend unavailable: {exc}"}
+
+    px, py, pz = float(point[0]), float(point[1]), float(point[2])
+    parts = [o for o in objects if getattr(o, "role", "part") == "part"]
+    if not parts:
+        return {"ok": False, "error": "no solid parts in the current model"}
+    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(px, py, pz)).Vertex()
+
+    # Nearest surface point across every part face (per-face, mirror-safe).
+    best = None  # (dist, obj, face, near_pt)
+    for o in parts:
+        try:
+            faces = list(o.shape.faces())
+        except Exception:  # noqa: BLE001
+            continue
+        for face in faces:
+            try:
+                ext = BRepExtrema_DistShapeShape(vertex, face.wrapped)
+                if not ext.IsDone() or ext.NbSolution() < 1:
+                    continue
+                d = ext.Value()
+            except Exception:  # noqa: BLE001
+                continue
+            if best is None or d < best[0]:
+                q = ext.PointOnShape2(1)
+                best = (d, o, face, (q.X(), q.Y(), q.Z()))
+    if best is None:
+        return {"ok": False, "error": "could not locate a surface near the point"}
+
+    _dist, obj, face, near_pt = best
+    nx, ny, nz = near_pt
+    if direction is not None:
+        if len(direction) != 3:
+            return {"ok": False, "error": "direction must be [x, y, z]"}
+        dvec = Vector(float(direction[0]), float(direction[1]), float(direction[2]))
+        if dvec.length == 0:
+            return {"ok": False, "error": "direction must be non-zero"}
+        # ``direction`` names the side the ray enters from; cast the OPPOSITE way,
+        # into the material, to reach the far wall.
+        dvec = dvec.normalized()
+        dx, dy, dz = -dvec.X, -dvec.Y, -dvec.Z
+    else:
+        n = _face_outward_normal(face, nx, ny, nz)
+        if n is None:
+            return {"ok": False, "error": "surface normal is undefined at that point"}
+        dx, dy, dz = -n[0], -n[1], -n[2]  # inward
+
+    t = ray_exit_distance(obj.shape, nx, ny, nz, dx, dy, dz, min_cos=-1.0)
+    if t is None:
+        return {
+            "ok": False,
+            "error": "no far wall along the cast direction (point may be off the "
+            "surface or the ray exits through an edge)",
+        }
+    return {
+        "ok": True,
+        "thickness": round(t, 4),
+        "object": obj.name,
+        "point": [round(nx, 4), round(ny, 4), round(nz, 4)],
+        "direction": [round(dx, 6), round(dy, 6), round(dz, 6)],
+    }
+
+
 def _sample_walls(solid, cfg) -> list[dict]:
     """Per-face wall-thickness samples for one solid: one ray per tessellation
     facet, cast inward along the exact face normal and measured to the first wall
