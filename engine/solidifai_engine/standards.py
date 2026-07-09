@@ -51,6 +51,20 @@ TAP_DRILL: dict[str, float] = {
     "M8": 6.8,  # pitch 1.25
 }
 
+# ISO 261 coarse thread pitch P (mm) per nominal size. The pitch is what a modeled
+# helical thread advances per turn; the tap drill above is just d - P, but pitch is
+# its own datum so keep it explicit rather than deriving it. Source: ISO 261 general-
+# purpose metric coarse series, e.g. https://www.fasteners.eu/tech-info/ISO/261/.
+ISO261_COARSE_PITCH: dict[str, float] = {
+    "M2": 0.4,
+    "M2.5": 0.45,
+    "M3": 0.5,
+    "M4": 0.7,
+    "M5": 0.8,
+    "M6": 1.0,
+    "M8": 1.25,
+}
+
 # Socket head cap screws, ISO 4762: head dia dk(max), head height k(max),
 # hex socket s(nom). Source: fasteners.eu ISO 4762 table.
 ISO4762_CAP: dict[str, dict[str, float]] = {
@@ -207,6 +221,13 @@ def pilot_hole(size: str) -> float:
     thread-forming pilot for a machine screw driven into printed plastic."""
     _check_size(size)
     return TAP_DRILL[size]
+
+
+def thread_pitch(size: str) -> float:
+    """Coarse thread pitch (mm) for a metric size, per ISO 261. This is the axial
+    advance per turn used by a modeled helical thread (see hardware.external_thread)."""
+    _check_size(size)
+    return ISO261_COARSE_PITCH[size]
 
 
 def nut(size: str) -> dict:

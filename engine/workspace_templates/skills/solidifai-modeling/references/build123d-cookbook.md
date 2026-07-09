@@ -391,8 +391,10 @@ See `examples/enclosure.py` for a full case with a lid lip.
 The engine has `Helix` and `sweep` but **no thread classes** (`IsoThread`, `TrapezoidalThread`,
 `AcmeThread`, …) and **no `bd_warehouse`/`cq_warehouse`**. For 3D-printed parts you usually
 **don't model threads at all** — fine printed threads are weak and rarely print cleanly. Reach
-for the manifold-clean fastener features below; use a modeled helical thread (F) only for a
-cosmetic/visual or large-pitch case.
+for the manifold-clean fastener features below. When the thread itself is the point (a threaded
+rod, a printed nut, a jar lid), `hardware.external_thread` / `hardware.internal_thread_cutter`
+build a real ISO 60-degree helical thread for you (F); they are heavy geometry, so use them only
+then.
 
 **Internal threads** on a printed part come from a heat-set insert (C), a captive nut (D), or
 tapping a pilot hole (E) — not a modeled internal helix.
@@ -508,47 +510,28 @@ with BuildPart() as p:
 show(p.part, name="TappedPilot")
 ```
 
-### F. Modeled helical thread (cosmetic / visual)
+### F. Real modeled ISO thread
 
-A thread profile swept along a `Helix`. The tooth bites into the core so the thread fuses into
-one solid, and an intersect-clip squares the ends.
-
-> **⚠ Manifold caveat (build123d 0.10.0):** this builds a **valid** solid but reports
-> `manifold: false`. A swept-helix thread can't be capped cleanly at its run-out without an
-> `end_finishes` helper (the engine has no `IsoThread`/`bd_warehouse`), so free edges remain at
-> the ends — much like the `Sphere` polar-seam note in §1. Use a modeled thread for
-> **visualization, large-pitch features (jar lids, bottle caps, lead screws), or STEP hand-off
-> to other CAD** — *not* for a functional FDM fastener. For printed threads use a heat-set
-> insert (C), a captive nut (D), or a tapped-hole pilot (E).
+When the thread itself is the deliverable, `hardware.external_thread(size, length)` and
+`hardware.internal_thread_cutter(size, depth)` build a real ISO 68-1 60-degree helical thread at
+the coarse pitch for M2..M8: a **valid, manifold, single solid** (a swept V-groove, not a fused
+rib), with a lead-in chamfer on both ends by default so a screw starts into a nut. They are heavy
+geometry (about a second to build), so prefer a plain cylinder at the fit diameter for a normal
+FDM fastener; FDM only resolves threads from about M6 up. The external thread screws into the
+internal cutter's hole with a normal running clearance.
 
 ```python
-# doctest: +NONMANIFOLD
-from build123d import (
-    BuildPart, Cylinder, BuildLine, Helix, BuildSketch, Polyline, make_face,
-    Plane, Align, Mode, sweep,
-)
-from solidifai import show
+from build123d import Box, Pos
+from solidifai import hardware, show
 
-pitch, length, major_dia = 3.0, 18.0, 18.0   # mm — coarse pitch for a visible thread
-maj_r = major_dia / 2
-depth = 0.61 * pitch          # thread height
-core_r = maj_r - depth        # minor radius
-bite, extra = 1.0, pitch      # tooth overlap into core; helix overrun past each end
+# External: a real ISO M6 threaded rod (60-degree profile, coarse 1.0 mm pitch).
+rod = hardware.external_thread("M6", 12)
+show(rod, name="ThreadedRod")
 
-with BuildPart() as p:
-    Cylinder(core_r, length, align=(Align.CENTER, Align.CENTER, Align.MIN))
-    with BuildLine() as path:
-        Helix(pitch=pitch, height=length + 2 * extra, radius=core_r)
-    profile_plane = Plane(origin=path.line @ 0, z_dir=path.line % 0)
-    with BuildSketch(profile_plane):
-        with BuildLine():
-            Polyline((-bite, -pitch / 2), (depth, 0.0), (-bite, pitch / 2), close=True)
-        make_face()
-    sweep(path=path.line, is_frenet=True)
-    # square the ends; this leaves the thread valid but non-manifold (see caveat above)
-    Cylinder(maj_r, length, align=(Align.CENTER, Align.CENTER, Align.MIN), mode=Mode.INTERSECT)
-
-show(p.part, name="CosmeticThread")
+# Internal: subtract the cutter from a blind hole to leave a printable threaded boss/nut.
+block = Box(16, 16, 6)
+nut = block - Pos(0, 0, -3) * hardware.internal_thread_cutter("M6", 6)
+show(Pos(24, 0, 0) * nut, name="ThreadedBoss")
 ```
 
 ---

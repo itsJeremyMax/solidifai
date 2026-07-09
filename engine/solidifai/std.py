@@ -25,6 +25,7 @@ __all__ = [
     "bearing",
     "clearance_hole",
     "pilot_hole",
+    "thread_pitch",
     "lookup",
     "lookup_reference",
 ]
@@ -66,6 +67,10 @@ def clearance_hole(size: str, fit: str | None = None) -> float:
 
 def pilot_hole(size: str) -> float:
     return _standards().pilot_hole(size)
+
+
+def thread_pitch(size: str) -> float:
+    return _standards().thread_pitch(size)
 
 
 def lookup(query: str) -> dict:
