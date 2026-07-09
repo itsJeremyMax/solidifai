@@ -75,6 +75,31 @@ def _send(sock_path, request):
     return json.loads(buf.decode("utf-8").splitlines()[0])
 
 
+def _open(sock_path, timeout=5.0):
+    """Open a persistent connection; the caller drives it with _request/_read_one.
+    A read timeout keeps a regressed server from hanging the whole suite."""
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.settimeout(timeout)
+    c.connect(sock_path)
+    return c
+
+
+def _read_one(conn):
+    buf = b""
+    while b"\n" not in buf:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    return json.loads(buf.decode("utf-8").splitlines()[0])
+
+
+def _request(conn, request):
+    """Send one request on an already-open connection and read one reply."""
+    conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
+    return _read_one(conn)
+
+
 def _start(tmp_path):
     sock_path = short_socket_path(tmp_path)
     artifacts = str(tmp_path / "artifacts")
@@ -556,3 +581,113 @@ def test_rpc_capture_views_forwards_new_params():
     assert res["kwargs"]["resolution"] == 512
     assert res["kwargs"]["section"] is None
     assert res["kwargs"]["focus"] is None
+
+
+# -- concurrent connection handling -------------------------------------------
+# The engine serves connections on one daemon thread each (dispatch still
+# serialized by the session lock). These lock in the properties that model
+# guarantees: an idle client must not starve others, two clients interleave
+# correctly, dispatch is one-at-a-time, and a mid-request disconnect is local.
+
+
+def test_idle_connection_does_not_starve_other_clients(tmp_path):
+    """A client that connects and never sends must not block another client's
+    request. Client B's recv has a timeout, so a regressed (sequential) server
+    fails this test instead of hanging the whole suite."""
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        # Client A connects and then sits idle, sending nothing.
+        a = _open(sock_path)
+        try:
+            # Client B must still be served promptly while A holds its connection.
+            b = _open(sock_path)
+            try:
+                resp = _request(b, {"id": 1, "method": "ping"})
+                assert resp == {"id": 1, "ok": True, "result": "pong"}
+            finally:
+                b.close()
+        finally:
+            a.close()
+    finally:
+        server.shutdown()
+
+
+def test_two_connections_interleave_correctly(tmp_path):
+    """Two persistent connections issuing requests in turn each get their own,
+    non-interleaved responses (ids echo back on the right connection)."""
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        c1 = _open(sock_path)
+        c2 = _open(sock_path)
+        try:
+            r1a = _request(c1, {"id": 11, "method": "ping"})
+            r2a = _request(c2, {"id": 21, "method": "ping"})
+            r1b = _request(c1, {"id": 12, "method": "ping"})
+            r2b = _request(c2, {"id": 22, "method": "ping"})
+            assert [r1a["id"], r1b["id"]] == [11, 12]
+            assert [r2a["id"], r2b["id"]] == [21, 22]
+            assert all(r["result"] == "pong" for r in (r1a, r2a, r1b, r2b))
+        finally:
+            c1.close()
+            c2.close()
+    finally:
+        server.shutdown()
+
+
+def test_dispatch_is_serialized_across_connections(tmp_path):
+    """Two requests arriving on separate connections never run the handler
+    simultaneously: the session lock is the single serialization point, so the
+    single-engine-writer invariant holds even with concurrent connections."""
+    import solidifai_engine.server as srvmod
+
+    state = {"current": 0, "max": 0}
+    guard = threading.Lock()
+
+    def slow_probe(srv, p):
+        with guard:
+            state["current"] += 1
+            state["max"] = max(state["max"], state["current"])
+        time.sleep(0.3)
+        with guard:
+            state["current"] -= 1
+        return "ok"
+
+    server, sock_path, _ = _start(tmp_path)
+    srvmod._HANDLERS["_probe_slow"] = slow_probe
+    try:
+        results: list = []
+
+        def hit():
+            results.append(_send(sock_path, {"id": 0, "method": "_probe_slow"}))
+
+        t1 = threading.Thread(target=hit)
+        t2 = threading.Thread(target=hit)
+        t1.start()
+        t2.start()
+        t1.join(5.0)
+        t2.join(5.0)
+        assert not t1.is_alive() and not t2.is_alive()
+        # If dispatch ran concurrently, max would reach 2.
+        assert state["max"] == 1
+        assert [r["result"] for r in results] == ["ok", "ok"]
+    finally:
+        srvmod._HANDLERS.pop("_probe_slow", None)
+        server.shutdown()
+
+
+def test_disconnect_mid_request_does_not_kill_server(tmp_path):
+    """A client that disconnects before reading its response only kills its own
+    connection thread; the server keeps serving everyone else."""
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        c = _open(sock_path)
+        # Send a real build, then drop the connection before reading the reply.
+        build_req = {"id": 1, "method": "execute_script", "params": {"code": GOOD_SCRIPT}}
+        c.sendall((json.dumps(build_req) + "\n").encode("utf-8"))
+        c.close()
+
+        # The server is still healthy and serves a fresh client.
+        resp = _send(sock_path, {"id": 2, "method": "ping"})
+        assert resp == {"id": 2, "ok": True, "result": "pong"}
+    finally:
+        server.shutdown()

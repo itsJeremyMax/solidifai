@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import hmac
+import itertools
 import json
 import logging
 import os
@@ -211,6 +212,9 @@ class Server:
         self._stop = threading.Event()
         self._sock: socket.socket | None = None
         self._token: str | None = None  # set by _bind on the TCP transport
+        # Names each connection thread so interleaved per-connection logs stay
+        # attributable. next() is atomic under the GIL, so no extra lock is needed.
+        self._conn_counter = itertools.count(1)
 
         # Point the material resolver at this workspace so builds resolve the
         # workspace + global materials (not just the built-ins).
@@ -308,15 +312,20 @@ class Server:
         self._start_parent_watchdog()
         self._sock = self._bind()
         self._load_startup_model()
-        # Connections are served strictly one at a time: _handle_connection runs on
-        # this thread and blocks until the client disconnects. Both real clients
-        # (the Rust shell and the MCP bridge) open a connection, send one request,
-        # read the reply, and close, so serialization is fine in practice. The
-        # failure mode to know: a client that connects and then sits idle without
-        # sending would starve every other client until it disconnects. A
-        # concurrent-connection redesign is deliberately out of scope here; a per-
-        # connection worker-thread model would still need the session lock (held in
-        # _dispatch) as the single point that serializes builds.
+        # Concurrency model: one daemon thread per connection. accept() hands each
+        # connection straight to its own thread and loops, so a client that connects
+        # then sits idle (or pauses between requests) no longer starves everyone
+        # else -- the GUI shell, the MCP bridge, and the file watcher all share this
+        # one endpoint, and any one of them could stall.
+        #
+        # Request DISPATCH stays serialized through self._lock (held in _dispatch),
+        # so exactly one request ever runs against the Session at a time: the
+        # single-engine-writer invariant holds, and two clients mid-request behave
+        # exactly as before (the second blocks on the lock). Responses stay ordered
+        # per connection because each connection's thread reads, dispatches, and
+        # writes one request at a time. Threads are daemon and each reaps itself on
+        # disconnect/error, so shutdown (self._stop + closing the listen socket)
+        # still exits cleanly and connections never accumulate.
         try:
             while not self._stop.is_set():
                 try:
@@ -325,7 +334,13 @@ class Server:
                     continue
                 except OSError:
                     break
-                self._handle_connection(conn)
+                conn_id = next(self._conn_counter)
+                threading.Thread(
+                    target=self._handle_connection,
+                    args=(conn, conn_id),
+                    name=f"engine-conn-{conn_id}",
+                    daemon=True,
+                ).start()
         finally:
             self._close()
 
@@ -348,14 +363,20 @@ class Server:
 
     # -- connection / dispatch ---------------------------------------------
 
-    def _handle_connection(self, conn: socket.socket) -> None:
+    def _handle_connection(self, conn: socket.socket, conn_id: int = 0) -> None:
+        logging.getLogger(__name__).debug("conn %d: open", conn_id)
         with conn:
-            conn.settimeout(None)
+            # Poll rather than block forever on recv so the thread notices shutdown
+            # (and an idle connection is reaped): a timeout just re-checks _stop and
+            # keeps the (possibly idle) connection open for its next request.
+            conn.settimeout(1.0)
             buf = b""
             authed = self._token is None
             while not self._stop.is_set():
                 try:
                     chunk = conn.recv(65536)
+                except TimeoutError:
+                    continue  # idle between requests; loop back to re-check _stop
                 except OSError:
                     break
                 if not chunk:
