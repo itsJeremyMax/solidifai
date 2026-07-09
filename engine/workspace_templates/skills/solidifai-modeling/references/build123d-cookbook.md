@@ -562,6 +562,140 @@ show(p.part, name="CosmeticThread")
 
 ---
 
+## 13. Transforms & duplication (move, copy, mirror, scale)
+
+Reposition, copy, mirror, or scale a solid you already built. In the algebra API a `Location`
+(`Pos(...)`, `Rot(...)`) placed to the left of a shape returns a **placed copy** without touching
+the original; `.moved(Location(...))` does the same from a shape.
+
+```python
+from build123d import Box, Pos, Rot, Location
+from solidifai import show
+
+base = Box(30, 20, 10)
+show(base, name="Base")
+show(Pos(50, 0, 0) * base, name="Shifted")                 # translate
+show(Rot(0, 0, 45) * Pos(0, 50, 0) * base, name="Turned")  # rotate, then place
+show(base.moved(Location((0, 0, 30))), name="Stacked")     # place by a Location
+```
+
+**Duplicate an instance** with `copy.copy` and place each copy independently. For a repeated
+pattern fused into one body, use `GridLocations`/`PolarLocations` inside `BuildPart` (§8);
+`copy.copy` + `Pos` gives separate instances you `show()` on their own.
+
+```python
+import copy
+from build123d import Box, Pos
+from solidifai import show
+
+unit = Box(20, 20, 20)
+show(unit, name="Original")
+show(Pos(30, 0, 0) * copy.copy(unit), name="Clone")   # an independent duplicate
+```
+
+**Mirror a whole solid** with `mirror(part, about=Plane.YZ)` — the clean way to make a left-hand
+variant from a right-hand part. `Plane.YZ`/`Plane.XZ`/`Plane.XY` pick the mirror plane.
+
+```python
+from build123d import BuildPart, Box, Cylinder, Align, Locations, mirror, Plane, Pos
+from solidifai import show
+
+with BuildPart() as p:
+    Box(40, 30, 10, align=(Align.MIN, Align.CENTER, Align.MIN))
+    with Locations((30, 0, 10)):
+        Cylinder(5, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))
+right = p.part
+show(right, name="RightHand")
+show(Pos(0, 50, 0) * mirror(right, about=Plane.YZ), name="LeftHand")  # left-hand variant
+```
+
+**Scale** uniformly with `scale(part, f)` or per-axis with `scale(part, (sx, sy, sz))`.
+
+```python
+from build123d import Box, Pos, scale
+from solidifai import show
+
+base = Box(20, 20, 20)
+show(base, name="Base")
+show(Pos(40, 0, 0) * scale(base, 1.5), name="Bigger")           # 1.5x uniform
+show(Pos(0, 40, 0) * scale(base, (2, 1, 1)), name="Stretched")  # 2x in X only
+```
+
+Scale is for a one-off "make it 1.5x taller" — **when a dimension is parametric, change its PARAM
+with `set_params` instead.** Scale warps everything uniformly, so a scaled fastener hole or fillet
+no longer matches a standard; a driven parameter resizes just what you meant.
+
+---
+
+## 14. Split, draft, and text
+
+**Split** cuts a solid with a plane and keeps one side — halve a part for printing, or section a
+body. `Keep.TOP`/`Keep.BOTTOM` pick the side, `Keep.BOTH` returns both; `bisect_by` takes any plane
+(`Plane.XY.offset(d)` cuts off-center).
+
+```python
+from build123d import BuildPart, Box, split, Plane, Keep
+from solidifai import show
+
+with BuildPart() as p:
+    Box(40, 30, 20)
+    split(bisect_by=Plane.XY, keep=Keep.TOP)   # keep the top half
+
+show(p.part, name="TopHalf")
+```
+
+**Draft** tapers faces by an angle from a neutral plane — the pull taper a molded or cast part
+needs. `filter_by(Axis.Z, reverse=True)` selects the vertical side faces; `neutral_plane` is the
+face that keeps its size (here the base at z=0); `angle` is the draft in degrees. FDM prints don't
+need draft, so reach for it only for a molding/casting hand-off.
+
+```python
+from build123d import BuildPart, Box, Align, Axis, Plane, draft
+from solidifai import show
+
+with BuildPart() as p:
+    Box(40, 30, 20, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    draft(p.faces().filter_by(Axis.Z, reverse=True), neutral_plane=Plane.XY, angle=5)
+
+show(p.part, name="Drafted")
+```
+
+**Text** embosses or engraves lettering: sketch `Text` on a face, then `extrude` out (raised) or in
+(recessed). Keep the raised/recessed depth ~1 mm or more so it survives the nozzle; `Text` also
+takes `font=`, `font_style=`, and `rotation=` (run text along a side face).
+
+```python
+# raised lettering
+from build123d import BuildPart, Box, BuildSketch, Text, Axis, Align, extrude
+from solidifai import show
+
+with BuildPart() as p:
+    Box(60, 20, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    top = p.faces().sort_by(Axis.Z)[-1]
+    with BuildSketch(top):
+        Text("SOL", font_size=10)
+    extrude(amount=1.5)   # raised 1.5 mm above the face
+
+show(p.part, name="Embossed")
+```
+
+```python
+# recessed lettering
+from build123d import BuildPart, Box, BuildSketch, Text, Axis, Align, extrude, Mode
+from solidifai import show
+
+with BuildPart() as p:
+    Box(60, 20, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    top = p.faces().sort_by(Axis.Z)[-1]
+    with BuildSketch(top):
+        Text("SOL", font_size=10)
+    extrude(amount=-1.5, mode=Mode.SUBTRACT)   # engraved 1.5 mm into the face
+
+show(p.part, name="Engraved")
+```
+
+---
+
 ## Always verify
 
 After building, call `get_model_info()` and confirm `valid` and `manifold` are `true` and the

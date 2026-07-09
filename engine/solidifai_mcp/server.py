@@ -214,10 +214,17 @@ def save_reference(
 
 @mcp.tool()
 def inspect_features() -> Any:
-    """List the model's named, targetable features. Each entry gives the
-    feature's name, kind, the parameter(s) that drive it (``driven_by``), and
-    its source line. Use it to find which geometry a change should target —
-    then adjust a driven feature with ``set_params``."""
+    """List the model's targetable features. Each entry gives the feature's
+    name, kind, the parameter(s) that drive it (``driven_by``), its source
+    line, and whether it was auto-detected. Use it to find which geometry a
+    change should target, then edit a driven feature with ``set_feature``.
+
+    An untagged model returns best-effort inferred features (``inferred: true``
+    with a ``confidence``) for detected round features; these have no driving
+    parameter and cannot be changed by ``set_feature`` until you name them in
+    the script with a ``feature(...)`` block. Declared features take precedence.
+    In assembly mode feature listing is currently unavailable (the engine
+    returns an empty list)."""
     return _call("inspect_features")
 
 
@@ -514,15 +521,22 @@ def set_feature(name: str, values: dict) -> Any:
     """Change a named feature (from ``inspect_features``) by adjusting the
     parameter(s) that drive it: ``values`` is a ``{param: value}`` dict keyed by
     the feature's ``driven_by`` names. Rebuilds the model. A feature that isn't
-    parameter-driven returns an error suggesting a source edit instead."""
+    parameter-driven (including an inferred/auto-detected one) returns an
+    error directing you to name it with ``feature(...)`` or edit its source
+    instead. In assembly mode feature listing is currently unavailable, so
+    there is nothing to target."""
     return _call("set_feature", {"name": name, "values": values})
 
 
 @mcp.tool()
 def feature_at(point: list[float]) -> Any:
-    """Return the named feature nearest a 3D point (``[x, y, z]`` in millimetres,
-    build123d Z-up), or ``{"match": null}``. Use it to resolve a picked location
-    to a feature you can then retarget with ``set_params``."""
+    """Resolve a 3D point to the feature at that location: the "which feature
+    is here" lookup. ``point`` is ``[x, y, z]`` in millimetres (build123d Z-up).
+    Returns ``{"match": <feature dict>}`` for the nearest feature whose mesh is
+    within ~1 mm of the point, or ``{"match": null}`` when none is that close.
+    Retarget the matched feature with ``set_feature`` (name it first if it is
+    inferred). In assembly mode feature listing is currently unavailable, so
+    this returns no match."""
     return _call("feature_at", {"point": point})
 
 

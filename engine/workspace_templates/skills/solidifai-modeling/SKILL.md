@@ -31,16 +31,19 @@ skill owns how to build it. build123d is your internal toolkit; never name it to
    **solidifai-product-design** when a person holds, wears, operates, or sees the part and
    design is open; neither is stalling (AGENTS.md "model it now").
 2. **Build.** Call `execute_script`; it rebuilds the model, updates the viewport, and
-   auto-saves your code to `model.py`. Before you pick dimensions, read
-   `get_manufacturing_profile()` and use it for wall thickness, fillet/edge-break, minimum
-   feature size, and mating clearance; never a guess, and don't copy the literal numbers from
-   the examples below when the profile says otherwise.
+   auto-saves your code to `model.py`. Before picking dimensions, read
+   `get_manufacturing_profile()` and use it for wall, fillet/edge-break, min feature, and mating
+   clearance, never a guess; don't copy the examples' literal numbers when the profile says
+   otherwise.
 3. **Verify.** Call `get_model_info()` and check bounding box / volume / `valid` / `manifold`
    before telling the user it's done. Then actually look: `capture_views(["iso"])` (or
-   `layout="grid"` for several angles in one image); how to read the images is in
-   **solidifai-self-verify** "What to look for in the views".
+   `layout="grid"` for several angles); how to read them is in **solidifai-self-verify** "What
+   to look for in the views".
 4. **Iterate.** For a parametric model, tweak with `set_params({"size": 30})` instead of
-   resending the whole script. Otherwise send a new `execute_script`.
+   resending the whole script; retarget a named feature with `set_feature`. To **delete a
+   feature or reorder operations**, edit the script (remove or move that block) and re-run
+   `execute_script`: the script is the feature tree, so editing it is the delete/reorder
+   operation. Otherwise send a new `execute_script`.
 
 ### Rules
 
@@ -101,13 +104,11 @@ if __name__ == "__main__":
 Each parameter appears in the Inspector as a slider labelled by its key, with `desc` beneath
 it; make both pull their weight:
 
-- **Names (the keys)** become the slider label (title-cased: `bore_dia` becomes "Bore Dia")
-  and are the `build()` argument names, so they must be `snake_case` identifiers. Keep them
-  clear and distinct: prefer `corner_radius` over `corner_r`; with both a central bore and
-  mounting holes, `bore_dia` and `mount_hole_dia`, not `dia1`/`dia2` or a bare `hole_dia`.
-- **Descriptions** (`"desc"`, optional) are a few plain words (~1-4) saying what the
-  parameter controls or where it is; sentence-case, no trailing period. Don't restate the
-  name; omit `desc` when the name already says everything.
+- **Names (the keys)** become the slider label (title-cased: `bore_dia` to "Bore Dia") and the
+  `build()` argument names, so they must be `snake_case`. Keep them clear and distinct:
+  `bore_dia` and `mount_hole_dia`, not `dia1`/`dia2` or a bare `hole_dia`.
+- **Descriptions** (`"desc"`, optional) are a few plain words saying what the parameter
+  controls; sentence-case, no trailing period. Omit `desc` when the name already says it.
 
 | key | desc | verdict |
 |-----|------|---------|
@@ -118,9 +119,8 @@ it; make both pull their weight:
 
 ### Make features targetable
 
-Wrap an operation in `with feature("name", driven_by="param"):` to give it a stable name
-bound to its driving parameter. `inspect_features()` then lists every named feature and which
-parameter changes it, so you can retarget it with `set_params` without re-sending the script.
+Wrap an operation in `with feature("name", driven_by="param"):` to give it a stable name bound
+to its driving parameter, so you can retarget it later without re-sending the script.
 
 ```python
 from build123d import BuildPart, Box, Locations, Hole
@@ -144,12 +144,15 @@ if __name__ == "__main__":
 `set_feature("center_bore", {"bore_dia": 20})` (the keys are its `driven_by` params); it
 rebuilds like `set_params`.
 
+`inspect_features()` lists every targetable feature; `feature_at((x, y, z))` goes the other way,
+resolving a point in model space (mm, Z-up) to the feature there so you can retarget a spot
+picked in the viewport.
+
 ### Standard hardware: ask, don't recall
 
-Dims for screws, inserts, nuts, and bearings live in the engine; never type a
-remembered number. In scripts, `std` returns plain mm values and resolves the
-profile's fit for you; `hardware` builds the matching geometry. From chat, the
-`lookup_standard` / `lookup_reference` tools answer the same questions.
+Dims for screws, inserts, nuts, and bearings live in the engine; never type a remembered
+number. In scripts, `std` returns plain mm values (resolving the profile's fit) and `hardware`
+builds the matching geometry; from chat, `lookup_standard` / `lookup_reference` answer the same.
 
 ```python
 from build123d import Box, Cylinder, Pos
@@ -163,6 +166,11 @@ show(plate, name="plate")
 
 Coverage is M2 to M8 (heat-set inserts only M2 to M5).
 
+Threads are **represented as fit-diameter cylinders** (a clearance or tap-drill hole), the right
+default for FDM where fine printed threads print poorly; for a real joint use a heat-set insert,
+captive nut, or tapped pilot. Model a true helical thread (`Helix` + `sweep`) only for a
+large-pitch cap or STEP hand-off. Cookbook §11 carries all of these.
+
 ### Bevels and screw holes that don't fight you
 
 Thin geometry breaks two ops (fixes in cookbook §6 and §7). A fillet/chamfer over ~half the local
@@ -172,10 +180,9 @@ subtract a cutter for placed holes: `part - Pos(x, y, 0) * hardware.clearance_ho
 
 ### Multi-part models
 
-Model each genuinely separate part (a lid and a base, a bolt and a nut, a gear on a shaft) as
-its own `show()` object so it keeps its color/material and stays individually inspectable.
-This one-script pattern fits a few parts you author together; independently authored parts
-sharing a skeleton are **solidifai-assemblies**.
+Model each genuinely separate part (a lid and base, a bolt and nut) as its own `show()` object
+so it keeps its color/material and stays inspectable. This one-script pattern fits a few parts
+authored together; independently authored parts sharing a skeleton are **solidifai-assemblies**.
 
 **Name and color each part** so the assembly is legible in the viewport and in `capture_views`:
 
@@ -185,17 +192,17 @@ show(base, name="Base", material="abs")
 show(lid,  name="Lid",  material="abs", color=(0.2, 0.4, 0.9))
 ```
 
-Exploded view is a built-in viewport control for multi-part models; do not add an `explode`
-parameter. To review the fit yourself, capture an exploded render with
-`capture_views(["iso", "front"], explode=70)` (render-only; it never changes the saved model).
+Exploded view is a built-in viewport control; don't add an `explode` parameter. To review the
+fit yourself, capture `capture_views(["iso", "front"], explode=70)` (render-only; it never
+changes the saved model).
 
 **Mating parts need a real clearance gap** so they aren't coincident or interfering. Use the
-workspace's fit clearance from `get_manufacturing_profile()` (the `fits` value for the
-selected `design.fit`); fall back to the per-process clearance in the manufacturability
-reference only when the profile doesn't apply.
+workspace fit clearance from `get_manufacturing_profile()` (the `fits` value for the selected
+`design.fit`); fall back to the manufacturability reference's per-process clearance only when
+the profile doesn't apply.
 
-In an assembly (not a single `execute_script`), when two parts must agree on a shape rather
-than a number, the skeleton publishes it with `s.profile(...)`; see **solidifai-assemblies**.
+In an assembly, when two parts must agree on a shape rather than a number, the skeleton
+publishes it with `s.profile(...)`; see **solidifai-assemblies**.
 
 ### Reference volumes (inside-out packaging)
 
@@ -203,12 +210,6 @@ For a containment object (a cyberdeck, mini-PC, battery pack, or any device whos
 driven by what goes inside it), place each internal component as a **reference volume**
 before deriving the shell: a plain box at the component's layout position, shown with
 `role="reference"`, a distinct `color=`, and a `name=` starting with `"ref: "`.
-
-`role="reference"` marks a body as context rather than printed geometry, and the engine acts
-on it for you: a reference body is ghosted in the viewport, is **excluded from `export(...)`
-and from the manufacturing checks (DFM, mass, stress, min-wall) automatically**, and is still
-counted by `check_interferences()`. You never strip components out before exporting; they
-cannot enter the output file.
 
 ```python
 # doctest: +SKIP
@@ -218,16 +219,17 @@ with BuildPart() as sbc:
 show(sbc.part, name="ref: SBC", color=(0.20, 0.55, 0.95), role="reference")
 ```
 
-Reference bodies are real solids `check_interferences()` still sees, so layout defects
-(components colliding, a component poking through a wall) show up as overlaps and self-verify
-can confirm every component is seated with clearance. A `show_internals` PARAM (a 0/1 toggle
-gating the reference `show()` calls) is an optional viewport-decluttering convenience, not
-needed for a clean export. The shell size derives from the packed component envelope plus
-clearance plus wall, so the enclosure tracks the contents.
+`role="reference"` marks a body as context, not printed geometry: the engine ghosts it and
+**excludes it from `export(...)` and the manufacturing checks (DFM, mass, stress, min-wall)
+automatically**, so you never strip components out before exporting. It stays a real solid
+`check_interferences()` counts, so layout defects (a collision, a component poking through a
+wall) surface as overlaps for self-verify. A `show_internals` PARAM (a 0/1 toggle gating the
+reference `show()` calls) is an optional viewport-declutter. The shell derives from the packed
+envelope plus clearance plus wall, so it tracks its contents.
 
-See the runnable example `examples/packaging-layout.py` for the full pattern. For the design
-judgment (packing arrangement, port placement, thermal decisions), see the
-**integrated-device** playbook and the **internal-layout** lens in `solidifai-product-design`.
+See `examples/packaging-layout.py` for the full pattern, and for the design judgment (packing,
+ports, thermal) the **integrated-device** playbook and **internal-layout** lens in
+`solidifai-product-design`.
 
 ## Anti-patterns
 
@@ -246,9 +248,10 @@ judgment (packing arrangement, port placement, thermal decisions), see the
 - **solidifai-self-verify** - confirm it's right before saying it's done.
 - **solidifai-debugging** - when a build fails or nothing shows.
 - **solidifai-assemblies** - skeleton + parts authoring for genuinely multi-part designs.
-- **`references/build123d-cookbook.md`** - the API patterns: primitives, sketches +
-  extrude/revolve/loft/sweep, fillet/chamfer with edge selection, holes & counterbores, bolt
-  circles, booleans, shelling enclosures. Read this when you need an API you don't remember.
+- **`references/build123d-cookbook.md`** - the API patterns: primitives, sketch
+  extrude/revolve/loft/sweep, fillet/chamfer with edge selection, holes/counterbores, bolt
+  circles, booleans, shells, transforms (move/mirror/scale/copy), split/draft/text, and
+  threads/fasteners. Read it when you need an API you don't remember.
 - **`references/organic-forms.md`** - curved, flowing, hand-friendly shapes: lofting,
   sweeping along splines, revolved spline silhouettes, fillet-blending, freeform
   `make_surface` + thicken, and where the B-rep kernel fights back. Read this for vases /
@@ -260,9 +263,9 @@ judgment (packing arrangement, port placement, thermal decisions), see the
   - `enclosure.py` - box hollowed with a shell + a lid lip.
   - `flanged-mount.py` - flange + boss + bore + bolt circle.
   - `parametric-knob.py` - a revolved (lathe) profile with flutes and a filleted rim.
-  - `exploded-enclosure.py` - a two-part base + drop-in lid assembly (the viewport's Explode
-    slider spreads the parts interactively).
+  - `exploded-enclosure.py` - a two-part base + drop-in lid assembly (the Explode slider spreads
+    the parts).
   - `packaging-layout.py` - inside-out packaging: reference component volumes gated by
-    `show_internals`, with the shell derived from the packed envelope.
+    `show_internals`, shell derived from the packed envelope.
   - `spline-vase.py` - an organic spline silhouette revolved + shelled into a thin vessel.
   - `lofted-grip.py` - oval cross-sections lofted into a waisted ergonomic grip.
