@@ -224,6 +224,7 @@ pub fn run() {
             rpc::engine_render,
             rpc::engine_get_model_info,
             rpc::engine_get_params,
+            rpc::engine_get_assembly_tree,
             rpc::engine_get_workspace_meta,
             rpc::engine_set_params,
             rpc::engine_export,

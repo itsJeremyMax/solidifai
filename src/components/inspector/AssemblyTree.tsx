@@ -21,6 +21,7 @@ import { ChevronRight, Eye, EyeOff } from "lucide-react";
 import type { ModelObject } from "../../lib/artifacts";
 import type { Material } from "../../lib/materials";
 import { buildAssemblyTree, descendantIds, type TreeNode } from "../../lib/assemblyTree";
+import type { JointInfo, OccurrenceFamily, OccurrenceInfo } from "../../lib/assemblyMeta";
 import PartMaterialPicker from "./PartMaterialPicker";
 
 /** sRGB gamma encode a single linear channel (0..1). */
@@ -46,6 +47,12 @@ export interface AssemblyTreeProps {
   onToggleVisible: (id: string) => void;
   materialOverrides?: Record<string, Material>;
   onSetPartMaterial?: (partId: string, material: Material | null) => void;
+  /** Occurrence families (from `get_assembly_tree`), keyed by primary path id.
+   *  Instanced parts fold into a single badged row; absent for single-model or
+   *  pre-protocol-11 engines (the tree renders unchanged). */
+  families?: Map<string, OccurrenceFamily>;
+  /** Skeleton joints to list below the tree; empty when the assembly has none. */
+  joints?: JointInfo[];
 }
 
 export default function AssemblyTree({
@@ -56,10 +63,15 @@ export default function AssemblyTree({
   onToggleVisible,
   materialOverrides = {},
   onSetPartMaterial = () => {},
+  families,
+  joints = [],
 }: AssemblyTreeProps) {
-  const tree = buildAssemblyTree(objects);
+  const tree = buildAssemblyTree(objects, families);
   // Path ids of groups the user collapsed; everything is expanded by default.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  // Occurrence families the user expanded to see the frame list (collapsed by
+  // default, so an instanced part reads as one badged row until asked).
+  const [openOcc, setOpenOcc] = useState<ReadonlySet<string>>(() => new Set());
   // Open material picker, anchored to the row swatch. `id` is a leaf or group id.
   const [picker, setPicker] = useState<{ id: string; anchor: DOMRect } | null>(null);
 
@@ -71,6 +83,14 @@ export default function AssemblyTree({
 
   const toggleCollapsed = (id: string) =>
     setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const toggleOpenOcc = (id: string) =>
+    setOpenOcc((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -103,6 +123,81 @@ export default function AssemblyTree({
   const renderNode = (node: TreeNode, depth: number): React.ReactNode => {
     const selected = node.id === selectedId;
     const indent = { paddingLeft: `${0.875 + depth * INDENT_REM}rem` }; // 0.875rem = px-3.5
+
+    // Instanced part: one definition placed N times. Renders as a single badged
+    // row; the eye/swatch/selection act on every placement (occLeafIds). Expand
+    // to read the frame list. `occurrences` is only set by the family merge.
+    if (node.occurrences) {
+      const leafIds = node.occLeafIds ?? [];
+      const allHidden = leafIds.length > 0 && leafIds.every((id) => hiddenIds.has(id));
+      const isOpen = openOcc.has(node.id);
+      const swatchHex = groupSwatchHex(leafIds);
+      const n = node.occurrences.length;
+      return (
+        <div key={node.id}>
+          <Row
+            label={node.label}
+            depthStyle={indent}
+            selected={selected}
+            hidden={allHidden}
+            leading={
+              <button
+                type="button"
+                title={isOpen ? "Hide placements" : "Show placements"}
+                aria-label={
+                  isOpen ? `Hide ${node.label} placements` : `Show ${node.label} placements`
+                }
+                aria-expanded={isOpen}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleOpenOcc(node.id);
+                }}
+                className="grid h-3.75 w-3.75 shrink-0 place-items-center rounded-sm text-ink-3 transition-colors hover:bg-surface-2 hover:text-ink"
+              >
+                <ChevronRight
+                  size={13}
+                  strokeWidth={2}
+                  className={`transition-transform ${isOpen ? "rotate-90" : ""}`}
+                  aria-hidden
+                />
+              </button>
+            }
+            marker={
+              <span
+                className={
+                  selected
+                    ? "h-3.75 w-3.75 shrink-0 rounded-sm border-[1.5px] border-accent bg-accent-tint"
+                    : `h-3.75 w-3.75 shrink-0 rounded-sm border-[1.5px] ${
+                        allHidden ? "border-line-2" : "border-ink-3"
+                      }`
+                }
+              />
+            }
+            trailingLabel={<OccurrenceBadge n={n} />}
+            onSelect={() => onSelect(selected ? null : node.id)}
+            swatchHex={swatchHex}
+            swatchHidden={allHidden}
+            onOpenPicker={(anchor) => setPicker({ id: node.id, anchor })}
+            label2={node.label}
+            onToggleVisible={() => {
+              const target = !allHidden; // true = hide, false = show
+              for (const id of leafIds) {
+                if (hiddenIds.has(id) !== target) onToggleVisible(id);
+              }
+            }}
+            visForcedHidden={allHidden}
+          />
+          {isOpen &&
+            node.occurrences.map((occ, i) => (
+              <OccurrenceRow
+                key={`${node.id}#${i}`}
+                occ={occ}
+                depthStyle={{ paddingLeft: `${0.875 + (depth + 1) * INDENT_REM}rem` }}
+              />
+            ))}
+        </div>
+      );
+    }
 
     if (node.isLeaf && node.children.length === 0) {
       // Leaf row: identical to a PartsList row, indented and label = leaf segment.
@@ -232,6 +327,8 @@ export default function AssemblyTree({
     <div className="pb-1">
       {tree.map((node) => renderNode(node, 0))}
 
+      {joints.length > 0 && <JointsSection joints={joints} />}
+
       {picker && pickerLeafIds.length > 0 && (
         <PartMaterialPicker
           anchor={picker.anchor}
@@ -246,6 +343,93 @@ export default function AssemblyTree({
           }}
           onClose={() => setPicker(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The `×N` multiplicity badge on an instanced part. Sits in the row's trailing
+ * slot where a plain part shows its kind. Quiet by design: the count is the
+ * signal, not the chrome.
+ */
+function OccurrenceBadge({ n }: { n: number }) {
+  return (
+    <span
+      className="ml-auto shrink-0 rounded-full border border-line-2 px-1.5 py-0.25 font-mono text-caption text-ink-2"
+      title={`Placed ${n} times`}
+    >
+      ×{n}
+    </span>
+  );
+}
+
+/**
+ * One placement under an expanded instanced part: its display id (wheel@2), the
+ * frame it sits at, and a mirror tag when the copy is reflected. Read-only.
+ */
+function OccurrenceRow({
+  occ,
+  depthStyle,
+}: {
+  occ: OccurrenceInfo;
+  depthStyle: React.CSSProperties;
+}) {
+  return (
+    <div
+      style={depthStyle}
+      className="flex items-center gap-2.25 py-1 pr-3.5 text-caption text-ink-3"
+    >
+      <span className="w-3.75 shrink-0" aria-hidden />
+      <span className="shrink-0 font-mono text-ink-2">{occ.label}</span>
+      <span className="truncate">{occ.frame ? `at ${occ.frame}` : "at origin"}</span>
+      {occ.mirror && (
+        <span
+          className="ml-auto shrink-0 rounded-full bg-surface-2 px-1.5 font-mono text-ink-3"
+          title={`Mirrored about the ${occ.mirror} plane`}
+        >
+          mirror {occ.mirror}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The skeleton's declared joints, listed below the tree. Read-only: each row
+ * shows the joint's name, kind, driven frame, travel limits, and the two parts
+ * it sits between. The agent declares and drives these over MCP; the panel just
+ * reflects them.
+ */
+function JointsSection({ joints }: { joints: JointInfo[] }) {
+  return (
+    <div className="mt-1 border-t border-line pt-1.5">
+      <div className="px-3.5 pb-1 pt-0.5 text-caption font-medium uppercase tracking-wide text-ink-3">
+        Joints
+      </div>
+      {joints.map((j) => (
+        <JointRow key={j.displayName} joint={j} />
+      ))}
+    </div>
+  );
+}
+
+/** One joint: name + kind pill, then its frame/limits/between as compact meta. */
+function JointRow({ joint }: { joint: JointInfo }) {
+  const meta: string[] = [];
+  if (joint.frame) meta.push(`frame ${joint.frame}`);
+  if (joint.limits) meta.push(`limits ${joint.limits[0]} to ${joint.limits[1]}`);
+  if (joint.between && joint.between.length > 0) meta.push(joint.between.join(" ↔ "));
+  return (
+    <div className="px-3.5 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className="truncate text-body text-ink">{joint.displayName}</span>
+        <span className="shrink-0 rounded-full border border-line-2 px-1.5 text-caption text-ink-2">
+          {joint.kind}
+        </span>
+      </div>
+      {meta.length > 0 && (
+        <div className="mt-0.5 font-mono text-caption text-ink-3">{meta.join("  ·  ")}</div>
       )}
     </div>
   );

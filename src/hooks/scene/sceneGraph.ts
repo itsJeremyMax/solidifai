@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { ModelObject } from "../../lib/artifacts";
+import { idMatchesBase } from "../../lib/assemblyTree";
 import type { SceneRefs } from "./types";
 import { refreshClipPlanes } from "./camera";
 
@@ -28,20 +29,20 @@ export function subtreeIndexForId(objects: ModelObject[] | undefined, id: string
 }
 
 /**
- * Indices of every subtree the selection `id` resolves to: the exact leaf, or —
- * when `id` is an assembly-node prefix — all descendant leaves (path id starts
- * with `id + "/"`). The "/" guard stops "hinge" matching "hingeplate". Selecting
- * a group thus highlights every child mesh.
+ * Indices of every subtree the selection `id` resolves to: the exact leaf, all
+ * descendant leaves when `id` is an assembly-node prefix, and every occurrence
+ * sibling of an instanced part (`wheel` -> `wheel_2`, `wheel_3`). See
+ * {@link idMatchesBase} for the guards. Selecting a group or an instanced part
+ * thus highlights every child mesh it stands for.
  */
 export function subtreeIndicesForId(
   objects: ModelObject[] | undefined,
   id: string | null,
 ): number[] {
   if (!objects || id == null) return [];
-  const prefix = id + "/";
   const out: number[] = [];
   objects.forEach((o, i) => {
-    if (o.id === id || o.id.startsWith(prefix)) out.push(i);
+    if (idMatchesBase(o.id, id)) out.push(i);
   });
   return out;
 }

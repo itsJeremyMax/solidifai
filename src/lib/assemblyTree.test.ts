@@ -1,7 +1,32 @@
 import { describe, it, expect } from "vitest";
-import { buildAssemblyTree, descendantIds, leafLabel, subtreeIdsForId } from "./assemblyTree";
+import {
+  buildAssemblyTree,
+  descendantIds,
+  idMatchesBase,
+  leafLabel,
+  subtreeIdsForId,
+} from "./assemblyTree";
+import type { OccurrenceFamily } from "./assemblyMeta";
 
 const objs = (ids: string[]) => ids.map((id) => ({ id, name: leafLabel(id) }));
+
+/** A one-family map for `wheel` placed 3 times, as deriveOccurrenceFamilies emits. */
+const wheelFamilies = () =>
+  new Map<string, OccurrenceFamily>([
+    [
+      "wheel",
+      {
+        primaryId: "wheel",
+        displayBase: "wheel",
+        memberIds: ["wheel", "wheel_2", "wheel_3"],
+        occurrences: [
+          { frame: "hub_a", mirror: null, label: "wheel" },
+          { frame: "hub_b", mirror: null, label: "wheel@2" },
+          { frame: "hub_c", mirror: "yz", label: "wheel@3" },
+        ],
+      },
+    ],
+  ]);
 
 describe("assemblyTree", () => {
   it("builds a nested tree from slash path ids", () => {
@@ -60,5 +85,56 @@ describe("assemblyTree", () => {
     // "hinge" must not match "hingeplate"; only an exact id or a real path child.
     const ids = ["hinge/pin", "hingeplate"];
     expect(subtreeIdsForId(ids, "hinge")).toEqual(["hinge/pin"]);
+  });
+
+  it("subtreeIdsForId includes slugged occurrence siblings of an instanced part", () => {
+    const ids = ["wheel/wheel", "wheel_2/wheel", "wheel_3/wheel", "arm/arm"];
+    expect(subtreeIdsForId(ids, "wheel").sort()).toEqual([
+      "wheel/wheel",
+      "wheel_2/wheel",
+      "wheel_3/wheel",
+    ]);
+  });
+});
+
+describe("idMatchesBase", () => {
+  it("matches the exact id, path descendants, and occurrence siblings", () => {
+    expect(idMatchesBase("wheel", "wheel")).toBe(true);
+    expect(idMatchesBase("wheel/wheel", "wheel")).toBe(true);
+    expect(idMatchesBase("wheel_2/wheel", "wheel")).toBe(true);
+    expect(idMatchesBase("wheel_10", "wheel")).toBe(true);
+  });
+
+  it("does not match unrelated name-prefix siblings", () => {
+    expect(idMatchesBase("wheelbarrow", "wheel")).toBe(false);
+    expect(idMatchesBase("hingeplate", "hinge")).toBe(false);
+    expect(idMatchesBase("wheel_x", "wheel")).toBe(false); // '_' then non-digit
+  });
+});
+
+describe("buildAssemblyTree with occurrence families", () => {
+  const objects = objs(["wheel/wheel", "wheel_2/wheel", "wheel_3/wheel", "arm/arm"]);
+
+  it("folds an instanced part's placements into one badged node", () => {
+    const tree = buildAssemblyTree(objects, wheelFamilies());
+    expect(tree.map((n) => n.id)).toEqual(["wheel", "arm"]); // wheel_2/wheel_3 absorbed
+    const wheel = tree.find((n) => n.id === "wheel")!;
+    expect(wheel.occurrences).toHaveLength(3);
+    expect(wheel.label).toBe("wheel");
+    expect(wheel.occLeafIds!.sort()).toEqual(["wheel/wheel", "wheel_2/wheel", "wheel_3/wheel"]);
+  });
+
+  it("descendantIds on a family returns every placement's object id", () => {
+    const tree = buildAssemblyTree(objects, wheelFamilies());
+    expect(descendantIds(tree, "wheel").sort()).toEqual([
+      "wheel/wheel",
+      "wheel_2/wheel",
+      "wheel_3/wheel",
+    ]);
+  });
+
+  it("renders unchanged when no families are given", () => {
+    const tree = buildAssemblyTree(objects);
+    expect(tree.map((n) => n.id)).toEqual(["wheel", "wheel_2", "wheel_3", "arm"]);
   });
 });

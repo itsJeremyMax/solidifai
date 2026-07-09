@@ -7,6 +7,8 @@
  * the AssemblyTree component and the viewport's group-selection match.
  */
 
+import type { OccurrenceFamily, OccurrenceInfo } from "./assemblyMeta";
+
 export interface AssemblyObject {
   id: string;
   name?: string;
@@ -20,6 +22,14 @@ export interface TreeNode {
   /** True when this path id is a real object, not just an intermediate group. */
   isLeaf: boolean;
   children: TreeNode[];
+  /** Present when this node is an instanced part (one definition placed N>1
+   *  times). The badge + frame list read from here; the node stands in for all
+   *  placements, whose real object ids are in {@link TreeNode.occLeafIds}. */
+  occurrences?: OccurrenceInfo[];
+  /** Every real object id this node represents, across all its placements. Set
+   *  on an occurrence family so visibility/material/selection span all copies;
+   *  absent on ordinary nodes (use {@link descendantIds}). */
+  occLeafIds?: string[];
 }
 
 /** Last "/"-segment of a path id, used as the display label. */
@@ -32,8 +42,17 @@ export function leafLabel(id: string): string {
  * Build a nested tree from flat objects whose ids are slash-separated paths.
  * A node is a leaf iff it corresponds to an actual object id; intermediate path
  * segments become group nodes. Order follows first-seen object order.
+ *
+ * Pass `families` (from `deriveOccurrenceFamilies`) to fold an instanced part's
+ * N placements into a single node: the primary placement's node absorbs the
+ * others, gains an `occurrences` list (the badge + frame list read from it), and
+ * records every underlying object id in `occLeafIds` so visibility, material,
+ * and selection still act on all copies.
  */
-export function buildAssemblyTree(objects: AssemblyObject[]): TreeNode[] {
+export function buildAssemblyTree(
+  objects: AssemblyObject[],
+  families?: Map<string, OccurrenceFamily>,
+): TreeNode[] {
   const roots: TreeNode[] = [];
   const byPath = new Map<string, TreeNode>();
   for (const obj of objects) {
@@ -52,7 +71,61 @@ export function buildAssemblyTree(objects: AssemblyObject[]): TreeNode[] {
       if (i === segs.length - 1) node.isLeaf = true; // this prefix is a real object
     }
   }
-  return roots;
+  return families && families.size > 0 ? mergeOccurrenceFamilies(roots, families) : roots;
+}
+
+/** Real-object ids in a node's subtree (the node itself if it is a leaf). */
+function collectLeafIds(node: TreeNode): string[] {
+  const out: string[] = [];
+  const walk = (n: TreeNode) => {
+    if (n.isLeaf) out.push(n.id);
+    n.children.forEach(walk);
+  };
+  walk(node);
+  return out;
+}
+
+/**
+ * Fold occurrence families in a sibling list: a family's primary node becomes
+ * the single instanced row (carrying `occurrences` + `occLeafIds`), the other
+ * placements are removed (their geometry rolls into `occLeafIds`). Recurses into
+ * every surviving node's children.
+ */
+function mergeOccurrenceFamilies(
+  nodes: TreeNode[],
+  families: Map<string, OccurrenceFamily>,
+): TreeNode[] {
+  // Reverse map: any member id -> its family (so non-primary members are dropped).
+  const memberToFamily = new Map<string, OccurrenceFamily>();
+  for (const fam of families.values()) {
+    for (const id of fam.memberIds) memberToFamily.set(id, fam);
+  }
+
+  const out: TreeNode[] = [];
+  for (const node of nodes) {
+    const fam = memberToFamily.get(node.id);
+    if (fam && node.id !== fam.primaryId) continue; // non-primary placement: absorbed
+
+    if (fam && node.id === fam.primaryId) {
+      // Union every present placement's leaf ids so the row acts on all copies.
+      const occLeafIds = fam.memberIds.flatMap((mid) => {
+        const memberNode = nodes.find((n) => n.id === mid);
+        return memberNode ? collectLeafIds(memberNode) : [];
+      });
+      out.push({
+        id: node.id,
+        label: fam.displayBase,
+        isLeaf: false,
+        children: [], // the frame list stands in for per-instance geometry rows
+        occurrences: fam.occurrences,
+        occLeafIds,
+      });
+      continue;
+    }
+
+    out.push({ ...node, children: mergeOccurrenceFamilies(node.children, families) });
+  }
+  return out;
 }
 
 /** Find a node by id anywhere in the tree (depth-first), or null. */
@@ -72,6 +145,9 @@ function findNode(nodes: TreeNode[], id: string): TreeNode | null {
 export function descendantIds(tree: TreeNode[], id: string): string[] {
   const start = findNode(tree, id);
   if (!start) return [];
+  // An occurrence family stands in for every placement's geometry; its real
+  // object ids live in occLeafIds (its `children` are empty by design).
+  if (start.occLeafIds) return start.occLeafIds;
   const out: string[] = [];
   const walk = (n: TreeNode) => {
     if (n.isLeaf) out.push(n.id);
@@ -82,11 +158,28 @@ export function descendantIds(tree: TreeNode[], id: string): string[] {
 }
 
 /**
+ * Does object id `objId` belong to the selection `base`? True for the exact id,
+ * any path descendant (`base/...`), and any slugged occurrence sibling
+ * (`base_2`, `base_2/...`, `base_10` ...). The engine slugs an occurrence's `@N`
+ * to `_N`, so selecting an instanced part's primary id `wheel` must also light
+ * up `wheel_2`, `wheel_3`. The `/`-or-digit guards stop `hinge` matching
+ * `hingeplate` and `wheel` matching an unrelated `wheelbarrow`.
+ */
+export function idMatchesBase(objId: string, base: string): boolean {
+  if (objId === base || objId.startsWith(base + "/")) return true;
+  if (objId.startsWith(base + "_")) {
+    const rest = objId.slice(base.length + 1);
+    return /^\d+(\/|$)/.test(rest); // "_2", "_2/pin", "_10" -> occurrence sibling
+  }
+  return false;
+}
+
+/**
  * The object ids that a selection of `target` should resolve to over a FLAT id
- * list: the exact id, plus any descendant whose path id starts with `target/`.
- * This is the viewport's group-selection match (mirrors descendantIds without
- * building a tree). The "/" guard stops "hinge" matching "hingeplate".
+ * list: the exact id, any path descendant, and any occurrence sibling (see
+ * {@link idMatchesBase}). This is the viewport's group-selection match (mirrors
+ * descendantIds without building a tree).
  */
 export function subtreeIdsForId(ids: readonly string[], target: string): string[] {
-  return ids.filter((id) => id === target || id.startsWith(target + "/"));
+  return ids.filter((id) => idMatchesBase(id, target));
 }

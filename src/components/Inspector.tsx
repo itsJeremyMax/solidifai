@@ -30,6 +30,7 @@ import RequirementsPanel from "./inspector/RequirementsPanel";
 import ExploreSection, { type ExploreParam } from "./inspector/ExploreSection";
 import { useInspectorPrefs } from "../state/useInspectorPrefs";
 import { useParamCommit } from "../hooks/useParamCommit";
+import { useAssemblyMeta } from "../hooks/useAssemblyMeta";
 import type { ModelInfo } from "../lib/artifacts";
 import { round1 } from "../lib/format";
 
@@ -137,6 +138,12 @@ export default function Inspector({
     : [];
   const anyHidden = objects.some((o) => hiddenIds.has(o.id));
 
+  // Assembly metadata (occurrences + joints) enriches the hierarchical tree. Only
+  // fetched for a nested assembly (any path id contains "/"); single-model
+  // workspaces and older engines return empty and the tree renders unchanged.
+  const isAssembly = objects.some((o) => o.id.includes("/"));
+  const assembly = useAssemblyMeta(model?.buildId ?? -1, isAssembly);
+
   return (
     <aside
       className="flex flex-col overflow-hidden border-l border-line bg-surface transition-[flex-basis,width] duration-[340ms] ease-out-soft"
@@ -227,7 +234,7 @@ export default function Inspector({
               <div className="px-3.5 pb-2.5 pt-0.5 text-xs text-ink-3">No model yet</div>
             ) : // A nested assembly (any path id contains "/") gets the hierarchical
             // tree; a flat single- or multi-part model keeps the unchanged list.
-            objects.some((o) => o.id.includes("/")) ? (
+            isAssembly ? (
               <AssemblyTree
                 objects={objects}
                 selectedId={selectedId}
@@ -236,6 +243,8 @@ export default function Inspector({
                 onToggleVisible={onToggleVisible}
                 materialOverrides={materialOverrides}
                 onSetPartMaterial={onSetPartMaterial}
+                families={assembly.families}
+                joints={assembly.joints}
               />
             ) : (
               <PartsList

@@ -248,6 +248,17 @@ pub async fn engine_get_params(
     call(&state, "get_params", serde_json::json!({})).await
 }
 
+/// Read the assembly's nested skeleton contract (params/scalars/frames/joints)
+/// plus per-child occurrences. Read-only; never rebuilds. The engine replies
+/// `{"ok":false,...}` for a single-model workspace, which the frontend treats as
+/// "no assembly metadata" rather than an error.
+#[tauri::command]
+pub async fn engine_get_assembly_tree(
+    state: State<'_, std::sync::Arc<Instances>>,
+) -> Result<String, String> {
+    call(&state, "get_assembly_tree", serde_json::json!({})).await
+}
+
 /// Read the focused workspace's live metadata straight from its engine (the single
 /// writer while open). Metadata *writes* go through the high-level commands in
 /// [`crate::workspaces`], which pick engine-vs-direct, so no set/name/dismiss

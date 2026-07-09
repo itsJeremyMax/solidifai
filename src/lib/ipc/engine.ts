@@ -59,6 +59,17 @@ export async function engineGetModelInfo(): Promise<unknown | null> {
 }
 
 /**
+ * Read the assembly's nested skeleton contract (scalars/frames/joints) plus each
+ * child's occurrences, straight from the engine. Read-only; never rebuilds.
+ * Returns the raw response string, or `null` when the engine isn't ready, the
+ * workspace is a single model (the engine replies `ok:false`), or the backend
+ * predates this command. Feed the result to `parseAssemblyTree`.
+ */
+export async function engineGetAssemblyTree(): Promise<string | null> {
+  return engineCall<string>("engine_get_assembly_tree");
+}
+
+/**
  * Run a DFM (manufacturability) analysis on the current model. Read-only — it
  * never triggers a rebuild. Returns the raw engine response string, or `null`
  * if the engine isn't ready / the call fails. Feed the result to
