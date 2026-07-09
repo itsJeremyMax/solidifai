@@ -5,17 +5,28 @@ moved (but otherwise unchanged) part is reused and only recomposed."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import weakref
 
-ENGINE_BUILD_VERSION = "b3"  # bump to invalidate all cached results across an engine change
+ENGINE_BUILD_VERSION = "b4"  # bump to invalidate all cached results across an engine change
 
 
 def _canon_scalar(v) -> str:
-    """Canonical string for a scalar input: float repr when numeric, else repr."""
+    """Canonical string for a scalar input, TYPE-TAGGED so distinct types never
+    collapse to one form. Without the tag ``True``, ``1`` and ``"1"`` all render
+    as ``"1.0"`` (float coercion), which is a false cache hit -> stale geometry
+    when a skeleton switches a published scalar's type. Tag order matters: bool is
+    a subclass of int, so it must be checked before the numeric branch."""
+    if isinstance(v, bool):
+        return f"bool:{v}"
+    if isinstance(v, str):
+        # check before float() so a numeric string ("1") never coerces to num:1.0
+        return f"str:{v!r}"
     try:
-        return repr(float(v))
+        return f"num:{float(v)!r}"
     except (TypeError, ValueError):
-        return repr(v)
+        return f"repr:{v!r}"
 
 
 def _is_geometry(v) -> bool:
@@ -30,11 +41,26 @@ def _is_geometry(v) -> bool:
     return isinstance(v, Shape)
 
 
+# Digest memo keyed by shape IDENTITY (build123d shapes hash/eq by identity). A
+# published profile handed to several parts in one compose is serialized once, not
+# once per consumer (O(parts x shapes) -> O(distinct shapes)). Weak keys so an
+# entry vanishes when its shape is collected -- no cross-build staleness and no id
+# reuse, since a new skeleton run builds fresh shape objects.
+_DIGEST_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
 def _shape_digest(shape) -> str:
     """SHA-256 of a shape's BREP bytes. Deterministic for an identically-built
     shape, so the same published profile hashes equal (cache hit) and a changed
-    one differs (rebuild). Raises a clean ValueError on an empty/invalid shape
-    rather than letting a raw OCC error escape."""
+    one differs (rebuild). Memoized by shape identity within/across a compose so
+    each distinct shape is serialized once. Raises a clean ValueError on an
+    empty/invalid shape rather than letting a raw OCC error escape."""
+    try:
+        hit = _DIGEST_MEMO.get(shape)
+    except TypeError:  # a shape that is not weak-referenceable/hashable: skip memo
+        hit = None
+    if hit is not None:
+        return hit
     import io
 
     from build123d import export_brep
@@ -52,16 +78,28 @@ def _shape_digest(shape) -> str:
         raise ValueError(
             "a published shape could not be serialized for hashing (empty or invalid geometry)"
         )
-    return hashlib.sha256(data).hexdigest()
+    digest = hashlib.sha256(data).hexdigest()
+    # non-weak-referenceable shape: correctness holds, just no memo
+    with contextlib.suppress(TypeError):
+        _DIGEST_MEMO[shape] = digest
+    return digest
 
 
 def part_key(source_text: str, inputs: dict, path: str = "", assets: dict | None = None) -> str:
-    """Stable key for a leaf part: path + source + canonical scalar inputs +
-    consumed-geometry hashes + asset content hashes + engine version. Path
-    disambiguates two parts with identical code. Attach frame is intentionally
-    excluded -- a moved but otherwise unchanged part is a cache hit and only needs
-    recomposition. A consumed published shape DOES change the built geometry, so its
-    BREP hash is part of the key."""
+    """Stable content key for a leaf part: source + canonical scalar inputs +
+    consumed-geometry BREP hashes + asset content hashes + engine version.
+
+    ``path`` is accepted for call-site compatibility but is DELIBERATELY NOT part
+    of the key: content (source + inputs + shape digests + asset fingerprints +
+    engine version) uniquely determines a pure part's geometry. Folding in the
+    node-relative path both defeated instancing dedup (20 identical brackets got
+    20 keys) and created a false cross-node invariant (two different sub-assemblies
+    with an identically-wired part collided on one node-relative path). Dropping it
+    makes reuse safe and removes the collision.
+
+    The attach frame is likewise excluded -- a moved but otherwise unchanged part
+    is a cache hit and only needs recomposition. A consumed published shape DOES
+    change the built geometry, so its BREP hash is part of the key."""
     scalars: dict = {}
     shapes: dict = {}
     for k, v in inputs.items():
@@ -69,10 +107,7 @@ def part_key(source_text: str, inputs: dict, path: str = "", assets: dict | None
     items = ";".join(f"{k}={_canon_scalar(v)}" for k, v in sorted(scalars.items()))
     geom_items = ";".join(f"{k}={_shape_digest(v)}" for k, v in sorted(shapes.items()))
     asset_items = ";".join(f"{k}={v}" for k, v in sorted((assets or {}).items()))
-    blob = (
-        f"{ENGINE_BUILD_VERSION}\x00{path}\x00{source_text}"
-        f"\x00{items}\x00{geom_items}\x00{asset_items}"
-    )
+    blob = f"{ENGINE_BUILD_VERSION}\x00{source_text}\x00{items}\x00{geom_items}\x00{asset_items}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 

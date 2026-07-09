@@ -34,7 +34,10 @@ def build(inputs):
 def _ws(tmp_path):
     _write(tmp_path, "skeleton.py", SKELETON)
     _write(tmp_path, "parts/a.py", PART)
-    _write(tmp_path, "parts/b.py", PART)
+    # b is a DISTINCT part (different show() name, identical geometry) so a and b
+    # get separate content keys -- this suite tests per-part incremental caching,
+    # not the identical-part instancing dedup (covered in test_assembly_enumerate).
+    _write(tmp_path, "parts/b.py", PART.replace('name="P"', 'name="Q"'))
     _write(
         tmp_path,
         "assembly.json",
@@ -66,7 +69,7 @@ def _ws(tmp_path):
 def test_no_cache_behaves_as_before(tmp_path):
     _ws(tmp_path)
     objs = graph.build_node(str(tmp_path), params={}, parent=None)
-    assert sorted(o.name for o in objs) == ["a/P", "b/P"]
+    assert sorted(o.name for o in objs) == ["a/P", "b/Q"]
 
 
 def test_second_build_same_params_all_hits(tmp_path):
@@ -89,7 +92,7 @@ def test_frame_only_change_is_all_hits(tmp_path):
     objs = graph.build_node(str(tmp_path), params={"gap": 30.0}, parent=None, cache=cache)
     assert cache.misses == m0  # no rebuilds
     by = {o.name: o.shape.bounding_box().center().Z for o in objs}
-    assert by["b/P"] - by["a/P"] == 30.0  # b moved to the new frame (recompose)
+    assert by["b/Q"] - by["a/P"] == 30.0  # b moved to the new frame (recompose)
 
 
 def test_input_change_rebuilds_only_affected(tmp_path):

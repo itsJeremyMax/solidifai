@@ -18,13 +18,19 @@ from solidifai_engine.assembly.cache import asset_fingerprint, part_key
 WARM_TIMEOUT_S = 120.0
 
 
-def enumerate_part_builds(node_dir, *, params, parent, cache, disk):
+def enumerate_part_builds(node_dir, *, params, parent, cache, disk, workspace_root=None):
     """Dry-run the DAG (skeletons only) and return [(part_path, inputs, key)] for
-    leaf parts not already in cache (L1) or disk (L2). Builds no geometry."""
+    leaf parts not already in cache (L1) or disk (L2). Builds no geometry.
+    workspace_root is the tree root, threaded so nested skeletons resolve assets
+    against it (matches graph.build_node)."""
+    ws_root = workspace_root or node_dir
     man = manifest_mod.load_manifest(node_dir)
     if man.skeleton:
         skel = runner.run_skeleton(
-            os.path.join(node_dir, man.skeleton), params=params, parent=parent
+            os.path.join(node_dir, man.skeleton),
+            params=params,
+            parent=parent,
+            workspace_root=ws_root,
         )
     else:
         skel = SkeletonResult()
@@ -37,7 +43,7 @@ def enumerate_part_builds(node_dir, *, params, parent, cache, disk):
             part_path = os.path.join(node_dir, child.source)
             with open(part_path, encoding="utf-8") as f:
                 src = f.read()
-            key = part_key(src, inputs, path=child.source)
+            key = part_key(src, inputs)
             in_l1 = cache is not None and cache._store.get(key) is not None
             in_l2 = disk is not None and disk.peek(key)
             if not in_l1 and not in_l2:
@@ -51,6 +57,7 @@ def enumerate_part_builds(node_dir, *, params, parent, cache, disk):
                     parent=inputs,
                     cache=cache,
                     disk=disk,
+                    workspace_root=ws_root,
                 )
             )
     return out

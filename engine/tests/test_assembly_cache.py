@@ -20,6 +20,45 @@ def test_part_key_differs_on_source_or_inputs():
     assert part_key("SRC-A", {"w": 1.0, "x": 0.0}) != base  # input set changed
 
 
+def test_part_key_ignores_path_so_identical_parts_dedupe():
+    # Two identically-coded, identically-wired parts at DIFFERENT node paths must
+    # share a key: content (source+inputs) determines a pure part's geometry, so
+    # instancing dedup works and 20 identical brackets kernel-build once.
+    k_a = part_key("SRC", {"w": 1.0}, path="parts/a.py")
+    k_b = part_key("SRC", {"w": 1.0}, path="hinge/parts/b.py")
+    assert k_a == k_b
+    # ...and the key with no path at all matches too (path is not in the key).
+    assert part_key("SRC", {"w": 1.0}) == k_a
+
+
+def test_canon_scalar_type_tags_bool_num_str():
+    # True / 1 / "1" must NOT collapse to one canonical form (false cache hits ->
+    # stale geometry when a skeleton switches a published scalar's type).
+    from solidifai_engine.assembly.cache import _canon_scalar
+
+    assert _canon_scalar(True) != _canon_scalar(1)
+    assert _canon_scalar(1) != _canon_scalar("1")
+    assert _canon_scalar(True) != _canon_scalar("1")
+    # and the whole key reflects that distinction
+    assert part_key("SRC", {"x": True}) != part_key("SRC", {"x": 1})
+    assert part_key("SRC", {"x": 1}) != part_key("SRC", {"x": "1"})
+
+
+def test_shape_digest_memoized_same_value(tmp_path):
+    # Memoization must not change the digest: the same shape identity hashes once
+    # and equal shapes still yield equal keys.
+    from build123d import Rectangle
+
+    from solidifai_engine.assembly.cache import _shape_digest
+
+    r = Rectangle(40, 30)
+    d1 = _shape_digest(r)
+    d2 = _shape_digest(r)  # served from the identity memo
+    assert d1 == d2
+    # a distinct-but-identical shape produces the same digest (content-addressed)
+    assert _shape_digest(Rectangle(40, 30)) == d1
+
+
 def test_cache_get_put_and_counters():
     c = NodeCache()
     assert c.get("k") is None

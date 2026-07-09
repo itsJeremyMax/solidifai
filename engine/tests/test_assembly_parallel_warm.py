@@ -31,7 +31,9 @@ def _ws(tmp_path, n=4):
     _write(tmp_path, "skeleton.py", SKELETON)
     children = []
     for i in range(n):
-        _write(tmp_path, f"parts/p{i}.py", PART)
+        # distinct source per part (unique show() name) so each has its own content
+        # key -- this exercises warming N INDEPENDENT parts, not one deduped instance.
+        _write(tmp_path, f"parts/p{i}.py", PART.replace('name="P"', f'name="P{i}"'))
         children.append(
             {
                 "id": f"p{i}",

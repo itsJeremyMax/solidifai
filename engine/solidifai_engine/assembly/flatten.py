@@ -15,6 +15,11 @@ Approach (self-contained, chosen over importing the engine runtime):
     geometry is never re-derived by hand.
   - Children are placed at their attach frame with Shape.moved() (frame
     COMPOSE, matching the composer) and shown with their "<child>/<name>" path id.
+    Per-segment id slugging + collision dedup is NOT re-implemented here: the flat
+    model calls show() with the composed path names in the same order as the
+    engine, so the flat Session's render (render._node_ids) produces byte-identical
+    ids -- verified against the assembly's own model.json. A part that produces no
+    geometry raises, mirroring the engine's per-part guard (see _run_part below).
 
 Importing ``solidifai_engine.assembly.graph`` from the exported model was the
 alternative; it was rejected because it couples a user-facing model.py to engine
@@ -144,11 +149,17 @@ def _run_skeleton(src, params, parent):
     return build_fn(**values)
 
 
-def _run_part(src, inputs):
+def _run_part(src, inputs, part_id):
     ns = _exec(src)
     with build_scope() as scope:
         ns["build"](dict(inputs))
-        return list(scope.objects)
+        objs = list(scope.objects)
+    # Mirror the engine's per-part "no geometry" guard (graph.build_child): a part
+    # that shows nothing (or only non-solids) is an error, not a silently-dropped
+    # part -- otherwise this "exact reproduction" would diverge from the assembly.
+    if not objs or sum(len(o.shape.solids()) for o in objs) == 0:
+        raise ValueError(part_id + ": part produced no geometry; did you forget show()?")
+    return objs
 
 
 def _place(objects, at, prefix):
@@ -172,7 +183,7 @@ def _run_node(node_key, params, parent):
         if child["kind"] == "part":
             inputs = dict(inputs)
             inputs.update(skel.resolve_shapes(child.get("shape_inputs", [])))
-            objs = _run_part(child["src"], inputs)
+            objs = _run_part(child["src"], inputs, child["id"])
         else:
             objs = _run_node(child["node"], {{}}, inputs)
         placed.extend(_place(objs, at, child["id"]))

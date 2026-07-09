@@ -70,12 +70,34 @@ def test_enumerate_lists_uncached_parts(tmp_path):
     assert {round(m[1]["w"], 1) for m in misses} == {20.0}
 
 
-def test_enumerate_skips_cached_parts(tmp_path):
+def test_identical_parts_share_one_content_key(tmp_path):
+    # a.py and b.py are byte-identical with identical inputs: content-addressing
+    # (path dropped from the key) collapses them to ONE key, so caching it skips
+    # BOTH -- this is the instancing dedup (20 identical brackets build once).
     _ws(tmp_path)
     cache = NodeCache()
     misses_all = parallel.enumerate_part_builds(
         str(tmp_path), params={}, parent=None, cache=None, disk=None
     )
+    keys = {m[2] for m in misses_all}
+    assert len(keys) == 1  # identical source+inputs -> single shared key
+    cache.put(next(iter(keys)), ["dummy"])
+    misses = parallel.enumerate_part_builds(
+        str(tmp_path), params={}, parent=None, cache=cache, disk=None
+    )
+    assert misses == []  # the shared key is cached -> neither identical part rebuilds
+
+
+def test_distinct_parts_have_distinct_keys(tmp_path):
+    # A genuinely different part source yields a different key even at the same
+    # inputs, so caching one does not mask the other.
+    _ws(tmp_path)
+    (tmp_path / "parts" / "b.py").write_text(PART.replace('name="P"', 'name="Q"'), encoding="utf-8")
+    cache = NodeCache()
+    misses_all = parallel.enumerate_part_builds(
+        str(tmp_path), params={}, parent=None, cache=None, disk=None
+    )
+    assert len({m[2] for m in misses_all}) == 2
     pa = next(m for m in misses_all if "a.py" in m[0])
     cache.put(pa[2], ["dummy"])
     misses = parallel.enumerate_part_builds(

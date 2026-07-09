@@ -25,10 +25,15 @@ def _exec_file(path: str) -> dict:
     return ns
 
 
-def run_skeleton(skeleton_path: str, *, params: dict, parent: dict | None) -> SkeletonResult:
+def run_skeleton(
+    skeleton_path: str, *, params: dict, parent: dict | None, workspace_root: str | None = None
+) -> SkeletonResult:
     # NOTE: the parameter name "parent" is RESERVED -- the runner injects the
     # parent skeleton's scalar dict via this name. Don't use it for unrelated params.
-    solidifai.set_workspace_root(os.path.dirname(skeleton_path))
+    # workspace_root is the TREE root (passed down for nested nodes); it must be the
+    # same for every node so import_cad() resolves assets consistently. Falls back to
+    # this node's own dir only when unset (a root/standalone skeleton).
+    solidifai.set_workspace_root(workspace_root or os.path.dirname(skeleton_path))
     ns = _exec_file(skeleton_path)
     build_fn = ns.get("build")
     if not callable(build_fn):
@@ -47,14 +52,17 @@ def run_skeleton(skeleton_path: str, *, params: dict, parent: dict | None) -> Sk
     return result
 
 
-def run_part(part_path: str, *, inputs: dict):
+def run_part(part_path: str, *, inputs: dict, workspace_root: str | None = None):
     """Build one part in an isolated scope and return (objects, assets). The part
     sees only `inputs`; its show() calls are captured by build_scope(), so the
     build is a pure function of (source, inputs) with no global side effects.
-    assets is the list of import_cad paths recorded by the scope."""
-    solidifai.set_workspace_root(
-        os.path.dirname(os.path.dirname(part_path))
-    )  # workspace root, not parts/
+    assets is the list of import_cad paths recorded by the scope.
+
+    workspace_root is the TREE root. A nested sub-assembly part lives at
+    <root>/<node>/parts/<id>.py, so dirname(dirname(part_path)) is the NODE dir,
+    not the workspace root -- passing the true root keeps import_cad() resolution
+    symmetric with root-level parts. Falls back to the two-up dir only when unset."""
+    solidifai.set_workspace_root(workspace_root or os.path.dirname(os.path.dirname(part_path)))
     ns = _exec_file(part_path)
     build_fn = ns.get("build")
     if not callable(build_fn):

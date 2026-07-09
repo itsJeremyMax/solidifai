@@ -11,20 +11,35 @@ from solidifai_engine.assembly import compose, runner
 from solidifai_engine.assembly import manifest as manifest_mod
 
 
-def build_child(node_dir: str, skel, child, *, cache=None, disk=None) -> tuple[list, str | None]:
+def build_child(
+    node_dir: str, skel, child, *, cache=None, disk=None, workspace_root: str | None = None
+) -> tuple[list, str | None]:
     """Build (or fetch from cache) one part child's local-frame objects against an
     already-run skeleton. Returns (objects, key); key is the content-cache key for a
     part (None for a sub-assembly, which is not cached at this level).
 
     This is the single source of truth for the per-part cache key and the L1->L2
     get / run / put sequence, so an isolated build (the authoring round) and the
-    whole-assembly compose use IDENTICAL keys and reuse each other's results."""
+    whole-assembly compose use IDENTICAL keys and reuse each other's results.
+
+    workspace_root is the tree root, threaded down so nested parts resolve assets
+    against it (not their node dir)."""
     inputs = skel.resolve_inputs(child.inputs)
     if child.kind != "part":
         # A sub-assembly: recurse, passing this node's resolved scalars as the child's
         # parent. Published shapes flow to parts, not across the sub-assembly boundary.
         sub_dir = os.path.join(node_dir, child.source)
-        return build_node(sub_dir, params={}, parent=inputs, cache=cache, disk=disk), None
+        return (
+            build_node(
+                sub_dir,
+                params={},
+                parent=inputs,
+                cache=cache,
+                disk=disk,
+                workspace_root=workspace_root,
+            ),
+            None,
+        )
 
     # A part also consumes any skeleton shapes it declared, merged into the same
     # inputs dict it already receives (build(inputs) is unchanged).
@@ -39,7 +54,7 @@ def build_child(node_dir: str, skel, child, *, cache=None, disk=None) -> tuple[l
 
         with open(part_path, encoding="utf-8") as f:
             src = f.read()
-        key = part_key(src, inputs, path=child.source)
+        key = part_key(src, inputs)
         if cache is not None:
             objs = cache.get(key)
         if objs is None and disk is not None:
@@ -53,7 +68,7 @@ def build_child(node_dir: str, skel, child, *, cache=None, disk=None) -> tuple[l
     if objs is None:
         from solidifai_engine.assembly.cache import asset_fingerprint
 
-        objs, assets = runner.run_part(part_path, inputs=inputs)
+        objs, assets = runner.run_part(part_path, inputs=inputs, workspace_root=workspace_root)
         # A part that shows nothing (or only non-solids) has no geometry to
         # compose. Catch it here with a readable message rather than letting
         # an empty Compound reach export_brep, which raises an opaque OCC
@@ -68,18 +83,34 @@ def build_child(node_dir: str, skel, child, *, cache=None, disk=None) -> tuple[l
     return objs, key
 
 
-def build_node(node_dir: str, *, params: dict, parent: dict | None, cache=None, disk=None) -> list:
+def build_node(
+    node_dir: str,
+    *,
+    params: dict,
+    parent: dict | None,
+    cache=None,
+    disk=None,
+    workspace_root: str | None = None,
+) -> list:
+    # The root call passes no workspace_root; this node IS the tree root, so its dir
+    # becomes the root that every nested node resolves assets against.
+    ws_root = workspace_root or node_dir
     man = manifest_mod.load_manifest(node_dir)
 
     if man.skeleton:
         skel = runner.run_skeleton(
-            os.path.join(node_dir, man.skeleton), params=params, parent=parent
+            os.path.join(node_dir, man.skeleton),
+            params=params,
+            parent=parent,
+            workspace_root=ws_root,
         )
     else:
         skel = SkeletonResult()  # degenerate node: parts attach at origin, no shared scalars
 
     placed: list = []
     for child in man.children:
-        objs, _key = build_child(node_dir, skel, child, cache=cache, disk=disk)
+        objs, _key = build_child(
+            node_dir, skel, child, cache=cache, disk=disk, workspace_root=ws_root
+        )
         placed.extend(compose.place(objs, at=skel.frame_for(child.attach), path_prefix=child.id))
     return placed

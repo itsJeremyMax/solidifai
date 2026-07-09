@@ -103,6 +103,54 @@ def test_flatten_writes_file_when_requested(tmp_path):
         assert f.read() == res["code"]
 
 
+def test_flatten_mirrors_no_geometry_guard(tmp_path):
+    # A part that shows nothing makes the ENGINE build raise "no geometry". The
+    # flattened model must mirror that guard -- otherwise it silently drops the
+    # empty part and reports success (divergent "exact reproduction").
+    root = tmp_path / "asm_guard"
+    root.mkdir()
+    (root / "parts").mkdir()
+    (root / "skeleton.py").write_text(SKEL_2FRAME, encoding="utf-8")
+    (root / "parts" / "base.py").write_text(BASE_PART, encoding="utf-8")
+    (root / "parts" / "empty.py").write_text("def build(inputs):\n    pass\n", encoding="utf-8")
+    import json as _j
+
+    (root / "assembly.json").write_text(
+        _j.dumps(
+            {
+                "version": 2,
+                "skeleton": "skeleton.py",
+                "children": [
+                    {
+                        "id": "base",
+                        "kind": "part",
+                        "source": "parts/base.py",
+                        "attach": "base_frame",
+                        "inputs": ["body_w", "wall"],
+                    },
+                    {
+                        "id": "empty",
+                        "kind": "part",
+                        "source": "parts/empty.py",
+                        "attach": "lid_frame",
+                        "inputs": [],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = Session(str(root / ".solidifai" / "artifacts"), model_path=str(root / "assembly.json"))
+    res = s.export_flat_model()
+    assert res["ok"] is True  # export is static; the guard fires at run time
+
+    s2 = _flat_session(tmp_path)
+    out = s2.execute_script(res["code"])
+    assert out["ok"] is False  # mirrors the engine's per-part failure
+    assert "no geometry" in out["error"].lower()
+    assert "empty" in out["error"]  # names the offending part, like the engine
+
+
 def test_flatten_requires_assembly(tmp_path):
     flat_root = tmp_path / "single"
     flat_root.mkdir()
