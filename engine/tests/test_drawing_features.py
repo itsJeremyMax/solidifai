@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from build123d import Box, Cylinder, Pos, Rot
+from build123d import Align, Box, Cylinder, Plane, Pos, Rot, mirror
 
 from solidifai_engine.drawing import features
 
@@ -16,11 +16,24 @@ class _Obj:  # mimics session objects: .shape/.name/.material/.color
 
 
 def _plate_with_two_holes():
-    # 40x20x4 plate, two 5mm-dia through holes at x=-10 and x=+10.
+    # 40x20x4 plate, two 5mm-dia through holes at x=-10 and x=+10. Achiral: two
+    # mirror planes, so it is congruent to its own reflection.
     plate = Box(40, 20, 4)
     for dx in (-10, 10):
         plate -= Pos(dx, 0, 0) * Cylinder(radius=2.5, height=10)
     return plate
+
+
+def _chiral_bracket():
+    # Three arms of distinct length meeting at a corner (stepped in Z) plus an
+    # off-axis hole -> no mirror plane, so it is genuinely handed. Its enantiomer
+    # (mirror image) cannot be superimposed by any rotation/translation.
+    b = (
+        Box(30, 4, 6, align=(Align.MIN, Align.CENTER, Align.MIN))
+        + Box(4, 22, 10, align=(Align.CENTER, Align.MIN, Align.MIN))
+        + Box(4, 4, 16, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    )
+    return b - Pos(20, 0, 3) * Rot(90, 0, 0) * Cylinder(radius=1.5, height=20)
 
 
 def test_extract_holes_counts_and_diameters():
@@ -47,6 +60,43 @@ def test_signature_groups_identical_parts_regardless_of_pose():
     assert features.part_signature(base) == features.part_signature(moved)
     assert features.part_signature(base) == features.part_signature(turned)
     assert features.part_signature(base) != features.part_signature(distinct)
+
+
+def test_chiral_part_and_mirror_get_distinct_signatures():
+    # A handed part and its enantiomer share volume/area/face/edge counts AND the
+    # (reflection-invariant) inertia tensor -- only chirality separates them.
+    part = _chiral_bracket()
+    flipped = mirror(part, Plane.YZ)
+    assert features.part_signature(part) != features.part_signature(flipped)
+
+
+def test_chiral_part_and_mirror_do_not_merge_into_one_group():
+    part = _chiral_bracket()
+    objs = [_Obj(part, "Bracket L"), _Obj(mirror(part, Plane.YZ), "Bracket R")]
+    groups = features.group_parts(objs)
+    assert len(groups) == 2
+    assert all(g["qty"] == 1 for g in groups)
+
+
+def test_chiral_part_groups_with_moved_or_rotated_copy():
+    part = _chiral_bracket()
+    objs = [
+        _Obj(part, "Bracket 1"),
+        _Obj(Pos(60, 5, -8) * part, "Bracket 2"),
+        _Obj(Rot(41, -27, 63) * part, "Bracket 3"),
+    ]
+    groups = features.group_parts(objs)
+    assert len(groups) == 1
+    assert groups[0]["qty"] == 3
+
+
+def test_achiral_part_and_mirror_still_group_together():
+    # A part with a mirror plane == its own reflection, so it must stay one group.
+    plate = _plate_with_two_holes()
+    objs = [_Obj(plate, "Plate 1"), _Obj(mirror(plate, Plane.YZ), "Plate 2")]
+    groups = features.group_parts(objs)
+    assert len(groups) == 1
+    assert groups[0]["qty"] == 2
 
 
 def test_base_name_strips_only_separated_index():
