@@ -297,6 +297,20 @@ class History:
         walk(commit.tree, "")
         return out
 
+    @staticmethod
+    def _atomic_write(abspath: str, data: bytes) -> None:
+        """Write bytes via a temp sibling + os.replace, so a reader (or a crash)
+        never observes a half-written file (matches the rest of the codebase)."""
+        parent = os.path.dirname(abspath)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = abspath + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, abspath)
+
     def _restore_to(self, idx: int) -> None:
         sha = self.commits[idx]
         is_assembly = os.path.exists(os.path.join(self.root, "assembly.json"))
@@ -307,8 +321,7 @@ class History:
                 data = self._blob_at(sha, path)
                 abspath = os.path.join(self.root, path)
                 if data is not None:
-                    with open(abspath, "wb") as f:
-                        f.write(data)
+                    self._atomic_write(abspath, data)
                 elif os.path.exists(abspath):
                     os.remove(abspath)  # file absent in this snapshot -> match it
         # Move the branch so a later commit parents on this state (editor undo).
@@ -333,12 +346,7 @@ class History:
         # below is defense in depth in case an escaping path ever reaches here.
         current = set(_assembly_fileset(self.root))
         for rel, data in target.items():
-            abspath = os.path.join(self.root, rel)
-            parent = os.path.dirname(abspath)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(abspath, "wb") as f:
-                f.write(data)
+            self._atomic_write(os.path.join(self.root, rel), data)
         removed_dirs: set[str] = set()
         for rel in current - set(target):
             abspath = os.path.join(self.root, rel)
@@ -366,6 +374,64 @@ class History:
                 except OSError:
                     break
                 cur = os.path.dirname(cur)
+
+    # -- restore transactionality -------------------------------------------
+    # A restore (undo/redo/goto) writes files, moves the branch, and saves the
+    # timeline BEFORE the session tries to rebuild. If the rebuild fails (e.g. an
+    # older state depends on an asset since deleted), the timeline and disk must
+    # NOT move, or the cursor drifts and the next commit stages code+geometry that
+    # never coexisted. snapshot_state/revert_state let the session apply the restore
+    # optimistically and roll it back cleanly when the rebuild fails.
+
+    def _restore_fileset(self) -> list[str]:
+        """Repo-relative files a restore may write or delete: the full assembly
+        fileset for an assembly workspace, else the single-model allowlist."""
+        if os.path.exists(os.path.join(self.root, "assembly.json")):
+            return _assembly_fileset(self.root)
+        return list(RESTORE)
+
+    def snapshot_state(self) -> dict:
+        """Capture what a restore mutates: the timeline index, the branch tip, and
+        the current on-disk bytes of every file a restore could touch (None for a
+        file that is absent). Paired with revert_state."""
+        try:
+            branch: bytes | None = self._git.refs[self._branch]
+        except KeyError:
+            branch = None
+        files: dict[str, bytes | None] = {}
+        for rel in self._restore_fileset():
+            abspath = os.path.join(self.root, rel)
+            try:
+                with open(abspath, "rb") as f:
+                    files[rel] = f.read()
+            except OSError:
+                files[rel] = None
+        return {"index": self.index, "branch": branch, "files": files}
+
+    def revert_state(self, snap: dict) -> None:
+        """Undo a restore captured by snapshot_state: rewrite the on-disk fileset
+        exactly (deleting any file the failed restore introduced), then move the
+        branch and index back and re-save the timeline. Leaves disk, git tip, and
+        timeline as they were before the restore, so a failed undo/redo/goto is a
+        true no-op."""
+        files: dict[str, bytes | None] = snap["files"]
+        for rel, data in files.items():
+            abspath = os.path.join(self.root, rel)
+            if data is None:
+                with contextlib.suppress(OSError):
+                    os.remove(abspath)
+            else:
+                self._atomic_write(abspath, data)
+        # Delete any file the failed restore wrote that the pre-restore state lacked.
+        for rel in set(self._restore_fileset()) - set(files):
+            abspath = os.path.join(self.root, rel)
+            if _within_root(self.root, abspath):
+                with contextlib.suppress(OSError):
+                    os.remove(abspath)
+        if snap["branch"] is not None:
+            self._git.refs[self._branch] = ObjectID(snap["branch"])
+        self.index = snap["index"]
+        self._save_timeline()
 
     def can_undo(self) -> bool:
         return self.index > 0

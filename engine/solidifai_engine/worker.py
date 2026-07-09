@@ -23,6 +23,7 @@ cross the RPC socket) come back over the pipe.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import multiprocessing as mp
 import os
@@ -56,6 +57,22 @@ REFRESH_METHODS = frozenset(
     }
 )
 
+# Structural mutations whose source+manifest are written to disk BEFORE the build
+# that validates them. If the build natively crashes the worker, its in-worker
+# rollback never runs, so the poisoned files stay on disk and every respawned
+# worker crashes rebuilding them on startup -- bricking the workspace forever. The
+# parent journals the pre-mutation on-disk state before forwarding these and rolls
+# back from the parent side when the call ends in a KernelCrash.
+JOURNALED_METHODS = frozenset({"set_part", "set_skeleton"})
+
+# A worker writes this marker in artifacts_dir just before its startup rebuild and
+# removes it right after. A NATIVE crash during the rebuild is uncatchable, so the
+# marker survives; the next spawned worker sees it and comes up model-less-but-
+# serving (skipping the rebuild) so the agent can remove/fix the poisoned state
+# instead of every respawn dying in startup. Healthy workspaces never see it, so
+# the eager last-good reload is preserved for them.
+_STARTUP_SENTINEL = "startup.lock"
+
 # Aggregate operations that run MANY builds inside a single RPC: a parameter
 # sweep, an optimize/converge loop, a motion range. One per-build ceiling would
 # kill a legitimate long run partway (each of ~24 candidates rebuilds+measures),
@@ -71,6 +88,12 @@ _DEFAULT_TIMEOUT = float(os.environ.get("SOLIDIFAI_BUILD_TIMEOUT", "180"))
 # Larger ceiling for LONG_RUNNING_METHODS, which run many builds per call.
 _LONGRUN_TIMEOUT = float(os.environ.get("SOLIDIFAI_LONGRUN_TIMEOUT", "1200"))
 _SPAWN_READY_TIMEOUT = float(os.environ.get("SOLIDIFAI_WORKER_START_TIMEOUT", "60"))
+# Startup rebuilds the model synchronously BEFORE the worker replies "ready", so
+# the spawn-ready budget must cover a legal build or a model that builds in
+# (ready, build] seconds could never be reloaded -- reopen/crash would loop on
+# "did not start in time" forever. The effective budget is at least the per-build
+# timeout plus this margin, whatever the (possibly smaller) ready override is.
+_START_MARGIN = 30.0
 
 
 class KernelCrash(RuntimeError):
@@ -115,10 +138,29 @@ def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -
     session = Session(artifacts_dir, model_path=model_path)
     if root is not None:
         materials.configure_resolver(root)
-    try:
-        session.startup()  # reload last-good model + settings (never raises)
-    except Exception:  # noqa: BLE001 - belt and suspenders; startup already guards
-        log.exception("worker startup failed")
+    # Session.__init__ creates artifacts_dir, so the sentinel path is writable now.
+    sentinel = os.path.join(artifacts_dir, _STARTUP_SENTINEL)
+    if os.path.exists(sentinel):
+        # A previous worker crashed INSIDE startup rebuilding this model (a native
+        # fault leaves the marker behind). Come up model-less-but-serving so the
+        # agent can remove/fix the poisoned state instead of respawns dying here
+        # forever. Clear it so a later healthy reopen eagerly reloads again. The
+        # last-good model.json on disk still serves get_model_info in the meantime.
+        log.warning("skipping model reload: a previous startup crashed on this model")
+        with contextlib.suppress(OSError):
+            os.remove(sentinel)
+    else:
+        try:
+            with open(sentinel, "w"):
+                pass
+            session.startup()  # reload last-good model + settings (never raises)
+        except Exception:  # noqa: BLE001 - belt and suspenders; startup already guards
+            log.exception("worker startup failed")
+        finally:
+            # Reached on a caught error or clean return; a NATIVE crash skips this
+            # and deliberately leaves the marker for the next spawn to see.
+            with contextlib.suppress(OSError):
+                os.remove(sentinel)
     conn.send(("ready", None))
 
     while True:
@@ -145,11 +187,16 @@ class SessionProxy:
         *,
         timeout: float = _DEFAULT_TIMEOUT,
         longrun_timeout: float = _LONGRUN_TIMEOUT,
+        start_timeout: float = _SPAWN_READY_TIMEOUT,
     ):
         self._artifacts_dir = artifacts_dir
         self._model_path = model_path
         self._timeout = timeout
         self._longrun_timeout = longrun_timeout
+        # Startup builds the model before replying "ready", so the ready budget
+        # must cover a legal build; otherwise a model that builds in (start, build]
+        # seconds bricks every reopen. Never below the per-build timeout + margin.
+        self._start_timeout = max(start_timeout, timeout + _START_MARGIN)
         self._ctx = mp.get_context("spawn")  # fresh interpreter: safe cross-platform
         self._proc: mp.process.BaseProcess | None = None
         self._conn: Connection | None = None
@@ -168,7 +215,7 @@ class SessionProxy:
         )
         proc.start()
         child.close()  # only the worker keeps the child end
-        if not parent.poll(_SPAWN_READY_TIMEOUT):
+        if not parent.poll(self._start_timeout):
             _kill(proc)
             parent.close()
             raise KernelCrash("build worker did not start in time")
@@ -234,22 +281,78 @@ class SessionProxy:
             if time.monotonic() > deadline:
                 raise KernelCrash(f"the build ran past the {int(timeout)}s limit and was stopped")
 
+    def _journal(self, method: str, args: tuple) -> list[tuple[str, bytes | None]] | None:
+        """Snapshot the on-disk files a structural mutation will overwrite, as
+        ``[(abspath, prior_bytes_or_None)]``, so the parent can roll them back if
+        the worker dies mid-mutation (its own in-worker rollback never runs on a
+        native crash). Returns None when there is nothing to journal."""
+        if self._model_path is None:
+            return None
+        root = os.path.dirname(os.path.abspath(self._model_path))
+        rels = ["assembly.json"]
+        if method == "set_part":
+            part_id = args[0] if args else None
+            if not isinstance(part_id, str):
+                return None
+            rels.append(os.path.join("parts", f"{part_id}.py"))
+        else:  # set_skeleton also (re)creates assembly.json + switches .gitignore
+            rels.extend(["skeleton.py", ".gitignore"])
+        snapshot: list[tuple[str, bytes | None]] = []
+        for rel in rels:
+            path = os.path.join(root, rel)
+            try:
+                with open(path, "rb") as f:
+                    snapshot.append((path, f.read()))
+            except OSError:
+                snapshot.append((path, None))
+        return snapshot
+
+    @staticmethod
+    def _rollback_journal(journal: list[tuple[str, bytes | None]]) -> None:
+        """Restore each journaled file to its pre-mutation state: rewrite prior
+        bytes (atomically), or delete a file that did not exist before."""
+        for path, data in journal:
+            try:
+                if data is None:
+                    if os.path.exists(path):
+                        os.remove(path)
+                else:
+                    parent = os.path.dirname(path)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    tmp = path + ".tmp"
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, path)
+            except OSError:  # best-effort; a rollback failure must not mask the crash
+                pass
+
     def _call(self, method: str, args: tuple, kwargs: dict) -> Any:
         self._ensure()
         assert self._conn is not None and self._proc is not None
         refresh = method in REFRESH_METHODS
         timeout = self._longrun_timeout if method in LONG_RUNNING_METHODS else self._timeout
+        journal = self._journal(method, args) if method in JOURNALED_METHODS else None
         try:
             self._conn.send((method, args, kwargs, refresh))
         except (OSError, BrokenPipeError, ValueError):
             self._teardown()
+            if journal is not None:
+                self._rollback_journal(journal)
             raise KernelCrash("the modeling kernel crashed on that operation") from None
         try:
             tag, payload = self._recv_result(self._conn, self._proc, timeout)
-        except KernelCrash:
+        except KernelCrash as exc:
             # The worker is dead or wedged: drop it so the next call respawns a
-            # fresh one that reloads the last good model.
+            # fresh one that reloads the last good model. For a journaled mutation,
+            # roll the poisoned files back from the parent (the worker's own
+            # rollback never ran) so the respawn's startup rebuilds a clean model.
             self._teardown()
+            if journal is not None:
+                self._rollback_journal(journal)
+                raise KernelCrash(f"{exc}; the {method} was rolled back") from None
             raise
         if tag == "ok":
             return payload

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -144,6 +145,10 @@ class Session:
         # in startup() and updated by set_requirements. Advisory; never gate a build.
         self._requirements: list = []
         self._build_fn = None
+        # sha256 of the model.py source that produced the current build_fn (set on
+        # every successful single-model load). set_params compares it against disk
+        # to catch an out-of-band edit before committing a diverged snapshot.
+        self._model_hash: str | None = None
         # The Compound of the last SUCCESSFUL build, snapshotted so capture_views
         # renders last-good geometry (not a failed script's partial registry).
         self._model: Compound | None = None
@@ -182,9 +187,25 @@ class Session:
     # -- public API ---------------------------------------------------------
 
     def run_file(self, path: str) -> dict:
+        if self._is_assembly_mode():
+            return self._assembly_script_refusal()
         with open(path, encoding="utf-8") as f:
             code = f.read()
-        return self.execute_script(code)
+        return self._run_script(code)
+
+    @staticmethod
+    def _assembly_script_refusal() -> dict:
+        """Refuse execute_script/run_file on an assembly workspace. Running a single
+        model.py would render over the composed assembly while assembly.json stays on
+        disk, so set_params routes to the assembly branch and history commits the
+        assembly fileset: a split-brain the agent cannot undo. Mirror of set_part's
+        reverse-direction guard."""
+        return {
+            "ok": False,
+            "error": "this workspace is an assembly; edit it with set_part or "
+            "set_skeleton. execute_script builds a single model and would replace "
+            "the assembly.",
+        }
 
     def _render_and_snapshot(
         self, next_build: int, *, params: dict | None, duration_ms: int | None
@@ -221,8 +242,19 @@ class Session:
         }
 
     def execute_script(self, code: str) -> dict:
+        """Execute ``code`` and render. Refused on an assembly workspace (would
+        replace the composed assembly with a single model, split-braining state)."""
+        if self._is_assembly_mode():
+            return self._assembly_script_refusal()
+        return self._run_script(code)
+
+    def _run_script(self, code: str) -> dict:
         """Execute ``code`` and render. On any failure, return an error dict
-        without bumping buildId or overwriting last-good artifacts."""
+        without bumping buildId or overwriting last-good artifacts.
+
+        Unguarded internal build path: the public execute_script/run_file add the
+        assembly refusal, but internal rebuilds (imports) run a single model.py here
+        directly so they are not blocked by that guard."""
         next_build = self.build_id + 1
         started = time.perf_counter()
 
@@ -297,6 +329,10 @@ class Session:
                     f"{self.model_path!r}: {exc}",
                     "traceback": traceback.format_exc(),
                 }
+        # Record the hash of the source that produced the live build_fn so
+        # set_params can detect an out-of-band model.py edit before committing a
+        # snapshot whose code and geometry never coexisted (see set_params).
+        self._model_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
         self.code = code
         self.build_id = next_build
         self.last_ok = True
@@ -339,6 +375,11 @@ class Session:
                 "error": "no parametric model loaded (script has no PARAMS/build)",
             }
 
+        if (err := self._validate_param_values(values or {})) is not None:
+            return err
+        if (err := self._check_model_unchanged()) is not None:
+            return err
+
         merged = dict(self._param_values)
         merged.update(values or {})
 
@@ -362,6 +403,63 @@ class Session:
         if not self._suppress_persist:
             self._after_build(structural=False)
         return {"ok": True, "buildId": self.build_id}
+
+    def _validate_param_values(self, values: dict) -> dict | None:
+        """Validate a set_params request against the loaded schema; return an error
+        dict for the first violation, or None when every value is acceptable.
+
+        A schema'd numeric param must get a real number (bool rejected: it is an int
+        subclass that silently builds size-1 geometry and then vanishes from
+        get_params) inside its [min, max] range -- rejected, not clamped, so the
+        agent hears the truth. An unknown key (not a declared param) is rejected.
+        Declared non-numeric params (strings the schema carries) stay permitted."""
+        declared = set(self._param_values)
+        for key, val in values.items():
+            if key not in declared:
+                valid = ", ".join(sorted(declared)) or "(none)"
+                return {
+                    "ok": False,
+                    "error": f"unknown parameter {key!r}; valid: {valid}",
+                }
+            spec = self._params_schema.get(key)
+            if spec is None:
+                continue  # declared but non-numeric (e.g. a string): pass through
+            if not self._is_number(val):
+                return {
+                    "ok": False,
+                    "error": f"parameter {key!r} must be a number, got "
+                    f"{type(val).__name__} ({val!r})",
+                }
+            v = float(val)
+            lo, hi = spec["min"], spec["max"]
+            if v < lo or v > hi:
+                return {
+                    "ok": False,
+                    "error": f"parameter {key!r}={v} is out of range [{lo}, {hi}]",
+                }
+        return None
+
+    def _check_model_unchanged(self) -> dict | None:
+        """Guard set_params against an out-of-band model.py edit. When the file on
+        disk no longer matches the source that produced the live build_fn, a rebuild
+        here would render the STALE in-memory geometry yet history stages the NEW
+        disk bytes -- a snapshot whose code and geometry never coexisted. Return an
+        error instructing run_file; None when the file matches (or there is nothing
+        to compare)."""
+        if self._model_hash is None or not self.model_path:
+            return None
+        try:
+            with open(self.model_path, "rb") as f:
+                disk_hash = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            return None  # unreadable: let the rebuild surface the real error
+        if disk_hash == self._model_hash:
+            return None
+        return {
+            "ok": False,
+            "error": "model.py changed on disk since it was loaded; run it again "
+            "with run_file before adjusting parameters",
+        }
 
     def set_part_material(self, part_id: str, material) -> dict:
         """Assign (or clear, when ``material`` is None) the material for one part,
@@ -649,9 +747,13 @@ class Session:
         """Rebuild after an imports change. Re-runs model.py (so manifest
         references are re-applied via the normal build path) at the current saved
         param values, robust to registry state. Falls back to a references-only
-        re-render when there is no model.py."""
+        re-render when there is no model.py.
+
+        Uses the internal _run_script (not run_file) so it bypasses the assembly
+        refusal: this is an internal rebuild, not an agent-authored single model."""
         if self.model_path and os.path.exists(self.model_path):
-            res = self.run_file(self.model_path)
+            with open(self.model_path, encoding="utf-8") as f:
+                res = self._run_script(f.read())
             if res.get("ok") and self.root is not None and self._build_fn is not None:
                 saved = settings.load_params(self.root)
                 block = self._params_block()
@@ -1022,16 +1124,34 @@ class Session:
 
     def _restore_step(self, step, empty_error: str) -> dict:
         """Run a history navigation step (undo/redo/goto) and rebuild the restored
-        state. A corrupt/hand-edited fileset (e.g. a manifest whose source escapes
-        the workspace) makes the restore walk raise from the load_manifest
-        chokepoint; catch it and return a clean error so a bad on-disk state fails
-        loudly without crashing the session (and without running any deletion)."""
+        state, transactionally: the timeline and disk only move if the restored
+        state actually rebuilds.
+
+        The step writes files, moves the branch, and saves the timeline; we then
+        attempt the rebuild. If the rebuild FAILS (an older state depends on a
+        since-deleted asset) or the restore walk RAISES (a corrupt/hand-edited
+        fileset whose source escapes the workspace), we roll the whole thing back
+        so the cursor never drifts and disk/memory/artifacts stay in sync. Without
+        this, every retry stepped the index and rewrote model.py, and the next
+        set_params committed code+geometry that never coexisted."""
+        assert self.history is not None  # callers gate on history being enabled
+        snapshot = None
         try:
+            # snapshot_state walks the fileset, so a corrupt/hand-edited manifest
+            # (source escaping the workspace) raises HERE, before any mutation --
+            # caught below into a clean error with nothing to roll back.
+            snapshot = self.history.snapshot_state()
             if not step():
                 return {"ok": False, "error": empty_error}
-            return self._rebuild_after_restore()
+            res = self._rebuild_after_restore()
         except Exception as exc:  # noqa: BLE001
+            if snapshot is not None:  # a restore may have partially applied: undo it
+                with contextlib.suppress(Exception):
+                    self.history.revert_state(snapshot)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not res.get("ok"):
+            self.history.revert_state(snapshot)
+        return res
 
     def checkpoint(self, message: str) -> dict:
         """Label the current (tip) state with a message. Refuses while viewing an

@@ -14,9 +14,11 @@ import json
 import os
 from typing import TYPE_CHECKING, Any
 
+import solidifai
 from solidifai_engine import dfm as dfm_rules
 from solidifai_engine import materials as _materials
 from solidifai_engine import paths, scratch
+from solidifai_engine.props import build_volume_com
 
 if TYPE_CHECKING:
     from solidifai_engine.session import Session
@@ -90,6 +92,12 @@ class Reporting:
                 old_params = {}
         try:
             other = self.s._build_compound(code_blob.decode("utf-8"), old_params)
+            # Aggregate the checkpoint volume per solid (build_volume_com), NOT off
+            # the compound: a Compound's own .volume is OCC's SIGNED integration,
+            # which cancels mirrored (negative-determinant) solids to a wrong total.
+            # Grab the checkpoint objects here, before the finally restores the live
+            # registry (build_compound leaves them in the global registry).
+            other_v, _ = build_volume_com([o.shape for o in solidifai._registry()])
         except Exception as exc:  # noqa: BLE001
             self._restore_live_registry()
             return {"ok": False, "error": f"couldn't rebuild checkpoint: {exc}"}
@@ -98,7 +106,9 @@ class Reporting:
 
         current = self.s._model  # not None (guarded above; the snapshot is intact)
         assert current is not None
-        cur_v, other_v = float(current.volume), float(other.volume)
+        # Same per-solid aggregation for the current side, from the last-good object
+        # snapshot (matches render.py), so a mirrored model diffs its true volume.
+        cur_v, _ = build_volume_com([o.shape for o in (self.s._objects or [])])
         cb, ob = current.bounding_box(), other.bounding_box()
         bbox_delta = [
             round(cb.size.X - ob.size.X, 4),
