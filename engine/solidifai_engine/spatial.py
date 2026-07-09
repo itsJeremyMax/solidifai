@@ -181,7 +181,7 @@ class _Target:
 class Spatial:
     def __init__(self, s: Session):
         self.s = s
-        self._cache_build = None
+        self._cache_build: int | None = None
         self._cache: dict | None = None  # object_key -> list[(descriptor, face_shape)]
 
     # -- face enumeration (memoized per build) ------------------------------
@@ -510,15 +510,15 @@ class Spatial:
                 return {"ok": False, "error": "axis filter direction must be non-zero"}
 
         faces = self._faces()
-        allowed_keys = None
+        allowed_keys: set[str] | None = None
         if want_obj is not None:
-            allowed_keys = self._keys_for_object_filter(want_obj)
-            if allowed_keys is None:
+            object_keys = self._keys_for_object_filter(want_obj)
+            if object_keys is None:
                 return {
                     "ok": False,
                     "error": f"unknown object {want_obj!r}. {self._available_objects_msg()}",
                 }
-            allowed_keys = set(allowed_keys)
+            allowed_keys = set(object_keys)
 
         hits: list[dict] = []
         for key, entries in faces.items():

@@ -564,6 +564,8 @@ class Session:
 
     def _model_diagonal(self) -> float:
         """Bounding-box diagonal of the current model in mm (0.0 if unavailable)."""
+        if self._model is None:
+            return 0.0
         try:
             bb = self._model.bounding_box()
             return (bb.size.X**2 + bb.size.Y**2 + bb.size.Z**2) ** 0.5
