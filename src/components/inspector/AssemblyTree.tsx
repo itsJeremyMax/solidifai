@@ -188,13 +188,17 @@ export default function AssemblyTree({
             visForcedHidden={allHidden}
           />
           {isOpen &&
-            node.occurrences.map((occ, i) => (
-              <OccurrenceRow
-                key={`${node.id}#${i}`}
-                occ={occ}
-                depthStyle={{ paddingLeft: `${0.875 + (depth + 1) * INDENT_REM}rem` }}
-              />
-            ))}
+            (node.occAssembly
+              ? // Instanced sub-assembly: expand each placement's real internals.
+                node.children.map((child) => renderNode(child, depth + 1))
+              : // Instanced part: list the placement frames (no internals to show).
+                node.occurrences.map((occ, i) => (
+                  <OccurrenceRow
+                    key={`${node.id}#${i}`}
+                    occ={occ}
+                    depthStyle={{ paddingLeft: `${0.875 + (depth + 1) * INDENT_REM}rem` }}
+                  />
+                )))}
         </div>
       );
     }
@@ -284,9 +288,15 @@ export default function AssemblyTree({
             />
           }
           trailingLabel={
-            <span className="ml-auto shrink-0 font-mono text-caption text-ink-3">
-              {leafIds.length} {leafIds.length === 1 ? "part" : "parts"}
-            </span>
+            node.occInfo ? (
+              // A placement wrapper under an instanced sub-assembly: show where this
+              // copy sits (and its mirror) rather than a raw part count.
+              <PlacementTag occ={node.occInfo} />
+            ) : (
+              <span className="ml-auto shrink-0 font-mono text-caption text-ink-3">
+                {leafIds.length} {leafIds.length === 1 ? "part" : "parts"}
+              </span>
+            )
           }
           onSelect={() => onSelect(selected ? null : node.id)}
           swatchHex={swatchHex}
@@ -392,6 +402,27 @@ function OccurrenceRow({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * Trailing annotation on an instanced sub-assembly's placement wrapper row: the
+ * frame it sits at and a mirror tag when reflected. The group's own chrome
+ * (chevron, eye, swatch) still acts on that placement's real internals.
+ */
+function PlacementTag({ occ }: { occ: OccurrenceInfo }) {
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-caption text-ink-3">
+      <span>{occ.frame ? `at ${occ.frame}` : "at origin"}</span>
+      {occ.mirror && (
+        <span
+          className="rounded-full bg-surface-2 px-1.5 text-ink-3"
+          title={`Mirrored about the ${occ.mirror} plane`}
+        >
+          mirror {occ.mirror}
+        </span>
+      )}
+    </span>
   );
 }
 

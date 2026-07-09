@@ -42,6 +42,16 @@ export interface ModelObject {
   appearance?: Appearance;
   /** Per-object mass (schema 2+). Null for references (no manufactured mass). */
   mass?: { value: number; material: string; density: number } | null;
+  /** Exact occurrence identity, present ONLY on a repeated/mirrored placement
+   *  body (the 2nd, 3rd ... placement of an instanced part or sub-assembly): the
+   *  id of its first-placement counterpart. Absent on ordinary bodies and on the
+   *  primary placement, so its presence anywhere in a payload signals a
+   *  field-aware engine. Lets the tree/viewport group instances exactly instead
+   *  of guessing from a `_N` slug. */
+  occurrenceOf?: string;
+  /** Placement number (2, 3, ...) of an occurrence body; pairs with
+   *  {@link occurrenceOf}. */
+  occurrenceIndex?: number;
 }
 
 /** A `[x, y, z]` triple in model units (mm). */

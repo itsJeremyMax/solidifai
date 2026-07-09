@@ -211,8 +211,9 @@ export interface OccurrenceInfo {
   label: string;
 }
 
-/** An instanced part: one definition placed N>1 times. Keyed for the tree by
- *  the slugged path id of its FIRST placement (the node kept after merging). */
+/** An instanced part or sub-assembly: one definition placed N>1 times. Keyed for
+ *  the tree by the slugged path id of its FIRST placement (the node kept after
+ *  merging). */
 export interface OccurrenceFamily {
   /** Slugged path id of the primary placement, e.g. "wheel" or "rig/wheel". */
   primaryId: string;
@@ -221,6 +222,11 @@ export interface OccurrenceFamily {
   /** Slugged path ids of every placement, in order: ["wheel","wheel_2",...]. */
   memberIds: string[];
   occurrences: OccurrenceInfo[];
+  /** True when the instanced child is a sub-assembly (has its own internal
+   *  bodies), so each placement carries a real per-instance subtree in the
+   *  geometry. A part family is false. Drives whether the tree expands nested
+   *  internals per placement or just lists placement frames. */
+  isAssembly: boolean;
 }
 
 /** A joint, path-qualified for display when it lives on a sub-skeleton. */
@@ -230,9 +236,10 @@ export interface JointInfo extends Joint {
 
 /**
  * Occurrence families keyed by their primary slugged path id. Walks the assembly
- * recursively; a child placed more than once yields one family. Nested children
- * are discovered along the PRIMARY placement's path (an instanced sub-assembly
- * still gets its badge; its per-instance internals are not separately expanded).
+ * recursively; a child placed more than once yields one family. Nested families
+ * are still keyed along the PRIMARY placement's path, but every placement's
+ * internals live in the geometry snapshot under its own slugged prefix, so the
+ * tree builder expands each instanced sub-assembly placement in full.
  */
 export function deriveOccurrenceFamilies(meta: AssemblyMeta | null): Map<string, OccurrenceFamily> {
   const out = new Map<string, OccurrenceFamily>();
@@ -255,6 +262,7 @@ export function deriveOccurrenceFamilies(meta: AssemblyMeta | null): Map<string,
             mirror: o.mirror,
             label: prefixes[i],
           })),
+          isAssembly: child.kind === "assembly",
         });
       }
 

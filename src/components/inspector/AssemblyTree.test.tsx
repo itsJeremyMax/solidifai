@@ -124,6 +124,7 @@ const wheelFamilies = () =>
           { frame: "hub_b", mirror: null, label: "wheel@2" },
           { frame: "hub_c", mirror: "yz", label: "wheel@3" },
         ],
+        isAssembly: false,
       },
     ],
   ]);
@@ -186,5 +187,54 @@ describe("AssemblyTree occurrences + joints", () => {
   it("no joints section when the assembly declares none", () => {
     renderTree({ objects: instanced, families: wheelFamilies() });
     expect(screen.queryByText("Joints")).toBeNull();
+  });
+});
+
+/* ── instanced sub-assembly: per-placement internals ───────────────────────── */
+
+const rigObjects: ModelObject[] = [obj("rig/blk/body"), obj("rig_2/blk/body")];
+
+const rigFamilies = () =>
+  new Map<string, OccurrenceFamily>([
+    [
+      "rig",
+      {
+        primaryId: "rig",
+        displayBase: "rig",
+        memberIds: ["rig", "rig_2"],
+        occurrences: [
+          { frame: "a", mirror: null, label: "rig" },
+          { frame: "b", mirror: "yz", label: "rig@2" },
+        ],
+        isAssembly: true,
+      },
+    ],
+  ]);
+
+describe("AssemblyTree instanced sub-assembly", () => {
+  it("badges the sub-assembly and hides placements until expanded", () => {
+    renderTree({ objects: rigObjects, families: rigFamilies() });
+    expect(screen.getByText("×2")).toBeTruthy();
+    expect(screen.queryByText("rig@2")).toBeNull();
+  });
+
+  it("expanding reveals each placement's real internals, not just a frame list", () => {
+    renderTree({ objects: rigObjects, families: rigFamilies() });
+    fireEvent.click(screen.getByLabelText("Show rig placements"));
+    // Each placement is its own expandable group carrying its blk body.
+    expect(screen.getByText("rig@2")).toBeTruthy();
+    expect(screen.getByText("at b")).toBeTruthy();
+    expect(screen.getByText("mirror yz")).toBeTruthy();
+    // Each placement contributes its own blk group + body leaf.
+    expect(screen.getAllByText("blk").length).toBe(2);
+    expect(screen.getAllByText("body").length).toBe(2);
+  });
+
+  it("a nested placement leaf selects its own object id", () => {
+    const props = renderTree({ objects: rigObjects, families: rigFamilies() });
+    fireEvent.click(screen.getByLabelText("Show rig placements"));
+    const bodies = screen.getAllByText("body");
+    fireEvent.click(bodies[1]); // the second placement's body
+    expect(props.onSelect).toHaveBeenCalledWith("rig_2/blk/body");
   });
 });

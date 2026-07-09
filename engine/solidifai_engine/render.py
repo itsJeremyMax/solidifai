@@ -68,6 +68,37 @@ def _slug(name: str) -> str:
     return s or "object"
 
 
+# An occurrence body's composed name carries an occurrence-prefix segment
+# ``<childId>@N`` (produced only by compose.occurrence_prefixes, N >= 2). Child
+# ids are validated to ``[A-Za-z0-9_-]+`` (no ``@``), so a segment matching this
+# is unambiguously an occurrence marker, never a user-chosen show() name.
+_OCC_SEGMENT = re.compile(r"^([A-Za-z0-9_-]+)@([0-9]+)$")
+
+
+def _occurrence_primary(name: str) -> tuple[str, int] | None:
+    """If ``name`` is an occurrence body, return ``(primary_name, index)`` where
+    ``primary_name`` strips every ``@N`` marker back to the bare child id (the
+    name of the corresponding first-placement body) and ``index`` is the
+    outermost placement number. Returns ``None`` for a non-occurrence body. The
+    caller confirms ``primary_name`` names a real sibling before trusting it, so
+    the rare pathological case (a show() name that itself looks like ``x@2``)
+    self-heals -- its stripped form has no matching object."""
+    segments = name.split("/")
+    index: int | None = None
+    stripped: list[str] = []
+    for seg in segments:
+        m = _OCC_SEGMENT.match(seg)
+        if m:
+            stripped.append(m.group(1))
+            if index is None:
+                index = int(m.group(2))
+        else:
+            stripped.append(seg)
+    if index is None:
+        return None
+    return "/".join(stripped), index
+
+
 def _kind(shape: Any) -> str:
     return type(shape).__name__
 
@@ -193,6 +224,9 @@ def render_to(
         # label/density is read from a PART, never from resolved[0] (which may be a
         # role="reference" import with a different material when a reference is shown first).
         part_density: dict[str, float] = {}
+        # Composed name -> node id, so an occurrence body can name its primary
+        # (first-placement) sibling by that sibling's real, collision-resolved id.
+        name_to_node = {obj.name: node for obj, node in zip(objects, node_ids, strict=True)}
         for obj, mat, node in zip(objects, resolved, node_ids, strict=True):
             role = getattr(obj, "role", "part")
             appearance = dict(_materials.RESOLVER.appearance(mat))
@@ -207,18 +241,29 @@ def render_to(
                 labels.add(mat.label)
                 part_density[mat.label] = mat.density
                 mass_entry = {"value": obj_mass, "material": mat.label, "density": mat.density}
-            json_objects.append(
-                {
-                    "id": node,
-                    "name": obj.name,
-                    "kind": _kind(obj.shape),
-                    "node": node,
-                    "visible": True,
-                    "role": role,
-                    "appearance": appearance,
-                    "mass": mass_entry,
-                }
-            )
+            entry = {
+                "id": node,
+                "name": obj.name,
+                "kind": _kind(obj.shape),
+                "node": node,
+                "visible": True,
+                "role": role,
+                "appearance": appearance,
+                "mass": mass_entry,
+            }
+            # Additive occurrence identity: emitted ONLY on a mirrored/repeated
+            # placement body (index >= 2) whose first-placement sibling is present.
+            # Absent on ordinary objects and in single-model mode, so a non-assembly
+            # payload is byte-identical. The frontend uses this to group instances
+            # exactly, instead of a slug heuristic.
+            occ = _occurrence_primary(obj.name)
+            if occ is not None:
+                primary_name, occ_index = occ
+                primary_node = name_to_node.get(primary_name)
+                if primary_node is not None and primary_node != node:
+                    entry["occurrenceOf"] = primary_node
+                    entry["occurrenceIndex"] = occ_index
+            json_objects.append(entry)
 
         # Build-level mass: sum of per-object masses. When every object shares one
         # material, name it; otherwise "mixed" (density 0) — the frontend Inspector

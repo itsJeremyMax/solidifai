@@ -22,14 +22,21 @@ export interface TreeNode {
   /** True when this path id is a real object, not just an intermediate group. */
   isLeaf: boolean;
   children: TreeNode[];
-  /** Present when this node is an instanced part (one definition placed N>1
-   *  times). The badge + frame list read from here; the node stands in for all
-   *  placements, whose real object ids are in {@link TreeNode.occLeafIds}. */
+  /** Present when this node is an instanced part or sub-assembly (one definition
+   *  placed N>1 times). The badge + frame list read from here; the node stands in
+   *  for all placements, whose real object ids are in {@link TreeNode.occLeafIds}. */
   occurrences?: OccurrenceInfo[];
   /** Every real object id this node represents, across all its placements. Set
    *  on an occurrence family so visibility/material/selection span all copies;
    *  absent on ordinary nodes (use {@link descendantIds}). */
   occLeafIds?: string[];
+  /** True on an instanced SUB-assembly family: its `children` are one group per
+   *  placement (each carrying that placement's real internals), instead of the
+   *  flat frame list a part family shows. */
+  occAssembly?: boolean;
+  /** On a per-placement wrapper group (a child of an occAssembly family), the
+   *  placement's frame/mirror/label, for the annotation on its row. */
+  occInfo?: OccurrenceInfo;
 }
 
 /** Last "/"-segment of a path id, used as the display label. */
@@ -107,18 +114,36 @@ function mergeOccurrenceFamilies(
     if (fam && node.id !== fam.primaryId) continue; // non-primary placement: absorbed
 
     if (fam && node.id === fam.primaryId) {
+      const memberNodes = fam.memberIds.map((mid) => nodes.find((n) => n.id === mid) ?? null);
       // Union every present placement's leaf ids so the row acts on all copies.
-      const occLeafIds = fam.memberIds.flatMap((mid) => {
-        const memberNode = nodes.find((n) => n.id === mid);
-        return memberNode ? collectLeafIds(memberNode) : [];
-      });
+      const occLeafIds = memberNodes.flatMap((mn) => (mn ? collectLeafIds(mn) : []));
+      // A part family collapses to one badged row (its frame list stands in for
+      // geometry). A sub-assembly family keeps one group PER placement, each with
+      // that placement's real internals (recursively folding any inner families),
+      // so an instanced sub-assembly is fully explorable, not just badged.
+      const children: TreeNode[] = fam.isAssembly
+        ? memberNodes
+            .map((mn, i): TreeNode | null =>
+              mn
+                ? {
+                    id: fam.memberIds[i],
+                    label: fam.occurrences[i].label,
+                    isLeaf: false,
+                    children: mergeOccurrenceFamilies(mn.children, families),
+                    occInfo: fam.occurrences[i],
+                  }
+                : null,
+            )
+            .filter((n): n is TreeNode => n !== null)
+        : [];
       out.push({
         id: node.id,
         label: fam.displayBase,
         isLeaf: false,
-        children: [], // the frame list stands in for per-instance geometry rows
+        children,
         occurrences: fam.occurrences,
         occLeafIds,
+        occAssembly: fam.isAssembly,
       });
       continue;
     }
@@ -158,15 +183,31 @@ export function descendantIds(tree: TreeNode[], id: string): string[] {
 }
 
 /**
- * Does object id `objId` belong to the selection `base`? True for the exact id,
- * any path descendant (`base/...`), and any slugged occurrence sibling
- * (`base_2`, `base_2/...`, `base_10` ...). The engine slugs an occurrence's `@N`
- * to `_N`, so selecting an instanced part's primary id `wheel` must also light
- * up `wheel_2`, `wheel_3`. The `/`-or-digit guards stop `hinge` matching
- * `hingeplate` and `wheel` matching an unrelated `wheelbarrow`.
+ * Does object id `objId` belong to the selection `base`? True for the exact id
+ * and any path descendant (`base/...`), plus any occurrence sibling of `base`.
+ *
+ * Occurrence matching is resolved two ways, in order:
+ *   1. EXACT (preferred): `occurrenceOf` is the engine-supplied id of this body's
+ *      first-placement counterpart, so this body is an occurrence sibling of
+ *      `base` iff that counterpart is `base` or lives under it.
+ *   2. HEURISTIC (fallback): only for payloads from a pre-field engine
+ *      (`fieldAware === false`). The engine slugs an occurrence's `@N` to `_N`,
+ *      so `wheel_2`, `wheel_10` read as siblings of `wheel`. This is what wrongly
+ *      co-selects a real part legitimately named `wheel_2`; a field-aware payload
+ *      skips it entirely, so absence of `occurrenceOf` there means "not an
+ *      occurrence". The `/`-or-digit guards stop `hinge` matching `hingeplate`.
  */
-export function idMatchesBase(objId: string, base: string): boolean {
+export function idMatchesBase(
+  objId: string,
+  base: string,
+  occurrenceOf?: string | null,
+  fieldAware = false,
+): boolean {
   if (objId === base || objId.startsWith(base + "/")) return true;
+  if (occurrenceOf != null) {
+    return occurrenceOf === base || occurrenceOf.startsWith(base + "/");
+  }
+  if (fieldAware) return false; // field-aware engine, no field => not an occurrence
   if (objId.startsWith(base + "_")) {
     const rest = objId.slice(base.length + 1);
     return /^\d+(\/|$)/.test(rest); // "_2", "_2/pin", "_10" -> occurrence sibling
@@ -177,8 +218,9 @@ export function idMatchesBase(objId: string, base: string): boolean {
 /**
  * The object ids that a selection of `target` should resolve to over a FLAT id
  * list: the exact id, any path descendant, and any occurrence sibling (see
- * {@link idMatchesBase}). This is the viewport's group-selection match (mirrors
- * descendantIds without building a tree).
+ * {@link idMatchesBase}). Uses the legacy `_N` heuristic since a bare id list
+ * carries no occurrence field; the object-list path (subtreeIndicesForId) is the
+ * exact one.
  */
 export function subtreeIdsForId(ids: readonly string[], target: string): string[] {
   return ids.filter((id) => idMatchesBase(id, target));

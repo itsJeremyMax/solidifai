@@ -126,6 +126,36 @@ describe("deriveOccurrenceFamilies", () => {
     expect(wheel.occurrences.map((o) => o.label)).toEqual(["wheel", "wheel@2", "wheel@3"]);
     expect(wheel.occurrences.map((o) => o.frame)).toEqual(["hub_a", "hub_b", "hub_c"]);
     expect(wheel.occurrences[2].mirror).toBe("yz");
+    expect(wheel.isAssembly).toBe(false); // an instanced PART
+  });
+
+  it("flags an instanced sub-assembly family as isAssembly", () => {
+    const meta = parseAssemblyTree(
+      JSON.stringify({
+        ok: true,
+        tree: {
+          skeleton: { scalars: [], frames: ["a", "b"], shapes: [], joints: [] },
+          children: [
+            {
+              id: "rig",
+              kind: "assembly",
+              attach: "a",
+              inputs: [],
+              shape_inputs: [],
+              occurrences: [
+                { frame: "a", mirror: null },
+                { frame: "b", mirror: null },
+              ],
+              skeleton: { scalars: [], frames: ["o"], shapes: [], joints: [] },
+              children: [{ id: "blk", kind: "part", attach: "o", inputs: [], shape_inputs: [] }],
+            },
+          ],
+        },
+      }),
+    );
+    const fams = deriveOccurrenceFamilies(meta);
+    expect(fams.get("rig")!.isAssembly).toBe(true);
+    expect(fams.get("rig")!.memberIds).toEqual(["rig", "rig_2"]);
   });
 
   it("finds nested occurrences along the primary path", () => {

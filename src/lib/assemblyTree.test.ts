@@ -24,6 +24,26 @@ const wheelFamilies = () =>
           { frame: "hub_b", mirror: null, label: "wheel@2" },
           { frame: "hub_c", mirror: "yz", label: "wheel@3" },
         ],
+        isAssembly: false,
+      },
+    ],
+  ]);
+
+/** A one-family map for an instanced SUB-assembly `rig` placed twice, each
+ *  containing a part `blk` (real per-instance internals in the geometry). */
+const rigFamilies = () =>
+  new Map<string, OccurrenceFamily>([
+    [
+      "rig",
+      {
+        primaryId: "rig",
+        displayBase: "rig",
+        memberIds: ["rig", "rig_2"],
+        occurrences: [
+          { frame: "a", mirror: null, label: "rig" },
+          { frame: "b", mirror: "yz", label: "rig@2" },
+        ],
+        isAssembly: true,
       },
     ],
   ]);
@@ -110,6 +130,23 @@ describe("idMatchesBase", () => {
     expect(idMatchesBase("hingeplate", "hinge")).toBe(false);
     expect(idMatchesBase("wheel_x", "wheel")).toBe(false); // '_' then non-digit
   });
+
+  it("uses the exact occurrenceOf field when present", () => {
+    // The occurrence body names its primary counterpart; match by that, not slug.
+    expect(idMatchesBase("wheel_2/wheel", "wheel", "wheel/wheel")).toBe(true);
+    expect(idMatchesBase("rig_2/blk/blk", "rig", "rig/blk/blk")).toBe(true);
+    // The field points elsewhere -> not a sibling of this base.
+    expect(idMatchesBase("wheel_2/wheel", "arm", "wheel/wheel")).toBe(false);
+  });
+
+  it("field-aware payload: a real _N part is not treated as an occurrence", () => {
+    // A body with no occurrenceOf, in a field-aware payload, is definitively NOT
+    // an occurrence — the slug heuristic is skipped, so `wheel_2/hub` (a real part)
+    // does not co-select with `wheel`.
+    expect(idMatchesBase("wheel_2/hub", "wheel", null, /* fieldAware */ true)).toBe(false);
+    // Same id in an OLD payload still matches via the heuristic (documented fallback).
+    expect(idMatchesBase("wheel_2/hub", "wheel", null, /* fieldAware */ false)).toBe(true);
+  });
 });
 
 describe("buildAssemblyTree with occurrence families", () => {
@@ -136,5 +173,30 @@ describe("buildAssemblyTree with occurrence families", () => {
   it("renders unchanged when no families are given", () => {
     const tree = buildAssemblyTree(objects);
     expect(tree.map((n) => n.id)).toEqual(["wheel", "wheel_2", "wheel_3", "arm"]);
+  });
+});
+
+describe("buildAssemblyTree with an instanced sub-assembly", () => {
+  // Two placements of `rig`, each with its own `blk` body under a distinct path.
+  const objects = objs(["rig/blk/blk", "rig_2/blk/blk"]);
+
+  it("nests each placement's internals under the badged family node", () => {
+    const tree = buildAssemblyTree(objects, rigFamilies());
+    expect(tree.map((n) => n.id)).toEqual(["rig"]);
+    const rig = tree[0];
+    expect(rig.occurrences).toHaveLength(2);
+    expect(rig.occAssembly).toBe(true);
+    // One group per placement, each carrying its real internals (not a flat list).
+    expect(rig.children.map((c) => c.id)).toEqual(["rig", "rig_2"]);
+    expect(rig.children[0].occInfo!.label).toBe("rig");
+    expect(rig.children[1].occInfo!.mirror).toBe("yz");
+    // The primary placement's internal blk body is present and reachable.
+    expect(rig.children[0].children.map((c) => c.id)).toEqual(["rig/blk"]);
+    expect(rig.children[1].children[0].children.map((c) => c.id)).toEqual(["rig_2/blk/blk"]);
+  });
+
+  it("selection/visibility still span every placement's bodies (occLeafIds)", () => {
+    const tree = buildAssemblyTree(objects, rigFamilies());
+    expect(descendantIds(tree, "rig").sort()).toEqual(["rig/blk/blk", "rig_2/blk/blk"]);
   });
 });

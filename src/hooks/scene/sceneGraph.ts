@@ -31,18 +31,21 @@ export function subtreeIndexForId(objects: ModelObject[] | undefined, id: string
 /**
  * Indices of every subtree the selection `id` resolves to: the exact leaf, all
  * descendant leaves when `id` is an assembly-node prefix, and every occurrence
- * sibling of an instanced part (`wheel` -> `wheel_2`, `wheel_3`). See
- * {@link idMatchesBase} for the guards. Selecting a group or an instanced part
- * thus highlights every child mesh it stands for.
+ * sibling of an instanced part or sub-assembly. When the engine tagged occurrence
+ * bodies (`occurrenceOf` present anywhere in the payload) the match is EXACT, so
+ * a real part legitimately named `wheel_2` is never dragged in by selecting
+ * `wheel`; older payloads fall back to the `_N` slug heuristic. See
+ * {@link idMatchesBase}.
  */
 export function subtreeIndicesForId(
   objects: ModelObject[] | undefined,
   id: string | null,
 ): number[] {
   if (!objects || id == null) return [];
+  const fieldAware = objects.some((o) => o.occurrenceOf != null);
   const out: number[] = [];
   objects.forEach((o, i) => {
-    if (idMatchesBase(o.id, id)) out.push(i);
+    if (idMatchesBase(o.id, id, o.occurrenceOf, fieldAware)) out.push(i);
   });
   return out;
 }
