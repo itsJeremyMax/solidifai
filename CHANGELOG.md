@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0](https://github.com/itsJeremyMax/solidifai/compare/v0.5.0...v0.6.0) (2026-07-09)
+
+
+### Features
+
+* **app:** show assembly occurrences and joints in the tree panel ([f20129e](https://github.com/itsJeremyMax/solidifai/commit/f20129e248129527b6fa1c0fd03185e9e338be48))
+* **engine:** occurrence-based instancing (mirrored occurrences) + joints/mates ([b9a9250](https://github.com/itsJeremyMax/solidifai/commit/b9a9250adea79f6ae047289f85761f03732c17cb))
+* **engine:** real modeled ISO threads via helix sweep ([f101e3e](https://github.com/itsJeremyMax/solidifai/commit/f101e3eef0137d8a95fdb82d4a984696db15a280))
+* **engine:** spatial measure/query tools (measure_between, query_faces, thickness_at) ([033b471](https://github.com/itsJeremyMax/solidifai/commit/033b47110f4619097a41de7a3b9062948fbe954a))
+
+
+### Bug Fixes
+
+* **engine,app:** exact occurrence identity in model.json + instanced subassembly handling ([9f186c6](https://github.com/itsJeremyMax/solidifai/commit/9f186c6c5ec125e71d330adeab9ba2dbd0bb223a))
+* **engine:** assembly cache/serialize/flatten correctness + instancing dedup ([f314fb8](https://github.com/itsJeremyMax/solidifai/commit/f314fb89fb5294d787ba5f06e7c1f6a15ac3ac0e))
+* **engine:** harden worker crash-isolation, history transactionality, and split-brain/param guards ([3944ba8](https://github.com/itsJeremyMax/solidifai/commit/3944ba8b0601a6581a7550fe872c09320e162d8e))
+* **engine:** make part_signature chirality-sensitive so mirrored parts don't merge ([01b7865](https://github.com/itsJeremyMax/solidifai/commit/01b78653df6226310113fb1f26cc811cf990efa9))
+* **engine:** make the feature system work in assembly mode + fix inference/targeting bugs ([df612f4](https://github.com/itsJeremyMax/solidifai/commit/df612f41d7513acb89e17c7f252f008a3341b550))
+* **engine:** pass structured failure fields through the RPC envelope + harden the MCP bridge ([383f890](https://github.com/itsJeremyMax/solidifai/commit/383f890048f401a633eab25a3115194689056c7c))
+* **engine:** safe-bevel empty/mixed-parent guards + profile-aware counterbore bore ([b6242a2](https://github.com/itsJeremyMax/solidifai/commit/b6242a27af162d41ce6861a889aa84d36df1da25))
+* **engine:** satisfy mypy on the new spatial/error-envelope code ([6c46c21](https://github.com/itsJeremyMax/solidifai/commit/6c46c2133b6b0cf15682deea07aca38b90fcc88d))
+* **engine:** serve engine connections concurrently so an idle client can't starve others ([13fae41](https://github.com/itsJeremyMax/solidifai/commit/13fae41ed34c1c490a529ad521f24a3bedc3276e))
+* **engine:** ship raised-error tracebacks over the worker pipe so scriptLine surfaces ([1a9c753](https://github.com/itsJeremyMax/solidifai/commit/1a9c75324358525ef913e82cd1e7161591057268))
+* **engine:** stop Compound child-theft corrupting the model + export from snapshot ([38c354f](https://github.com/itsJeremyMax/solidifai/commit/38c354fd32499ed23787042926dae43aab1849d1))
+* **engine:** validate assembly-mode set_params against the skeleton PARAMS schema ([4f3ebff](https://github.com/itsJeremyMax/solidifai/commit/4f3ebff8f98c81f8cbac2e34ed1036adc7f731b7))
+
 ## [0.5.0](https://github.com/itsJeremyMax/solidifai/compare/v0.4.0...v0.5.0) (2026-07-08)
 
 
