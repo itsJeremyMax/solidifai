@@ -50,6 +50,11 @@ Units are millimetres.
      `process.overhangDeg`), not a generic guess.
    - `stress_check` for sharp internal corners that concentrate stress.
    - `check_interferences` for parts that overlap or float.
+   - `measure_between` for an exact clearance or bore spacing: compare the built gap to the
+     profile clearance instead of eyeballing (`query_faces` gives face ids to measure to;
+     `thickness_at` checks a local wall against the profile min-wall).
+   - `check_motion(joint=...)` for any assembly with a declared non-rigid joint: sweep the DOF
+     and confirm it moves clear (`clearThrough`), no early `firstCollision`.
    - `measure` for exact mass, center of mass, and bounding box.
 5. **Repair.** Fix the flags that matter (playbook below). A flag on an intentionally thin
    cosmetic rib can be left; a thin structural wall cannot.
@@ -115,7 +120,8 @@ successful build:
   `inspect_features()` for this; it returns feature names, not dimension values.
 - **Interfaces**: run `check_interferences` (the part-overlap check, not the assembly-wiring
   `check_interfaces`) and reconcile each pair against the brief: a declared `press` may
-  overlap; a declared `pivot`/`slide` must read `clear` or `adjacent`.
+  overlap; a declared `pivot`/`slide` must read `clear` or `adjacent`. Use `measure_between` to
+  confirm an exact clearance rather than trusting the coarse flag.
 - **Part count**: compare `get_model_info()` `objects` against the declared `parts`.
 - **Published-profile consumers**: for an interface meant to be satisfied by a published
   profile, confirm the consuming part actually reads it (`shape_inputs` names the skeleton

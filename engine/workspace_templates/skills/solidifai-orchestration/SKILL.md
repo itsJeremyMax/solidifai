@@ -30,7 +30,10 @@ instead of one per part.
    list: the **parts** (one simple id each), the **shared dimensions** (every number two or
    more parts must agree on; they become skeleton scalars), and each part's **interface**
    (where it sits and what it mates to; each placement a skeleton frame). If you cannot name
-   the shared dimensions and frames yet, you are not ready to freeze.
+   the shared dimensions and frames yet, you are not ready to freeze. Identical repeated parts
+   (four wheels, six bolts) are ONE part definition placed with `set_occurrences`, not N ids in
+   the fan-out: publish a frame per placement and count them as one part here
+   (**solidifai-assemblies**).
 2. **Write the skeleton** with `set_skeleton(code)`: `PARAMS` for the sliders,
    `s.scalar(name, value)` per shared dimension, `s.frame(name, Location(...))` per attach point.
 
@@ -108,7 +111,8 @@ instead of one per part.
    ```
 
 7. **Verify the composed assembly** like any model: `check_interferences()` for static fit,
-   `check_motion(part, kind, ...)` for anything that moves, `capture_views([...])` to look.
+   `check_motion(joint=...)` (or `part, kind, ...`) for anything that moves, `capture_views([...])`
+   to look.
 
 ### Worked example: a three-part enclosure
 
@@ -142,6 +146,8 @@ composes (one per `set_part`) outside a round.
   skeleton.
 - Treating one failed part as fatal; it is isolated, the rest still composes.
 - Opening a round for a single part; a lone `set_part` composes immediately on its own.
+- Fanning out N workers for N identical parts; that is one part definition plus occurrences
+  (`set_occurrences`), not N ids.
 
 ## Cross-references
 

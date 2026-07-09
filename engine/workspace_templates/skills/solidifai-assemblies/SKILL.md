@@ -23,11 +23,10 @@ millimetres; +Z is up.
   (**solidifai-grounding**).
 - A **packaging** build: the internal layout is the skeleton. Layout frames and shared dims from
   the grounding inventory become the skeleton scalars and frames; each internal component is a
-  **reference volume** part (`role="reference"`, shown for layout and the containment check but
-  never printed); the shell, lid, and brackets are the printed parts. Derive the envelope with
-  the `internal-layout` lens and the `integrated-device` playbook (solidifai-product-design). A
-  rectangular packed envelope is shared as scalars; an irregular footprint is published as a
-  profile (below).
+  **reference volume** part (`role="reference"`, shown for layout but never printed); the shell,
+  lid, and brackets are the printed parts. Derive the envelope with the `internal-layout` lens and
+  the `integrated-device` playbook (solidifai-product-design). A rectangular packed envelope is
+  shared as scalars; an irregular footprint is published as a profile (below).
 - **Skip when:** one part, or one coupled parametric body (a bracket, a knob, a few bodies that
   always move together): that is one `execute_script`; hand back to **solidifai-modeling**.
 
@@ -44,9 +43,9 @@ millimetres; +Z is up.
 ### The model
 
 - The **skeleton** owns the shared design. Its `PARAMS` are the sliders; its `build(...)`
-  publishes named **scalars** (shared numbers like `body_w`, `wall`) and named **frames** (rigid
-  placements, build123d `Location`s). It is the single source of truth for everything two parts
-  must agree on.
+  publishes named **scalars** (shared numbers like `body_w`, `wall`), named **frames** (rigid
+  placements, build123d `Location`s), and named **joints** (how children are meant to move, for
+  the motion check). It is the single source of truth for everything two parts must agree on.
 - The skeleton can also publish named **geometry**: `s.profile("seat", <2D sketch/face/wire>)`
   for a shared profile, or `s.shape("boss", <solid>)` for a shared solid. A part declares the
   ones it reads as `shape_inputs`, and they arrive in the same `inputs` dict (`inputs["seat"]`).
@@ -131,16 +130,7 @@ def build(inputs):
     show(p.part, name="Base")
 ```
 
-```python
-# doctest: +SKIP  (parts/lid.py)
-from solidifai import show
-from build123d import BuildPart, Box
-
-def build(inputs):
-    with BuildPart() as p:
-        Box(inputs["body_w"], inputs["body_w"], 3)
-    show(p.part, name="Lid")
-```
+`parts/lid.py` is the same shape 3 mm thick, `show()`n as `"Lid"`.
 
 The tool calls, in order:
 
@@ -154,24 +144,10 @@ Each `set_part` rebuilds only that part and recomposes; parts appear in the view
 `<id>/<show-name>` (`base/Base`, `lid/Lid`).
 
 **Reference parts (packaging).** An internal component is a part whose `build()` shows a
-`role="reference"` body, attached to its layout frame and reading its envelope dims; the
-mechanics (ghosted, excluded from export and DFM, still seen by `check_interferences()`) live in
-**solidifai-modeling**.
-
-```python
-# doctest: +SKIP  (parts/ref-sbc.py: a reference component, not printed)
-from solidifai import show
-from build123d import BuildPart, Box
-
-def build(inputs):
-    with BuildPart() as p:
-        Box(inputs["sbc_l"], inputs["sbc_w"], inputs["sbc_h"])
-    show(p.part, name="ref: SBC", color=(0.20, 0.55, 0.95), role="reference")
-```
-
-```
-set_part("ref-sbc", <ref code>, attach="sbc_frame", inputs=["sbc_l", "sbc_w", "sbc_h"])
-```
+`role="reference"` body (`show(p.part, name="ref: SBC", color=..., role="reference")`), attached
+to its layout frame and reading its envelope dims; the mechanics (ghosted, excluded from export
+and DFM, still seen by `check_interferences()`) live in **solidifai-modeling**. Wire it like any
+part: `set_part("ref-sbc", <ref code>, attach="sbc_frame", inputs=["sbc_l", "sbc_w", "sbc_h"])`.
 
 For **several** independent parts, use **solidifai-orchestration** (`begin_round`, one
 `set_part` per part, one worker each per **solidifai-delegation**, then `end_round` composes
@@ -193,10 +169,38 @@ once) instead of authoring them one slow `set_part` at a time.
 
 A part `id` is a simple name (`^[A-Za-z0-9_-]+$`); it becomes the part's filename.
 
+### Instancing: N identical parts are one part
+
+Four wheels, six bolts, a row of standoffs: that is ONE part definition placed at several frames,
+never N copies of the file. Define the part once, publish a frame per placement in the skeleton,
+and call `set_occurrences(id, [...])`:
+
+```python
+# doctest: +SKIP  (assembly-mode tool calls; skeleton publishes the four wheel frames)
+set_part("wheel", <wheel code>, attach="wheel_fl", inputs=["wheel_dia", "hub_dia"])
+set_occurrences("wheel", [
+    {"frame": "wheel_fl", "mirror": None},
+    {"frame": "wheel_fr", "mirror": "yz"},   # right side, a mirrored pair
+    {"frame": "wheel_rl", "mirror": None},
+    {"frame": "wheel_rr", "mirror": "yz"},
+])
+```
+
+- Each occurrence is `{"frame": <skeleton frame or null>, "mirror": <null/"xy"/"yz"/"zx">}`; a
+  mirrored occurrence is reflected about that local plane, for a left/right handed pair. The
+  engine separates mirrored occurrences in the BOM and drawings for you.
+- The part builds **once** and is placed at each occurrence, so this is a cheap **recompose**, not
+  N rebuilds. `attach` stays the primary occurrence (`occurrences[0]`).
+- Occurrence bodies are named `wheel`, `wheel@2`, `wheel@3` ...; a feature on one is `wheel@2/bore`.
+  `set_feature` on any occurrence drives the shared param, so every occurrence moves together. Each
+  body is distinct for `check_interferences` and `check_motion`.
+
 ### Hardware
 
-`solidifai.hardware` has ISO metric fasteners and auto-sized holes (sizes M2 to M8). Threads are
-plain cylinders at the correct fit diameters: fit-accurate, not modeled helices.
+`solidifai.hardware` has ISO metric fasteners and auto-sized holes (sizes M2 to M8). Screw and
+hole threads are plain cylinders at the correct fit diameters (fit-accurate, the FDM default);
+when the thread itself is the deliverable, `hardware.external_thread` /
+`hardware.internal_thread_cutter` build a real ISO helical thread (see solidifai-modeling).
 
 ```python
 from build123d import Box, Pos
@@ -219,22 +223,45 @@ show(Pos(0, 0, -2.4) * hardware.hex_nut("M3"), name="Nut")
 In an assembly, the screw and the part with its hole are usually separate parts, each reading
 the fastener size from one skeleton scalar so they always match.
 
+### Joints: declare how parts move
+
+Declare a joint for every moving interface so the motion check knows the intent. In the skeleton
+`build(...)`, `s.joint(name, kind, frame, axis=?, limits=?, between=[moving, ground])`:
+
+```python
+# doctest: +SKIP  (inside the skeleton build(...))
+s.frame("hinge_axis", Location((0, body_d, lid_h)))
+s.joint("hinge", "revolute", "hinge_axis", axis=(1, 0, 0), limits=[0, 110],
+        between=["lid", "base"])
+```
+
+- `kind` is `rigid` (no DOF), `revolute` (rotates about the axis), `slider` (translates along it),
+  `cylindrical` (both), `planar`, or `ball`. `frame` is a published frame at the joint location;
+  `axis` is a local vector (default +Z); `limits` is `[lo, hi]` in degrees (rotary) or mm (linear);
+  `between` names the two child ids `[moving, ground]`.
+- Joints are declared **intent** for motion checking, not a constraint solver: parts are still
+  placed by their `attach` frame. `check_interfaces` validates the joint wiring.
+
 ### Fit and motion checks
 
 Run these once the parts compose.
 
 - **Static fit** with `check_interferences` (the AGENTS.md tool table has the read): an
   intended press-fit is fine; an unintended overlap or a floating lump is a defect.
-- **Motion** with `check_motion(part, kind, axis_origin, axis_dir, start, stop)`: sweeps one
-  part through its range and reports where it first hits another. `kind="revolute"` rotates
-  start..stop degrees about the axis (a hinge, a lid); `kind="prismatic"` translates start..stop
-  mm along it (a drawer, a slider). Confirm a lid opens to 110 degrees, or widen the clearance
-  if it jams early. Name parts clearly; the checks report by name.
+- **Motion** with `check_motion`. Prefer joint mode, `check_motion(joint="hinge")`: it sweeps the
+  joint's first `between` child through its declared limits and reports `firstCollision` and how
+  far it moves clear (`clearThrough`). Or drive a part directly, `check_motion(part, kind,
+  axis_origin, axis_dir, start, stop)`, with `kind="revolute"` (rotate degrees about the axis, a
+  hinge or lid) or `kind="prismatic"` (translate mm along it, a drawer or slider). Confirm a lid
+  opens to 110 degrees, or widen the clearance if it jams early. Run it in self-verify for any
+  assembly with a declared non-rigid joint. Name parts clearly; the checks report by name.
 
 ## Anti-patterns
 
 - Wrapping a lone part (or a handful of tightly coupled bodies that always move together) in a
   skeleton; that stays one `execute_script`.
+- Hand-copying a part file N times for identical parts; define it once and place it with
+  `set_occurrences` (one part, N occurrences).
 - Hand-editing `assembly.json`; the authoring tools own it.
 - A part importing or reading a sibling; parts read only the skeleton.
 - Publishing a profile for a plain shared number; scalars are simpler and equally in sync.

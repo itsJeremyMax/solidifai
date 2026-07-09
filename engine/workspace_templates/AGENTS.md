@@ -164,6 +164,9 @@ editing it by hand is not how you change the model.
 | `inspect_features()` | List named, targetable features (name, kind, driving param, source line). Pair with `set_feature` to retarget a named feature. |
 | `set_feature(name, values)` | Change a named feature by adjusting the parameter(s) that drive it (`values` = `{param: value}`). Rebuilds. Errors if the feature isn't parameter-driven. |
 | `check_interferences()` | Check the shown parts: per pair **overlap** (interpenetrate, with overlap volume) vs. **adjacent** (touching, the normal mating case) vs. **clear**, and per part whether its solids are one body or **floating**. Advisory only: it never changes the model. Run it in self-verify and judge each flag: intended (a fused boss, a press-fit) or a defect (an interpenetrating mating pair, a floating lump). |
+| `measure_between(a, b, mode?)` | Exact distance between two targets (a feature, part, occurrence, a `query_faces` face id, or a literal `[x,y,z]` point): closest approach (with the point pair), center-to-center, and for two cylinders the axis spacing/angle. `mode` picks which value is reported (`min`/`center`/`axis`). Read-only. Check a clearance against the profile instead of eyeballing it. |
+| `query_faces(filter?)` | Enumerate faces matching a `filter` (`object`, `type`, `axis`, area, `sort`, `limit`); each hit carries an `id` (`wheel@2:f13`) you feed straight to `measure_between`/`thickness_at`. Face ids are valid only until the next rebuild. Face addressing without a GUI picker. |
+| `thickness_at(point, direction?)` | Local wall thickness at `[x,y,z]`: snaps to the nearest surface and casts through to the far wall. Pair it with the profile min-wall. Read-only. |
 | `set_params(values)` | Override parameter values and rebuild; **prefer this for tweaks** over re-sending the whole script. |
 | `render()` | Re-render the current model and rewrite artifacts. |
 | `export(format, path?, options?)` | Export the current model. `format` is `step`, `stl`, `glb`, `gltf`, `brep`, or `3mf`; `options` is an optional dict of per-format settings (see "Export options" below). Exports land in `exports/`: no `path` gives `exports/<workspace-name>.<ext>`, and a bare or relative `path` resolves there too. |
@@ -183,13 +186,15 @@ For a single part, ignore this table and use `execute_script`.
 
 | Tool | Use it to |
 |------|-----------|
-| `set_skeleton(code)` | Write `skeleton.py` and enter assembly mode. It declares `PARAMS` and a `build(...)` returning `skeleton()` with named scalars (shared numbers) and frames (placements). |
+| `set_skeleton(code)` | Write `skeleton.py` and enter assembly mode. It declares `PARAMS` and a `build(...)` returning `skeleton()` with named scalars (shared numbers), frames (placements), and joints (declared motion between children, via `s.joint(...)`). |
 | `set_part(id, code, attach?, inputs?, shape_inputs?)` | Write `parts/<id>.py` (a `def build(inputs):` that reads skeleton scalars and `show()`s solids) and wire it: `attach` a skeleton frame, `inputs` the scalars it may read, `shape_inputs` the published profiles/solids it reads (see `s.profile`/`s.shape` in **solidifai-assemblies**). Rebuilds just that part. |
 | `build_part(id)` | Build one part in isolation against the skeleton and report its result (valid, solids, bbox), then recompose. |
 | `get_part_info(id)` | Read one part's source, its `attach`/`inputs` wiring, and last-build solid count. |
 | `get_assembly_tree()` | Read the whole structure: the skeleton's params, the scalars/frames it publishes, and every child with its wiring. |
 | `check_interfaces()` | Validate the assembly's declared wiring: every `attach` frame, every `inputs` scalar, and every `shape_inputs` profile names something the skeleton publishes; reports issues like `missing_shape_input`. Distinct from `check_interferences` (the geometric overlap check). |
-| `attach(id, frame)` | Move a part to a different skeleton frame (a recompose, not a rebuild). |
+| `attach(id, frame)` | Move a part to a different skeleton frame (a recompose, not a rebuild). If the part has occurrences, this re-points the primary one (`occurrences[0]`). |
+| `set_occurrences(id, occurrences)` | Place ONE part definition at several frames (instancing): `occurrences` is a list of `{"frame": <name or null>, "mirror": <null/"xy"/"yz"/"zx">}`. N identical parts are one part plus N occurrences (`id`, `id@2`, ...), a cheap recompose, never N part files; a mirrored occurrence gives a left/right pair the engine keeps separate in the BOM and drawings. |
+| `check_motion(part?/joint?, kind?, ...)` | Sweep a moving part or a declared joint through its range and report where it first collides and how far it moves clear (`firstCollision`/`clearThrough`). Pass `joint=<name>` to drive a skeleton joint through its declared limits, or `part=` with `kind` (`revolute`/`prismatic`) and an explicit axis. Read-only. |
 | `set_inputs(id, inputs)` | Change which skeleton scalars a part reads (rebuilds that part). |
 | `remove_part(id)` | Drop a child and delete its source. |
 | `add_subassembly(id, attach?, inputs?)` | Nest a sub-mechanism: a child node with its own skeleton and parts, wired to a frame on this skeleton. |

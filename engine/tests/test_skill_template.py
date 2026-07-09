@@ -61,9 +61,13 @@ WORD_CEILINGS = {
     "solidifai-product-design": 1650,
     # raised for Task 8: save_reference step + anti-pattern row (deliberate, not rebloat)
     "solidifai-grounding": 1600,
-    # raised for the Phase 2 perception + Phase 3 critique additions (deliberate, not rebloat)
-    "solidifai-self-verify": 1600,
-    "solidifai-assemblies": 1900,
+    # raised for the Phase 2 perception + Phase 3 critique additions, then again for the spatial
+    # + joint-motion verify checks (measure_between/query_faces/thickness_at, check_motion joint
+    # mode); deliberate, not rebloat
+    "solidifai-self-verify": 1670,
+    # raised for occurrences (set_occurrences instancing) + joints (s.joint / check_motion joint
+    # mode), two new engine subsystems taught here; deliberate, not rebloat
+    "solidifai-assemblies": 2140,
     "solidifai-orchestration": 1350,
     "solidifai-delegation": 1000,
     "solidifai-converge": 1000,
@@ -171,7 +175,9 @@ def test_agents_word_ceiling():
     # eat into the prose budget.
     text = AGENTS.read_text(encoding="utf-8")
     prose = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-    assert len(prose.split()) <= 3300
+    # raised for the new spatial (measure_between/query_faces/thickness_at), instancing
+    # (set_occurrences), and joint-motion (check_motion) tool-table rows; deliberate, not rebloat
+    assert len(prose.split()) <= 3560
 
 
 def test_template_covers_every_skill():

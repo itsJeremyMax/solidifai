@@ -105,16 +105,15 @@ Each parameter appears in the Inspector as a slider labelled by its key, with `d
 it; make both pull their weight:
 
 - **Names (the keys)** become the slider label (title-cased: `bore_dia` to "Bore Dia") and the
-  `build()` argument names, so they must be `snake_case`. Keep them clear and distinct:
-  `bore_dia` and `mount_hole_dia`, not `dia1`/`dia2` or a bare `hole_dia`.
-- **Descriptions** (`"desc"`, optional) are a few plain words saying what the parameter
-  controls; sentence-case, no trailing period. Omit `desc` when the name already says it.
+  `build()` arguments, so they must be `snake_case` and distinct: `bore_dia` and
+  `mount_hole_dia`, not `dia1`/`dia2`.
+- **Descriptions** (`"desc"`, optional) are a few plain words for what the parameter controls;
+  sentence-case, no trailing period. Omit `desc` when the name already says it.
 
 | key | desc | verdict |
 |-----|------|---------|
 | `corner_r` | `"Corner radius parameter"` | ✗ cryptic key; desc just restates it |
 | `corner_radius` | `"Edge rounding"` | ✓ clear key; desc adds the intent |
-| `bore_dia` | `"Center hole"` | ✓ |
 | `length` | (none) | ✓ self-explanatory; no desc needed |
 
 ### Make features targetable
@@ -166,17 +165,19 @@ show(plate, name="plate")
 
 Coverage is M2 to M8 (heat-set inserts only M2 to M5).
 
-Threads are **represented as fit-diameter cylinders** (a clearance or tap-drill hole), the right
-default for FDM where fine printed threads print poorly; for a real joint use a heat-set insert,
-captive nut, or tapped pilot. Model a true helical thread (`Helix` + `sweep`) only for a
-large-pitch cap or STEP hand-off. Cookbook §11 carries all of these.
+Threads default to **fit-diameter cylinders** (a clearance or tap-drill hole), the right call for
+FDM; for a real joint use a heat-set insert, captive nut, or tapped pilot. When the thread itself
+is the deliverable (a threaded rod, printed nut, jar lid), `hardware.external_thread(size,
+length)` / `hardware.internal_thread_cutter(size, depth)` build a real ISO helical thread (coarse
+pitch from `std.thread_pitch`); they are heavy geometry, so use them only then. Cookbook §11
+carries all of these.
 
 ### Bevels and screw holes that don't fight you
 
 Thin geometry breaks two ops (fixes in cookbook §6 and §7). A fillet/chamfer over ~half the local
 wall fails the build, so use `safe_fillet` / `safe_chamfer` (from `solidifai`), which clamp to
-what fits. And `Hole()` is fragile on thin walls/ledges (holes "cap out" or lose symmetry), so
-subtract a cutter for placed holes: `part - Pos(x, y, 0) * hardware.clearance_hole("M3", depth)`.
+what fits. And `Hole()` is fragile on thin walls/ledges, so subtract a cutter for placed holes:
+`part - Pos(x, y, 0) * hardware.clearance_hole("M3", depth)`.
 
 ### Multi-part models
 
@@ -199,7 +200,9 @@ changes the saved model).
 **Mating parts need a real clearance gap** so they aren't coincident or interfering. Use the
 workspace fit clearance from `get_manufacturing_profile()` (the `fits` value for the selected
 `design.fit`); fall back to the manufacturability reference's per-process clearance only when
-the profile doesn't apply.
+the profile doesn't apply. Confirm the built gap: `measure_between` the two mating features
+(`query_faces` gives face ids to aim at) and check the number against that clearance instead of
+eyeballing; `thickness_at([x,y,z])` checks a local wall against the profile min-wall.
 
 In an assembly, when two parts must agree on a shape rather than a number, the skeleton
 publishes it with `s.profile(...)`; see **solidifai-assemblies**.
@@ -222,13 +225,13 @@ show(sbc.part, name="ref: SBC", color=(0.20, 0.55, 0.95), role="reference")
 `role="reference"` marks a body as context, not printed geometry: the engine ghosts it and
 **excludes it from `export(...)` and the manufacturing checks (DFM, mass, stress, min-wall)
 automatically**, so you never strip components out before exporting. It stays a real solid
-`check_interferences()` counts, so layout defects (a collision, a component poking through a
-wall) surface as overlaps for self-verify. A `show_internals` PARAM (a 0/1 toggle gating the
-reference `show()` calls) is an optional viewport-declutter. The shell derives from the packed
-envelope plus clearance plus wall, so it tracks its contents.
+`check_interferences()` counts, so layout defects (a collision, a wall breakout) surface as
+overlaps for self-verify. A `show_internals` PARAM (a 0/1 toggle gating the reference `show()`
+calls) declutters the viewport. The shell derives from the packed envelope plus clearance plus
+wall, so it tracks its contents.
 
-See `examples/packaging-layout.py` for the full pattern, and for the design judgment (packing,
-ports, thermal) the **integrated-device** playbook and **internal-layout** lens in
+See `examples/packaging-layout.py` for the full pattern; the design judgment (packing, ports,
+thermal) is the **integrated-device** playbook and **internal-layout** lens in
 `solidifai-product-design`.
 
 ## Anti-patterns
@@ -250,22 +253,21 @@ ports, thermal) the **integrated-device** playbook and **internal-layout** lens 
 - **solidifai-assemblies** - skeleton + parts authoring for genuinely multi-part designs.
 - **`references/build123d-cookbook.md`** - the API patterns: primitives, sketch
   extrude/revolve/loft/sweep, fillet/chamfer with edge selection, holes/counterbores, bolt
-  circles, booleans, shells, transforms (move/mirror/scale/copy), split/draft/text, and
-  threads/fasteners. Read it when you need an API you don't remember.
+  circles, booleans, shells, transforms, split/draft/text, and threads/fasteners. Read it for
+  a forgotten API.
 - **`references/organic-forms.md`** - curved, flowing, hand-friendly shapes: lofting,
-  sweeping along splines, revolved spline silhouettes, fillet-blending, freeform
-  `make_surface` + thicken, and where the B-rep kernel fights back. Read this for vases /
-  grips / horns / pebbles / doubly-curved shells.
+  sweeping along splines, revolved silhouettes, fillet-blending, freeform
+  `make_surface` + thicken, and where the B-rep kernel fights back. For vases, grips, and
+  doubly-curved shells.
 - **`references/workflow.md`** - the MCP tools in detail, the iterate loop, exporting, and
   why you don't hand-edit `model.py`.
 - **`examples/`** - complete, runnable parametric models to copy and adapt:
   - `bracket.py` - rounded plate, chamfered edge, central bore, corner holes (the default).
   - `enclosure.py` - box hollowed with a shell + a lid lip.
   - `flanged-mount.py` - flange + boss + bore + bolt circle.
-  - `parametric-knob.py` - a revolved (lathe) profile with flutes and a filleted rim.
-  - `exploded-enclosure.py` - a two-part base + drop-in lid assembly (the Explode slider spreads
-    the parts).
-  - `packaging-layout.py` - inside-out packaging: reference component volumes gated by
-    `show_internals`, shell derived from the packed envelope.
-  - `spline-vase.py` - an organic spline silhouette revolved + shelled into a thin vessel.
-  - `lofted-grip.py` - oval cross-sections lofted into a waisted ergonomic grip.
+  - `parametric-knob.py` - a revolved profile with flutes and a filleted rim.
+  - `exploded-enclosure.py` - a two-part base + drop-in lid (the Explode slider spreads them).
+  - `packaging-layout.py` - inside-out packaging: reference volumes gated by `show_internals`,
+    shell from the packed envelope.
+  - `spline-vase.py` - a spline silhouette revolved + shelled into a vessel.
+  - `lofted-grip.py` - oval sections lofted into a waisted grip.
