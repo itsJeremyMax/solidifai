@@ -149,3 +149,28 @@ def test_protocol_bumped_to_12():
     from solidifai_engine.protocol import PROTOCOL_VERSION
 
     assert PROTOCOL_VERSION == 12
+
+
+def test_redacts_pem_private_key_block():
+    pem = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEpAIBAAKCAQEA1234567890abcdefG\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    red = issue.redact(f"here is my key:\n{pem}")
+    assert "MIIEpAIBAA" not in red and "[redacted]" in red
+
+
+def test_redacts_aws_access_key():
+    red = issue.redact("creds AKIAIOSFODNN7EXAMPLE in the log")
+    assert "AKIAIOSFODNN7EXAMPLE" not in red
+
+
+def test_redacts_bare_jwt():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"
+    red = issue.redact(f"cookie session={jwt}")
+    assert "eyJhbGci" not in red
+
+
+def test_redacts_windows_lowercase_home():
+    assert issue.redact(r"at c:\users\bob\proj\model.py") == r"at ~\proj\model.py"

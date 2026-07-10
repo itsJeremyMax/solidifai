@@ -54,13 +54,19 @@ def os_dropdown() -> str | None:
 
 # Home-dir prefix (incl. the username segment) -> collapse to ~; the rest of the
 # path is kept so the report still reads. Covers unix and Windows.
-_HOME_RE = re.compile(r"(?:/Users/|/home/|[A-Za-z]:\\Users\\)[A-Za-z0-9._-]+")
+_HOME_RE = re.compile(r"(?i)(?:/Users/|/home/|[A-Za-z]:\\Users\\)[A-Za-z0-9._-]+")
 _SECRET_RES = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._\-]{15,}"),
     re.compile(r"\bgh[oprsu]_[A-Za-z0-9]{20,}\b"),
     re.compile(r"(?i)\b(?:authorization|token|api[_-]?key|secret|password)\b\s*[:=]\s*\S+"),
     re.compile(r"\b[A-Fa-f0-9]{32,}\b"),
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+        re.DOTALL,
+    ),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}"),
 )
 
 
