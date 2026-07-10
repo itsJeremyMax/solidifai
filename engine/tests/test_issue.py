@@ -137,3 +137,15 @@ def test_redacts_bearer_token():
 def test_redacts_anthropic_key():
     red = issue.redact("ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnop-QRSTUVWX")
     assert "sk-ant" not in red
+
+
+def test_registered_in_engine_dispatch():
+    from solidifai_engine.server import _HANDLERS
+
+    assert "report_issue" in _HANDLERS
+
+
+def test_protocol_bumped_to_12():
+    from solidifai_engine.protocol import PROTOCOL_VERSION
+
+    assert PROTOCOL_VERSION == 12

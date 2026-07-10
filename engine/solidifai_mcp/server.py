@@ -258,6 +258,37 @@ def save_reference(
 
 
 @mcp.tool()
+def report_issue(
+    title: str,
+    what_happened: str,
+    steps: str | None = None,
+    context: str | None = None,
+    agent: str | None = None,
+) -> Any:
+    """Build a prefilled GitHub bug-report link for the user to review and submit.
+    Use only through the solidifai-bug-report skill, after real debugging points to
+    a genuine product defect, or when the user asks to file a bug. Supply `title`,
+    `what_happened`, and optionally `steps` and `context` -- curated, safely
+    shareable error or log excerpts. Never put file contents, secrets, absolute
+    paths, or proprietary design details in any field; the engine also redacts home
+    paths and secrets as a backstop. It auto-fills the app version, OS, and a safe
+    diagnostics block, then returns {url, preview}. Show `preview` to the user (it is
+    what becomes public) and give them `url` to click; they can still edit on GitHub
+    before submitting. This never submits anything -- the click is the consent.
+    `agent` is one of: Claude Code, Codex, opencode, Not agent-related."""
+    return _call(
+        "report_issue",
+        {
+            "title": title,
+            "what_happened": what_happened,
+            "steps": steps,
+            "context": context,
+            "agent": agent,
+        },
+    )
+
+
+@mcp.tool()
 def inspect_features() -> Any:
     """List the model's targetable features. Each entry gives the feature's
     name, kind, the parameter(s) that drive it (``driven_by``), its source

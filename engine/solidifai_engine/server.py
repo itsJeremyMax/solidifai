@@ -519,6 +519,12 @@ def _h_save_reference(srv: Server, p: dict) -> Any:
     return {"saved": entry, "count": len(library.get("objects", []))}
 
 
+def _h_report_issue(srv: Server, p: dict) -> Any:
+    from solidifai_engine import issue
+
+    return issue.build_report_issue(p)
+
+
 def _orient_overhang(srv: Server, p: dict) -> float:
     """The overhang angle for fab_orient: explicit param, else the workspace
     manufacturing profile's process.overhangDeg, else 45."""
@@ -549,6 +555,7 @@ _HANDLERS: dict[str, Any] = {
     "lookup_standard": _h_lookup_standard,
     "lookup_reference": _h_lookup_reference,
     "save_reference": _h_save_reference,
+    "report_issue": _h_report_issue,
     "get_params": lambda srv, p: srv._session.get_params(),
     "inspect_features": lambda srv, p: srv._session.inspect_features(),
     "check_interferences": lambda srv, p: srv._session.check_interferences(),
