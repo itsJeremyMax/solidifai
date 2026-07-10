@@ -31,6 +31,7 @@ TEMPLATE_SKILLS: list[str] = [
     "solidifai-converge",
     "solidifai-explore",
     "solidifai-debugging",
+    "solidifai-bug-report",
     "solidifai-history",
     "solidifai-fabrication",
     "solidifai-reverse-engineering",
@@ -72,11 +73,13 @@ WORD_CEILINGS = {
     "solidifai-delegation": 1000,
     "solidifai-converge": 1000,
     "solidifai-explore": 690,
-    "solidifai-debugging": 820,
+    # raised for the solidifai-bug-report escalation cross-reference; deliberate, not rebloat
+    "solidifai-debugging": 835,
     "solidifai-history": 700,
     "solidifai-reverse-engineering": 650,
     "solidifai-fabrication": 950,
     "solidifai-critique": 2000,  # three verbatim critic prompts; same ceiling as modeling
+    "solidifai-bug-report": 634,
 }
 
 
@@ -176,8 +179,9 @@ def test_agents_word_ceiling():
     text = AGENTS.read_text(encoding="utf-8")
     prose = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     # raised for the new spatial (measure_between/query_faces/thickness_at), instancing
-    # (set_occurrences), and joint-motion (check_motion) tool-table rows; deliberate, not rebloat
-    assert len(prose.split()) <= 3560
+    # (set_occurrences), and joint-motion (check_motion) tool-table rows, and again for the
+    # solidifai-bug-report routing table row; deliberate, not rebloat
+    assert len(prose.split()) <= 3575
 
 
 def test_template_covers_every_skill():

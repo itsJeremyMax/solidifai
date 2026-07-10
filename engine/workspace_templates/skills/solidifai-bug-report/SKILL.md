@@ -22,38 +22,38 @@ product defect, or when the user asks to report one.
 - The user says "report a bug", "file an issue", "this is broken", or asks you to tell the
   maintainers.
 - **Skip when:** the build just needs another debugging pass, the failure is a user typo or
-  a missing `show(...)`, or you have not actually tried to fix it yet. Offer once per
-  distinct failure; do not nag.
+  a missing `show(...)`, or you have not actually tried to fix it yet.
 
 ## The procedure
 
-1. **Offer, do not assume.** Say plainly that this looks like a solidifai bug and ask if
-   they want you to prepare a report. If they decline, drop it.
-2. **Gather only safe context.** Collect what helps triage and is safe to share publicly:
-   the operation you attempted, the exact error string or traceback, the engine status, and
-   what you expected versus what happened.
-3. **Never include sensitive information.** No file contents, no absolute paths, no secrets
-   or tokens, and no proprietary design details, dimensions, or part names unless the user
-   explicitly says it is fine to share them. Paraphrase logs rather than pasting raw dumps.
-   The tool redacts home paths and secrets as a backstop, but you are the first line: keep
-   it clean.
-4. **Build the report with `report_issue`.** Call the `report_issue` tool with `title`,
-   `what_happened`, and optional `steps` and `context`. It fills in the app version, OS, and
-   a safe diagnostics block for you. **Never hand-assemble the GitHub URL yourself**;
-   `report_issue` is the only correct way to build it, and it enforces the redaction and
-   length limits.
-5. **Show the preview and let the user decide.** Print the `preview` the tool returns so the
-   user sees exactly what will be shared, and tell them this content is public. Give them
-   the `url` to click. They can still edit everything on GitHub before submitting.
-   Submitting is their choice; the click is the consent. You never submit anything.
+1. **Offer, do not assume.** Say plainly that this looks like a solidifai bug and ask if they
+   want you to prepare a report. If they decline, drop it. Offer once per distinct failure;
+   do not nag.
+2. **Gather only safe context.** Collect what helps triage and is safe to share publicly: the
+   operation you attempted, the exact error string or traceback, the engine status, and what
+   you expected versus what happened.
+3. **Build the report with `report_issue`.** Call the `report_issue` tool with `title`,
+   `what_happened`, and optional `steps` and `context` (the curated error text). It fills in
+   the app version, OS, and a safe diagnostics block for you. **Never hand-assemble the GitHub
+   URL yourself**; `report_issue` is the only correct way to build it, and it enforces the
+   redaction and length limits.
+4. **Show the preview and let the user decide.** Print the `preview` the tool returns so the
+   user sees exactly what will be shared, and tell them this content is public. Give them the
+   `url` to click. They can still edit everything on GitHub before submitting. Submitting is
+   their choice; the click is the consent. You never submit anything.
 
-## What the report carries
+## Anti-patterns
 
-`report_issue` targets the repo's bug form, so a good report has a short `title`, a clear
-`what_happened` (what you did, what you expected, what happened instead), optional `steps`
-to reproduce, and a `context` field for the curated error text. The app version, operating
-system, and a safe build fingerprint are added automatically. Keep every field readable and
-free of anything the user would not want on a public issue.
+- **Reporting a failure you have not debugged.** Real fix attempts come first; a user typo or
+  a missing `show(...)` is not a bug. If you have not tried, go back to solidifai-debugging.
+- **Leaking sensitive information into a public issue.** No file contents, no absolute paths,
+  no secrets or tokens, and no proprietary design details, dimensions, or part names unless
+  the user explicitly says it is fine to share them. Paraphrase logs rather than pasting raw
+  dumps. The tool redacts home paths and secrets as a backstop, but you are the first line.
+- **Hand-assembling the issue URL.** Only `report_issue` builds it; a URL you write yourself
+  skips the redaction and length limits.
+- **Filing without consent, or nagging.** Never submit anything yourself, and do not keep
+  offering after the user declines.
 
 ## Cross-references
 
