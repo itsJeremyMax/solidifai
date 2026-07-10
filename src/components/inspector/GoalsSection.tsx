@@ -1,13 +1,13 @@
 /**
- * RequirementsPanel — the Inspector's Requirements tab. Goals as a live
- * checklist with pass/fail, regression badges, a richer predicate composer,
- * and a "Converge to spec" action for parametric models.
+ * GoalsSection — the Checks tab's goals checklist: live pass/fail rows with
+ * regression badges, preset + custom goal composer, and "Converge to spec" for
+ * parametric models. Report state is owned by ChecksPanel (shared health strip).
  */
 import { useMemo, useState } from "react";
 import { ArrowRight, ChevronDown, Plus, RefreshCw, X } from "lucide-react";
 
 import Select from "../ui/Select";
-import { useRequirements } from "../../hooks/useRequirements";
+import type { useRequirements } from "../../hooks/useRequirements";
 import { useConverge } from "../../hooks/useConverge";
 import { engineSetParams } from "../../lib/ipc/engine";
 import {
@@ -25,6 +25,8 @@ import {
   type RequirementResult,
   type VectorBound,
 } from "../../lib/requirements";
+
+type ReqState = ReturnType<typeof useRequirements>;
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
@@ -436,19 +438,22 @@ function ConvergePanel({ result, onApply, onDismiss, applying }: ConvergePanelPr
   );
 }
 
-/* ── panel ───────────────────────────────────────────────────────────────── */
+/* ── section ─────────────────────────────────────────────────────────────── */
 
-export default function RequirementsPanel({
+export default function GoalsSection({
   buildId,
-  active,
-  hasParams = false,
+  hasParams,
+  report,
+  loading,
+  setRequirements,
 }: {
   buildId: number;
-  active: boolean;
-  /** True when the model declares at least one adjustable parameter (PARAMS). */
-  hasParams?: boolean;
+  /** True when the model declares at least one adjustable parameter. */
+  hasParams: boolean;
+  report: ReqState["report"];
+  loading: boolean;
+  setRequirements: ReqState["setRequirements"];
 }) {
-  const { report, loading, setRequirements } = useRequirements(buildId, active);
   const {
     run: convergeRun,
     result: convergeResult,
@@ -481,27 +486,7 @@ export default function RequirementsPanel({
   };
 
   return (
-    <div className="pb-2">
-      {/* summary strip */}
-      {hasGoals && summary && (
-        <div className="flex items-center gap-3 border-b border-line px-3.5 py-2.5">
-          <span
-            className={`inline-flex items-center gap-1.5 text-caption ${
-              summary.allMet ? "text-engine" : "text-ink-2"
-            }`}
-          >
-            <span className={`h-2 w-2 rounded-full ${summary.allMet ? "bg-engine" : "bg-amber"}`} />
-            {summary.met} / {summary.total} met
-          </span>
-          {!!summary.regressed && summary.regressed > 0 && (
-            <span className="text-caption text-amber">{summary.regressed} regressed</span>
-          )}
-          {!!summary.fixed && summary.fixed > 0 && (
-            <span className="text-caption text-engine">{summary.fixed} fixed</span>
-          )}
-        </div>
-      )}
-
+    <div className="pb-1">
       {/* goal rows */}
       {report?.requirements.map((r) => (
         <GoalRow key={r.id} r={r} onRemove={() => remove(r.id)} />
@@ -509,7 +494,7 @@ export default function RequirementsPanel({
 
       {/* empty state */}
       {!hasGoals && (
-        <p className="px-3.5 pb-1 pt-3.5 text-body text-ink-3">
+        <p className="px-3.5 pb-1 pt-1 text-body text-ink-3">
           {loading
             ? "Loading goals..."
             : "Set a goal (max mass, fits a box, printable) and watch it verify on every build."}

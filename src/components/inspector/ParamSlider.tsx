@@ -16,6 +16,7 @@
  * result of the final commit — reconciles the slider to the engine's truth.
  */
 import { useEffect, useRef, useState } from "react";
+import { RotateCcw } from "lucide-react";
 
 import type { ParamSchemaEntry } from "../../lib/artifacts";
 import { round1 } from "../../lib/format";
@@ -202,6 +203,12 @@ export default function ParamSlider({
   };
 
   const pct = ratio(local, entry.min, entry.max) * 100;
+  const defaultPct = ratio(entry.value, entry.min, entry.max) * 100;
+  const modified = Math.abs(local - entry.value) > 1e-9;
+  const resetToDefault = () => {
+    setLocal(entry.value);
+    onCommit(paramKey, entry.value);
+  };
   const unit = entry.unit ? ` ${entry.unit}` : "";
   // Short subtitle under the name — only when the engine supplied a non-empty
   // description. Empty desc renders the row exactly as before (no layout shift).
@@ -211,10 +218,23 @@ export default function ParamSlider({
   const descId = `param-desc-${paramKey}`;
 
   return (
-    <div className="px-3.5 py-2.25">
+    <div className="group px-3.5 py-2.25">
       <div className="mb-2">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-xs font-medium text-ink-2">{titleCase(paramKey)}</span>
+          <span className="min-w-0 truncate text-xs font-medium text-ink-2">
+            {titleCase(paramKey)}
+          </span>
+          {modified && !editing && (
+            <button
+              type="button"
+              onClick={resetToDefault}
+              title={`Reset to ${round1(entry.value)}${unit}`}
+              aria-label={`Reset ${titleCase(paramKey)} to default`}
+              className="ml-auto grid h-4 w-4 shrink-0 place-items-center self-center rounded-sm text-ink-3 opacity-0 transition-opacity hover:bg-surface-2 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <RotateCcw size={11} strokeWidth={2} />
+            </button>
+          )}
           {editing ? (
             <input
               ref={inputRef}
@@ -246,13 +266,24 @@ export default function ParamSlider({
           </p>
         )}
       </div>
-      <div className="relative h-1 rounded-full bg-line-2">
+      <div className="group/track relative h-1 rounded-full bg-line-2">
         <div
           className="absolute inset-y-0 left-0 rounded-full bg-accent"
           style={{ width: `${pct}%` }}
         />
+        {/* default-value notch — the "home" position the reset returns to */}
+        {modified && (
+          <div
+            className="pointer-events-none absolute top-1/2 h-2.25 w-px -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-3/50"
+            style={{ left: `${defaultPct}%` }}
+          />
+        )}
         <div
-          className="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_1px_3px_rgba(16,18,24,.3),0_0_0_1.5px_var(--color-accent)]"
+          className={`pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white transition-[box-shadow,scale] duration-120 ${
+            dragging
+              ? "scale-110 shadow-[0_1px_3px_rgba(16,18,24,.3),0_0_0_1.5px_var(--color-accent),0_0_0_5px_rgba(43,108,255,.22)]"
+              : "shadow-[0_1px_3px_rgba(16,18,24,.3),0_0_0_1.5px_var(--color-accent)] group-hover/track:shadow-[0_1px_3px_rgba(16,18,24,.3),0_0_0_1.5px_var(--color-accent),0_0_0_4px_rgba(43,108,255,.15)]"
+          }`}
           style={{ left: `${pct}%` }}
         />
         {/* Native range input overlaid transparently — owns keyboard + pointer

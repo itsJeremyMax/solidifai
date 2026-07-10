@@ -1,23 +1,31 @@
 /**
- * useInspectorPrefs — persists the Inspector's *layout* (active tab + which Model
- * sections are open) to localStorage. Pure UI state, so it deliberately does NOT
- * touch the Rust-backed appConfig. Reads are guarded → defaults on missing/bad
- * JSON; writes are best-effort.
+ * useInspectorPrefs — persists the Inspector's layout (active tab + open
+ * sections, keys namespaced by tab) to localStorage. Pure UI state; guarded
+ * reads fall back to defaults, writes are best-effort.
  */
 import { useCallback, useState } from "react";
 import { isInspectorTab, type InspectorTab } from "../components/inspector/tabs";
 
-export type SectionKey = "parts" | "parameters" | "dimensions" | "explore";
-
 const TAB_KEY = "solidifai.inspector.tab";
 const SECTIONS_KEY = "solidifai.inspector.sections";
 
-const DEFAULT_OPEN: Record<SectionKey, boolean> = {
-  parts: true,
-  parameters: true,
-  dimensions: false,
-  explore: false,
-};
+export const DEFAULT_OPEN = {
+  "model.parts": true,
+  "model.parameters": true,
+  "model.explore": false,
+  "model.measure": false,
+  "checks.goals": true,
+  "checks.dfm": true,
+  "checks.stress": true,
+  "checks.fit": false,
+  "activity.brief": true,
+  "activity.history": true,
+  "make.estimate": true,
+  "make.orient": false,
+} as const satisfies Record<string, boolean>;
+
+export type SectionKey = keyof typeof DEFAULT_OPEN;
+export type SectionState = Record<SectionKey, boolean>;
 
 function readTab(): InspectorTab {
   try {
@@ -28,27 +36,24 @@ function readTab(): InspectorTab {
   }
 }
 
-function readOpen(): Record<SectionKey, boolean> {
+function readOpen(): SectionState {
+  const open: SectionState = { ...DEFAULT_OPEN };
   try {
     const raw = localStorage.getItem(SECTIONS_KEY);
-    if (!raw) return { ...DEFAULT_OPEN };
-    const parsed = JSON.parse(raw) as Partial<Record<SectionKey, boolean>>;
-    return {
-      parts: typeof parsed.parts === "boolean" ? parsed.parts : DEFAULT_OPEN.parts,
-      parameters:
-        typeof parsed.parameters === "boolean" ? parsed.parameters : DEFAULT_OPEN.parameters,
-      dimensions:
-        typeof parsed.dimensions === "boolean" ? parsed.dimensions : DEFAULT_OPEN.dimensions,
-      explore: typeof parsed.explore === "boolean" ? parsed.explore : DEFAULT_OPEN.explore,
-    };
+    if (!raw) return open;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const key of Object.keys(open) as SectionKey[]) {
+      if (typeof parsed[key] === "boolean") open[key] = parsed[key];
+    }
   } catch {
-    return { ...DEFAULT_OPEN };
+    /* defaults stand */
   }
+  return open;
 }
 
 export function useInspectorPrefs() {
   const [tab, setTabState] = useState<InspectorTab>(readTab);
-  const [open, setOpen] = useState<Record<SectionKey, boolean>>(readOpen);
+  const [open, setOpen] = useState<SectionState>(readOpen);
 
   const setTab = useCallback((t: InspectorTab) => {
     setTabState(t);

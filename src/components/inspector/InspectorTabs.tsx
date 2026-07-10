@@ -1,11 +1,10 @@
 /**
- * InspectorTabs — the Model · Requirements · Measure · DFM · History · Make
- * segmented control in the Inspector header. The active chip is filled cobalt and
- * shows its label; inactive chips are icon-only on surface-2 (tooltip + aria-label
- * carry the name), which keeps the tabs inside the narrow panel without crowding.
- * Tabs come from the shared {@link INSPECTOR_TABS} registry; `InspectorTab` is
- * re-exported here for existing importers.
+ * InspectorTabs — the Inspector header's segmented control. Equal-width cells
+ * with always-visible labels and a sliding indicator, so the row's geometry
+ * never changes when the active tab does. Arrow keys move the selection.
  */
+import { useRef } from "react";
+
 import { INSPECTOR_TABS, type InspectorTab } from "./tabs";
 
 export type { InspectorTab };
@@ -13,31 +12,75 @@ export type { InspectorTab };
 export default function InspectorTabs({
   active,
   onSelect,
+  badges,
 }: {
   active: InspectorTab;
   onSelect: (t: InspectorTab) => void;
+  /** Tabs that should show a corner dot (quiet "something new here" signal). */
+  badges?: Partial<Record<InspectorTab, boolean>>;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const activeIdx = Math.max(
+    0,
+    INSPECTOR_TABS.findIndex((t) => t.id === active),
+  );
+
+  const selectIdx = (idx: number) => {
+    const n = INSPECTOR_TABS.length;
+    const next = INSPECTOR_TABS[((idx % n) + n) % n];
+    onSelect(next.id);
+    // Selection follows focus: keep the keyboard on the newly active tab.
+    listRef.current?.querySelector<HTMLButtonElement>(`[data-tab="${next.id}"]`)?.focus();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowRight") selectIdx(activeIdx + 1);
+    else if (e.key === "ArrowLeft") selectIdx(activeIdx - 1);
+    else if (e.key === "Home") selectIdx(0);
+    else if (e.key === "End") selectIdx(INSPECTOR_TABS.length - 1);
+    else return;
+    e.preventDefault();
+  };
+
   return (
-    <div role="tablist" aria-label="Inspector sections" className="flex gap-1.25">
-      {INSPECTOR_TABS.map(({ id, label, Icon }) => {
+    <div
+      ref={listRef}
+      role="tablist"
+      aria-label="Inspector sections"
+      onKeyDown={handleKeyDown}
+      className="relative flex h-7.5 min-w-0 flex-1 rounded-lg bg-surface-2 p-0.75"
+    >
+      {/* Sliding indicator: one card, translated to the active cell. */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0.75 left-0.75 rounded-md bg-surface shadow-[0_1px_2px_rgba(16,18,24,0.07),0_0_0_1px_var(--color-line)] transition-transform duration-200 ease-out-soft motion-reduce:transition-none"
+        style={{
+          width: `calc((100% - 6px) / ${INSPECTOR_TABS.length})`,
+          transform: `translateX(${activeIdx * 100}%)`,
+        }}
+      />
+      {INSPECTOR_TABS.map(({ id, label }) => {
         const on = active === id;
         return (
           <button
             key={id}
             type="button"
             role="tab"
+            data-tab={id}
             aria-selected={on}
-            aria-label={label}
-            title={label}
+            tabIndex={on ? 0 : -1}
             onClick={() => onSelect(id)}
-            className={
-              on
-                ? "inline-flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.75 text-xs font-semibold text-white"
-                : "inline-flex h-7 w-7 items-center justify-center rounded-lg bg-surface-2 text-ink-3 transition-colors hover:text-ink"
-            }
+            className={`relative z-[1] min-w-0 flex-1 rounded-md text-caption transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-line ${
+              on ? "font-semibold text-ink" : "font-medium text-ink-3 hover:text-ink"
+            }`}
           >
-            <Icon size={14} strokeWidth={1.9} />
-            {on && label}
+            {label}
+            {badges?.[id] && !on && (
+              <span
+                aria-hidden
+                className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
+              />
+            )}
           </button>
         );
       })}

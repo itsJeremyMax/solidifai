@@ -1,24 +1,17 @@
 /**
- * MakePanel — the Inspector's Make tab. Sections:
- *   • Slicer status — detected name + version, or a quiet install prompt.
- *   • Connections   — the saved connections (read-only here); created + edited on
- *                     the Factory page, and selected below for estimate / open.
- *   • Slice & estimate — on-demand print-time / filament / cost readout, with an
- *                        "approx" note when no slicer is present.
- *   • Auto-orient — suggested print orientation + support-area reduction.
- *                   Display only; "apply" is not wired in the engine.
- *   • Open in OrcaSlicer — hands the current model off to the slicer.
- *
- * All sections degrade gracefully when there is no model (buildId < 0) or no
- * slicer detected.
+ * MakePanel — the Inspector's Make tab: one header block (slicer status, the
+ * shared destination, and the OrcaSlicer handoff as the primary action) over
+ * Estimate and Orientation sections. Destinations are created and edited on
+ * the Factory page; the one picked here feeds every action below it.
  */
 import { useEffect, useState } from "react";
-import { Factory, Printer, RotateCw, X } from "lucide-react";
+import { Factory, Printer, RotateCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import CollapsibleSection from "./CollapsibleSection";
 import Select from "../ui/Select";
-import { useFabrication } from "../../hooks/useFabrication";
+import { useFabrication, type FabricationState } from "../../hooks/useFabrication";
+import type { SectionKey, SectionState } from "../../state/useInspectorPrefs";
 
 /* ─── helpers ────────────────────────────────────────────────────────────── */
 
@@ -38,8 +31,6 @@ function supportSaving(best: number, worst: number): number {
   return Math.round(((worst - best) / worst) * 100);
 }
 
-/* ─── shared row / label primitives ─────────────────────────────────────── */
-
 function Row({ k, v }: { k: string; v: string }) {
   return (
     <div className="flex justify-between gap-3 px-3.5 py-1.5 text-xs">
@@ -49,32 +40,35 @@ function Row({ k, v }: { k: string; v: string }) {
   );
 }
 
-/* ─── Slicer status ──────────────────────────────────────────────────────── */
+/* ─── header: slicer status + destination + handoff ─────────────────────── */
 
-function SlicerSection({ active }: { active: boolean }) {
-  const fab = useFabricationCtx();
-
-  // Detect once when the section becomes active, if not yet loaded.
-  useEffect(() => {
-    if (active && fab.install === null && !fab.loading) {
-      void fab.detect();
-    }
-  }, [active, fab]);
-
+function SetupHeader({
+  fab,
+  buildId,
+  destId,
+  onDestChange,
+}: {
+  fab: FabricationState;
+  buildId: number;
+  destId: string;
+  onDestChange: (id: string) => void;
+}) {
+  const navigate = useNavigate();
   const { install, loading } = fab;
 
   return (
-    <div className="px-3.5 pb-3 pt-2">
+    <div className="border-b border-line px-3.5 pb-3 pt-2.5">
+      {/* slicer status line */}
       {loading && install === null ? (
-        <p className="text-caption text-ink-3">Detecting…</p>
+        <p className="text-caption text-ink-3">Detecting slicer…</p>
       ) : install?.found ? (
         <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="text-body text-ink">OrcaSlicer</p>
+          <p className="text-body text-ink">
+            OrcaSlicer
             {install.version && (
-              <p className="font-mono text-caption text-ink-3">{install.version}</p>
+              <span className="ml-1.5 font-mono text-caption text-ink-3">{install.version}</span>
             )}
-          </div>
+          </p>
           <span className="inline-flex items-center gap-1.5 rounded-md bg-engine/10 px-2 py-0.75 text-caption font-medium text-engine">
             <span className="h-1.5 w-1.5 rounded-full bg-engine" />
             Ready
@@ -85,6 +79,7 @@ function SlicerSection({ active }: { active: boolean }) {
           <p className="text-body text-ink-2">No slicer detected.</p>
           <p className="text-caption text-ink-3">
             Install OrcaSlicer to unlock real print time, exact filament, and direct handoff.
+            Estimates below stay approximate until then.
           </p>
           <button
             type="button"
@@ -97,320 +92,218 @@ function SlicerSection({ active }: { active: boolean }) {
           </button>
         </div>
       )}
-    </div>
-  );
-}
 
-/* ─── Connections (select-only; created + edited on the Factory page) ─────── */
+      {/* shared destination — feeds the estimate and the handoff below */}
+      <div className="mt-2.5 flex items-center gap-1.5">
+        <Select
+          value={destId}
+          onChange={onDestChange}
+          ariaLabel="Destination"
+          className="min-w-0 flex-1"
+          options={[
+            {
+              value: "",
+              label: fab.destinations.length > 0 ? "No destination" : "No destinations yet",
+            },
+            ...fab.destinations.map((d) => ({ value: d.id, label: d.name })),
+          ]}
+        />
+        <button
+          type="button"
+          onClick={() => navigate("factory")}
+          title="Manage destinations on the Factory page"
+          className="grid h-8.5 w-8.5 shrink-0 place-items-center rounded-lg border border-line-2 bg-surface text-ink-2 transition-colors hover:border-line-3 hover:text-ink"
+        >
+          <Factory size={14} strokeWidth={1.9} />
+        </button>
+      </div>
 
-function DestinationsSection() {
-  const fab = useFabricationCtx();
-  const navigate = useNavigate();
-
-  // Load the shared connection list once (also feeds the Estimate / Open selects).
-  // Connections are created + edited on the Factory page, not here.
-  useEffect(() => {
-    void fab.list();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <div className="pb-1.5">
-      {fab.destinations.length === 0 ? (
-        <p className="px-3.5 pb-1.5 pt-2 text-caption text-ink-3">
-          No connections yet. Set one up on the Factory page to send prints to your slicer.
-        </p>
-      ) : (
-        <div className="flex flex-col">
-          {fab.destinations.map((d) => (
-            <div key={d.id} className="px-3.5 py-2">
-              <p className="truncate text-body text-ink">{d.name}</p>
-              {(d.printerProfile || d.filamentProfile || d.processProfile) && (
-                <p className="truncate text-caption text-ink-3">
-                  {[d.printerProfile, d.filamentProfile, d.processProfile]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
+      {/* primary action: hand the model to the slicer */}
+      {install?.found && (
+        <button
+          type="button"
+          onClick={() => void fab.open(destId || null)}
+          disabled={fab.loading || buildId < 0}
+          title={buildId < 0 ? "Build a model first" : undefined}
+          className="mt-2 inline-flex h-8.5 w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 text-caption font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          <Printer size={13} strokeWidth={2} />
+          Open in OrcaSlicer
+        </button>
       )}
-      <button
-        type="button"
-        onClick={() => navigate("factory")}
-        className="mx-2.5 my-1.5 inline-flex items-center gap-1.5 rounded-md border border-line-2 bg-surface px-2.5 py-1 text-caption font-medium text-ink-2 transition-colors hover:border-line-3 hover:text-ink"
-      >
-        <Factory size={13} strokeWidth={2} />
-        Manage connections
-      </button>
     </div>
   );
 }
 
-/* ─── Slice & estimate ───────────────────────────────────────────────────── */
+/* ─── Estimate ───────────────────────────────────────────────────────────── */
 
-function EstimateSection({ buildId }: { buildId: number }) {
-  const fab = useFabricationCtx();
-  const [destId, setDestId] = useState<string>("");
-
-  const destOpts = [
-    { value: "", label: "No destination (approx)" },
-    ...fab.destinations.map((d) => ({ value: d.id, label: d.name })),
-  ];
-
-  const run = () => void fab.fetchEstimate(destId || null);
-
+function EstimateSection({
+  fab,
+  buildId,
+  destId,
+}: {
+  fab: FabricationState;
+  buildId: number;
+  destId: string;
+}) {
   const est = fab.estimate;
 
-  return (
-    <div className="pb-2 pt-1.5">
-      {buildId < 0 ? (
-        <p className="px-3.5 py-1.5 text-caption text-ink-3">Build a model to estimate.</p>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 px-3.5 pb-2">
-            {fab.destinations.length > 0 && (
-              <Select
-                value={destId}
-                onChange={setDestId}
-                ariaLabel="Destination"
-                className="min-w-0 flex-1"
-                options={destOpts}
-              />
-            )}
-            <button
-              type="button"
-              onClick={run}
-              disabled={fab.loading}
-              className="h-8.5 shrink-0 rounded-lg bg-accent px-3 text-caption font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {fab.loading ? "Running…" : "Estimate"}
-            </button>
-          </div>
+  if (buildId < 0) {
+    return (
+      <p className="px-3.5 pb-2.5 pt-0.5 text-caption text-ink-3">Build a model to estimate.</p>
+    );
+  }
 
-          {est && (
-            <div className="border-t border-line pt-1">
-              {est.timeSeconds !== undefined ? (
-                <Row k="Print time" v={fmtDuration(est.timeSeconds)} />
-              ) : (
-                <div className="flex items-center gap-2 px-3.5 py-1.5">
-                  <span className="text-xs text-ink-3">Print time</span>
-                  <span className="ml-auto text-right text-caption text-ink-3">
-                    install a slicer for print time
-                  </span>
-                </div>
-              )}
-              {est.filamentGrams !== undefined && (
-                <Row k="Filament" v={`${est.filamentGrams.toFixed(1)} g`} />
-              )}
-              {est.cost !== undefined && (
-                <Row k="Cost" v={`${est.cost.toFixed(2)} ${est.currency}`} />
-              )}
-              {est.layerCount !== undefined && <Row k="Layers" v={String(est.layerCount)} />}
-              {est.heightMm !== undefined && <Row k="Height" v={`${est.heightMm.toFixed(1)} mm`} />}
-              {est.supportUsed !== undefined && (
-                <Row k="Support" v={est.supportUsed ? "Yes" : "No"} />
-              )}
-              {est.fitsBed === false && (
-                <div className="flex justify-between gap-3 px-3.5 py-1.5 text-xs">
-                  <span className="shrink-0 text-ink-3">Bed fit</span>
-                  <span className="min-w-0 truncate text-right font-mono text-amber">
-                    Larger than the printer bed
-                  </span>
-                </div>
-              )}
-              {est.source === "approx" && (
-                <p className="px-3.5 pb-1.5 pt-1 text-caption text-ink-3">
-                  Geometric approximation. Figures improve with a connected slicer.
-                </p>
-              )}
+  return (
+    <div className="pb-2 pt-0.5">
+      <div className="flex items-center justify-between gap-2 px-3.5 pb-2">
+        <p className="min-w-0 flex-1 text-caption text-ink-3">
+          Print time, filament, and cost for the current model.
+        </p>
+        <button
+          type="button"
+          onClick={() => void fab.fetchEstimate(destId || null)}
+          disabled={fab.loading}
+          className="h-8.5 shrink-0 rounded-lg border border-line-2 bg-surface px-3 text-caption font-medium text-ink-2 transition-colors hover:border-line-3 hover:text-ink disabled:opacity-50"
+        >
+          {fab.loading ? "Running…" : "Estimate"}
+        </button>
+      </div>
+
+      {est && (
+        <div className="border-t border-line pt-1">
+          {est.timeSeconds !== undefined ? (
+            <Row k="Print time" v={fmtDuration(est.timeSeconds)} />
+          ) : (
+            <div className="flex items-center gap-2 px-3.5 py-1.5">
+              <span className="text-xs text-ink-3">Print time</span>
+              <span className="ml-auto text-right text-caption text-ink-3">
+                install a slicer for print time
+              </span>
             </div>
           )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ─── Auto-orient ────────────────────────────────────────────────────────── */
-
-function OrientSection({ buildId }: { buildId: number }) {
-  const fab = useFabricationCtx();
-  const result = fab.orient;
-
-  const run = () => void fab.findOrientation();
-  const saving = result ? supportSaving(result.supportArea, result.worstSupportArea) : 0;
-
-  return (
-    <div className="pb-2 pt-1.5">
-      {buildId < 0 ? (
-        <p className="px-3.5 py-1.5 text-caption text-ink-3">Build a model to find orientation.</p>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 px-3.5 pb-2">
-            <p className="min-w-0 flex-1 text-caption text-ink-3">
-              Finds the rotation that minimizes support material.
+          {est.filamentGrams !== undefined && (
+            <Row k="Filament" v={`${est.filamentGrams.toFixed(1)} g`} />
+          )}
+          {est.cost !== undefined && <Row k="Cost" v={`${est.cost.toFixed(2)} ${est.currency}`} />}
+          {est.layerCount !== undefined && <Row k="Layers" v={String(est.layerCount)} />}
+          {est.heightMm !== undefined && <Row k="Height" v={`${est.heightMm.toFixed(1)} mm`} />}
+          {est.supportUsed !== undefined && <Row k="Support" v={est.supportUsed ? "Yes" : "No"} />}
+          {est.fitsBed === false && (
+            <div className="flex justify-between gap-3 px-3.5 py-1.5 text-xs">
+              <span className="shrink-0 text-ink-3">Bed fit</span>
+              <span className="min-w-0 truncate text-right font-mono text-amber">
+                Larger than the printer bed
+              </span>
+            </div>
+          )}
+          {est.source === "approx" && (
+            <p className="px-3.5 pb-1.5 pt-1 text-caption text-ink-3">
+              Geometric approximation. Figures improve with a connected slicer.
             </p>
-            <button
-              type="button"
-              onClick={run}
-              disabled={fab.loading}
-              className="h-8.5 shrink-0 rounded-lg border border-line-2 bg-surface px-3 text-caption font-medium text-ink-2 transition-colors hover:border-line-3 hover:text-ink disabled:opacity-50"
-            >
-              {fab.loading ? "Running…" : "Analyze"}
-            </button>
-          </div>
-
-          {result && (
-            <div className="border-t border-line pt-1">
-              <Row k="Rotation" v={result.rotation.map((n) => `${n.toFixed(1)}°`).join(", ")} />
-              <Row k="Support area" v={`${result.supportArea.toFixed(1)} mm²`} />
-              {saving > 0 && (
-                <div className="flex items-center justify-between gap-3 px-3.5 py-1.5 text-xs">
-                  <span className="shrink-0 text-ink-3">Improvement</span>
-                  <span className="font-mono tabular-nums text-engine">
-                    saves ~{saving}% support
-                  </span>
-                </div>
-              )}
-              <p className="px-3.5 pt-1 pb-1.5 text-caption text-ink-3">
-                Suggested print orientation. Export the model to apply it.
-              </p>
-            </div>
           )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ─── Open in OrcaSlicer ─────────────────────────────────────────────────── */
-
-function OpenSection({ buildId }: { buildId: number }) {
-  const fab = useFabricationCtx();
-  const [destId, setDestId] = useState<string>("");
-
-  if (!fab.install?.found) return null;
-
-  const destOpts = [
-    { value: "", label: "No destination" },
-    ...fab.destinations.map((d) => ({ value: d.id, label: d.name })),
-  ];
-
-  const handleOpen = () => void fab.open(destId || null);
-
-  return (
-    <div className="border-t border-line px-3.5 py-3">
-      {buildId < 0 ? (
-        <p className="text-caption text-ink-3">Build a model to open it in OrcaSlicer.</p>
-      ) : (
-        <div className="flex items-center gap-2">
-          {fab.destinations.length > 0 && (
-            <Select
-              value={destId}
-              onChange={setDestId}
-              ariaLabel="Destination"
-              className="min-w-0 flex-1"
-              options={destOpts}
-            />
-          )}
-          <button
-            type="button"
-            onClick={handleOpen}
-            disabled={fab.loading}
-            className="inline-flex h-8.5 shrink-0 items-center gap-2 rounded-lg bg-accent px-3 text-caption font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            <Printer size={13} strokeWidth={2} />
-            Open in OrcaSlicer
-          </button>
         </div>
       )}
     </div>
   );
 }
 
-/* ─── Context — shares one useFabrication instance across sub-components ─── */
+/* ─── Orientation ────────────────────────────────────────────────────────── */
 
-// We pass the fab state/actions down via a module-level singleton ref so that
-// inner sections share one hook instance without prop-drilling through every
-// level. The panel renders a single `<MakePanelInner>` once it has constructed
-// the context value.
+function OrientSection({ fab, buildId }: { fab: FabricationState; buildId: number }) {
+  const result = fab.orient;
+  const saving = result ? supportSaving(result.supportArea, result.worstSupportArea) : 0;
 
-import { createContext, useContext } from "react";
-import type { FabricationState } from "../../hooks/useFabrication";
+  if (buildId < 0) {
+    return (
+      <p className="px-3.5 pb-2.5 pt-0.5 text-caption text-ink-3">
+        Build a model to find its print orientation.
+      </p>
+    );
+  }
 
-const FabCtx = createContext<FabricationState | null>(null);
+  return (
+    <div className="pb-2 pt-0.5">
+      <div className="flex items-center justify-between gap-2 px-3.5 pb-2">
+        <p className="min-w-0 flex-1 text-caption text-ink-3">
+          Finds the rotation that minimizes support material.
+        </p>
+        <button
+          type="button"
+          onClick={() => void fab.findOrientation()}
+          disabled={fab.loading}
+          className="h-8.5 shrink-0 rounded-lg border border-line-2 bg-surface px-3 text-caption font-medium text-ink-2 transition-colors hover:border-line-3 hover:text-ink disabled:opacity-50"
+        >
+          {fab.loading ? "Running…" : "Analyze"}
+        </button>
+      </div>
 
-function useFabricationCtx(): FabricationState {
-  const ctx = useContext(FabCtx);
-  if (!ctx) throw new Error("useFabricationCtx used outside MakePanel");
-  return ctx;
+      {result && (
+        <div className="border-t border-line pt-1">
+          <Row k="Rotation" v={result.rotation.map((n) => `${n.toFixed(1)}°`).join(", ")} />
+          <Row k="Support area" v={`${result.supportArea.toFixed(1)} mm²`} />
+          {saving > 0 && (
+            <div className="flex items-center justify-between gap-3 px-3.5 py-1.5 text-xs">
+              <span className="shrink-0 text-ink-3">Improvement</span>
+              <span className="font-mono tabular-nums text-engine">saves ~{saving}% support</span>
+            </div>
+          )}
+          <p className="px-3.5 pb-1.5 pt-1 text-caption text-ink-3">
+            Suggested print orientation. Export the model to apply it.
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ─── panel ──────────────────────────────────────────────────────────────── */
 
-export default function MakePanel({ buildId, active }: { buildId: number; active: boolean }) {
+export default function MakePanel({
+  buildId,
+  active,
+  open,
+  onToggleSection,
+}: {
+  buildId: number;
+  active: boolean;
+  open: SectionState;
+  onToggleSection: (k: SectionKey) => void;
+}) {
   const fab = useFabrication(buildId);
-  const [open, setOpen] = useState({
-    slicer: true,
-    destinations: true,
-    estimate: true,
-    orient: false,
-  });
-  const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
+  const [destId, setDestId] = useState("");
+
+  // Detect the slicer + load destinations once the tab is first shown.
+  useEffect(() => {
+    if (!active) return;
+    if (fab.install === null && !fab.loading) void fab.detect();
+    void fab.list();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   return (
-    <FabCtx.Provider value={fab}>
-      <div className="pb-2">
-        {fab.error && (
-          <div className="flex items-center justify-between gap-2 border-b border-line px-3.5 py-2">
-            <p className="text-caption text-ink-3">{fab.error}</p>
-            <button
-              type="button"
-              aria-label="Dismiss"
-              onClick={() => {
-                // Clear error by re-detecting — the hook will clear error on next call.
-                void fab.detect();
-              }}
-              className="grid h-5 w-5 shrink-0 place-items-center rounded-sm text-ink-3 hover:bg-surface-2 hover:text-ink"
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        )}
+    <div className="pb-2">
+      {fab.error && (
+        <p className="border-b border-line px-3.5 py-2 text-caption text-ink-3">{fab.error}</p>
+      )}
 
-        <CollapsibleSection title="Slicer" open={open.slicer} onToggle={() => toggle("slicer")}>
-          <SlicerSection active={active && open.slicer} />
-        </CollapsibleSection>
+      <SetupHeader fab={fab} buildId={buildId} destId={destId} onDestChange={setDestId} />
 
-        <CollapsibleSection
-          title="Destinations"
-          count={fab.destinations.length || undefined}
-          open={open.destinations}
-          onToggle={() => toggle("destinations")}
-        >
-          <DestinationsSection />
-        </CollapsibleSection>
+      <CollapsibleSection
+        title="Estimate"
+        open={open["make.estimate"]}
+        onToggle={() => onToggleSection("make.estimate")}
+      >
+        <EstimateSection fab={fab} buildId={buildId} destId={destId} />
+      </CollapsibleSection>
 
-        <CollapsibleSection
-          title="Slice & estimate"
-          open={open.estimate}
-          onToggle={() => toggle("estimate")}
-        >
-          <EstimateSection buildId={buildId} />
-        </CollapsibleSection>
-
-        <CollapsibleSection
-          title="Auto-orient"
-          open={open.orient}
-          onToggle={() => toggle("orient")}
-        >
-          <OrientSection buildId={buildId} />
-        </CollapsibleSection>
-
-        <OpenSection buildId={buildId} />
-      </div>
-    </FabCtx.Provider>
+      <CollapsibleSection
+        title="Orientation"
+        open={open["make.orient"]}
+        onToggle={() => onToggleSection("make.orient")}
+      >
+        <OrientSection fab={fab} buildId={buildId} />
+      </CollapsibleSection>
+    </div>
   );
 }

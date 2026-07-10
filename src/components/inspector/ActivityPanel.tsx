@@ -1,20 +1,52 @@
 /**
- * PlanPanel — the Inspector's Plan tab. A read-only render of the build brief
- * Sol commits to before building (parts and why, key dims, interfaces,
- * make-it-real), kept live by the `build_brief.json` file-watch.
- *
- * This panel never mutates anything: steering happens in the terminal (Sol runs
- * in a PTY), never here. When there is no brief, it shows a quiet empty state.
+ * ActivityPanel — the Inspector's Activity tab: the build brief Sol commits to
+ * before building (read-only; steering happens in the terminal) above the
+ * edit-history list (click a row to restore).
  */
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ClipboardList } from "lucide-react";
 
-import { useBuildBrief, type BuildBrief } from "../../hooks/useBuildBrief";
+import CollapsibleSection from "./CollapsibleSection";
+import History from "../History";
+import type { BuildBrief } from "../../hooks/useBuildBrief";
+import type { SectionKey, SectionState } from "../../state/useInspectorPrefs";
+
+/** Text clamped to a few lines with a Show more toggle when it overflows. */
+function ClampedText({ text, className }: { text: string; className: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  // Re-measure when the text changes (a new brief) — clamped scrollHeight >
+  // clientHeight means there is hidden content worth a toggle.
+  useEffect(() => {
+    setExpanded(false);
+    const el = ref.current;
+    if (el) setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [text]);
+
+  return (
+    <>
+      <p ref={ref} className={`${className} ${expanded ? "" : "line-clamp-3"}`}>
+        {text}
+      </p>
+      {(overflows || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="mt-0.5 text-caption font-medium text-accent transition-opacity hover:opacity-80"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
+  );
+}
 
 /* ── tier chip ───────────────────────────────────────────────────────────── */
 
-// Tier signals rework cost, mapped onto the app palette: skip is a quiet
-// neutral, stream rides the accent (normal flow), pause is amber (the beat
-// before a fan-out, the same caution color the workspace switcher uses).
+// Tier signals rework cost: skip is a quiet neutral, stream rides the accent
+// (normal flow), pause is amber (the beat before a fan-out).
 const TIER_META: Record<BuildBrief["tier"], { label: string; chip: string; dot: string }> = {
   skip: {
     label: "Skip",
@@ -45,12 +77,10 @@ function TierChip({ tier }: { tier: BuildBrief["tier"] }) {
   );
 }
 
-/* ── section scaffold ────────────────────────────────────────────────────── */
-
 /** An uppercase eyebrow header above a block of brief content. */
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Block({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="border-b border-line px-3.5 py-3 last:border-b-0">
+    <section className="px-3.5 py-2.5">
       <h3 className="mb-2 font-mono text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
         {title}
       </h3>
@@ -58,8 +88,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     </section>
   );
 }
-
-/* ── value formatting ────────────────────────────────────────────────────── */
 
 /** A dim value, or a quiet placeholder when Sol left it open. */
 function dimValue(value: number | null, unit: string): string {
@@ -73,19 +101,17 @@ function clearanceLabel(clearance: number | null): string | null {
   return `${clearance} mm`;
 }
 
-/* ── panel ───────────────────────────────────────────────────────────────── */
+/* ── brief section body ──────────────────────────────────────────────────── */
 
-export default function PlanPanel({ wsPath }: { wsPath: string }) {
-  const brief = useBuildBrief(wsPath);
-
-  // The engine validates before it writes, but the panel reads the raw file, so
-  // stay tolerant of a hand-edited or partial brief: missing lists render empty,
-  // never crash. A summary is what makes a brief worth showing.
+function BriefSection({ brief }: { brief: BuildBrief | null }) {
+  // The engine validates before it writes, but this reads the raw file, so
+  // stay tolerant of a hand-edited or partial brief: missing lists render
+  // empty, never crash. A summary is what makes a brief worth showing.
   if (!brief || !brief.summary) {
     return (
-      <div className="flex flex-col items-center gap-2.5 px-6 pb-8 pt-12 text-center">
-        <span className="grid h-9 w-9 place-items-center rounded-xl border border-line-2 bg-surface-2 text-ink-3">
-          <ClipboardList size={16} strokeWidth={1.7} />
+      <div className="flex flex-col items-center gap-2 px-6 pb-5 pt-3 text-center">
+        <span className="grid h-8 w-8 place-items-center rounded-lg border border-line-2 bg-surface-2 text-ink-3">
+          <ClipboardList size={14} strokeWidth={1.7} />
         </span>
         <p className="text-body text-ink-2">No build brief yet</p>
         <p className="max-w-[15rem] text-caption text-ink-3">
@@ -101,20 +127,17 @@ export default function PlanPanel({ wsPath }: { wsPath: string }) {
   const interfaces = Array.isArray(brief.interfaces) ? brief.interfaces : [];
 
   return (
-    <div className="pb-2">
-      {/* summary + tier header */}
-      <div className="border-b border-line px-3.5 py-3">
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="font-mono text-micro font-semibold uppercase tracking-eyebrow text-ink-3">
-            Build brief
-          </span>
+    <div className="pb-1">
+      {/* summary + tier */}
+      <div className="px-3.5 pb-2.5 pt-0.5">
+        <ClampedText text={brief.summary} className="text-body leading-snug text-ink" />
+        <div className="mt-1.5">
           <TierChip tier={brief.tier} />
         </div>
-        <p className="text-body leading-snug text-ink">{brief.summary}</p>
       </div>
 
       {/* parts — name + why */}
-      <Section title={`Parts · ${parts.length}`}>
+      <Block title={`Parts · ${parts.length}`}>
         <ul className="flex flex-col gap-2">
           {parts.map((p, i) => (
             <li key={`${p.name}-${i}`} className="flex items-start gap-2.5">
@@ -128,11 +151,11 @@ export default function PlanPanel({ wsPath }: { wsPath: string }) {
             </li>
           ))}
         </ul>
-      </Section>
+      </Block>
 
       {/* key dims — name / value+unit, with the param it drives */}
       {keyDims.length > 0 && (
-        <Section title="Key dimensions">
+        <Block title="Key dimensions">
           <div className="flex flex-col">
             {keyDims.map((d, i) => (
               <div
@@ -151,12 +174,12 @@ export default function PlanPanel({ wsPath }: { wsPath: string }) {
               </div>
             ))}
           </div>
-        </Section>
+        </Block>
       )}
 
       {/* interfaces — between, kind, clearance */}
       {interfaces.length > 0 && (
-        <Section title="Interfaces">
+        <Block title="Interfaces">
           <ul className="flex flex-col gap-2">
             {interfaces.map((it, i) => {
               const clearance = clearanceLabel(it.clearance);
@@ -189,15 +212,47 @@ export default function PlanPanel({ wsPath }: { wsPath: string }) {
               );
             })}
           </ul>
-        </Section>
+        </Block>
       )}
 
       {/* make it real — process + material */}
       {brief.make_real && (
-        <Section title="Make it real">
-          <p className="text-caption leading-relaxed text-ink-2">{brief.make_real}</p>
-        </Section>
+        <Block title="Make it real">
+          <ClampedText text={brief.make_real} className="text-caption leading-relaxed text-ink-2" />
+        </Block>
       )}
+    </div>
+  );
+}
+
+/* ── panel ───────────────────────────────────────────────────────────────── */
+
+export default function ActivityPanel({
+  brief,
+  open,
+  onToggleSection,
+}: {
+  brief: BuildBrief | null;
+  open: SectionState;
+  onToggleSection: (k: SectionKey) => void;
+}) {
+  return (
+    <div className="pb-2">
+      <CollapsibleSection
+        title="Build brief"
+        open={open["activity.brief"]}
+        onToggle={() => onToggleSection("activity.brief")}
+      >
+        <BriefSection brief={brief} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="History"
+        open={open["activity.history"]}
+        onToggle={() => onToggleSection("activity.history")}
+      >
+        <History />
+      </CollapsibleSection>
     </div>
   );
 }

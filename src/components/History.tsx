@@ -65,12 +65,6 @@ export default function History() {
 
   return (
     <div className="pb-1.5">
-      <div className="flex items-center justify-between px-3.5 pb-1.75 pt-2.75 text-micro font-bold uppercase tracking-eyebrow text-ink-3">
-        <span>History</span>
-        <span className="font-mono text-caption tracking-normal">
-          {entries.length} {entries.length === 1 ? "state" : "states"}
-        </span>
-      </div>
       {ordered.map((entry) => (
         <Row key={entry.sha} entry={entry} />
       ))}
