@@ -71,6 +71,28 @@ def test_validate_rejects_non_finite_numbers():
     assert norm["interfaces"][0]["clearance"] is None
 
 
+def test_validate_rejects_prose_blobs():
+    """Prose fields carry a sentence or two; detail belongs in the structured
+    fields, so a runaway blob is rejected with an actionable message."""
+    b = _good()
+    b["summary"] = "x" * (build_brief.MAX_SUMMARY + 1)
+    with pytest.raises(ValueError, match="summary"):
+        build_brief.validate(b)
+    b = _good()
+    b["make_real"] = "x" * (build_brief.MAX_PROSE + 1)
+    with pytest.raises(ValueError, match="make_real"):
+        build_brief.validate(b)
+    b = _good()
+    b["parts"][0]["why"] = "x" * (build_brief.MAX_PART_TEXT + 1)
+    with pytest.raises(ValueError, match="why"):
+        build_brief.validate(b)
+    # exactly at the cap still passes
+    ok = _good()
+    ok["summary"] = "x" * build_brief.MAX_SUMMARY
+    ok["make_real"] = "x" * build_brief.MAX_PROSE
+    assert build_brief.validate(ok)["summary"] == ok["summary"]
+
+
 def test_validate_normalizes_interface_aliases():
     b = _good()
     b["interfaces"][0]["kind"] = "press-fit"

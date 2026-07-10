@@ -25,6 +25,12 @@ INTERFACE_KINDS = ("pivot", "slide", "snap", "thread", "press", "fixed")
 MAX_PARTS = 64
 MAX_KEY_DIMS = 256
 MAX_INTERFACES = 256
+# Prose caps: the brief is structured, not an essay. summary/make_real carry a
+# sentence or two; per-part why/role a phrase. Rejecting (not truncating) sends
+# the agent an actionable error so it moves detail into the structured fields.
+MAX_SUMMARY = 500
+MAX_PROSE = 500
+MAX_PART_TEXT = 300
 # Sol reads the readable names in the skill copy ("press-fit", "snap-fit"); normalize
 # those to the canonical enum so a brief is not rejected for a synonym.
 _KIND_ALIASES = {
@@ -49,6 +55,18 @@ def _normalize_kind(kind: Any) -> str:
     return _KIND_ALIASES.get(k, k)
 
 
+def _capped_text(value: Any, cap: int, field: str) -> str:
+    """A trimmed prose field, rejected past its cap with a message that tells the
+    agent where the detail belongs instead."""
+    text = str(value or "").strip()
+    if len(text) > cap:
+        raise ValueError(
+            f"{field} too long ({len(text)} chars, max {cap}): keep it to a sentence "
+            "or two; detail belongs in parts, key_dims, and interfaces"
+        )
+    return text
+
+
 def _finite_or_none(value: Any, field: str) -> float | int | None:
     """Coerce an optional numeric field: None passes through; otherwise require a
     finite int/float. Reject bool, non-numeric, NaN, and ±inf so the brief stays
@@ -69,7 +87,7 @@ def validate(brief: Any) -> dict:
     tier = brief.get("tier")
     if tier not in TIERS:
         raise ValueError(f"tier must be one of {TIERS}, got {tier!r}")
-    summary = str(brief.get("summary", "")).strip()
+    summary = _capped_text(brief.get("summary", ""), MAX_SUMMARY, "summary")
     if not summary:
         raise ValueError("summary is required")
     parts = brief.get("parts") or []
@@ -84,8 +102,8 @@ def validate(brief: Any) -> dict:
         norm_parts.append(
             {
                 "name": str(p["name"]).strip(),
-                "role": str(p.get("role", "")).strip(),
-                "why": str(p.get("why", "")).strip(),
+                "role": _capped_text(p.get("role", ""), MAX_PART_TEXT, "part.role"),
+                "why": _capped_text(p.get("why", ""), MAX_PART_TEXT, "part.why"),
             }
         )
     key_dims = brief.get("key_dims") or []
@@ -136,7 +154,7 @@ def validate(brief: Any) -> dict:
         "parts": norm_parts,
         "key_dims": norm_dims,
         "interfaces": norm_ifaces,
-        "make_real": str(brief.get("make_real", "")).strip(),
+        "make_real": _capped_text(brief.get("make_real", ""), MAX_PROSE, "make_real"),
         "tier": tier,
     }
 

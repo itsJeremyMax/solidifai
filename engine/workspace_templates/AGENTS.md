@@ -109,6 +109,10 @@ Before you commit geometry, state the plan in a few lines.
 - **Make it real** the process and material from the manufacturing profile, and any print-appropriate
   substitution.
 
+The brief is structured, not an essay: `summary` is one or two sentences; each detail lives in
+its field (`key_dims`, per-part `why`, `interfaces`, one `make_real` line). The engine rejects
+prose blobs.
+
 Tier by rework cost; never make the user wait:
 
 - **Skip** a pure-geometry or fully-specified part (a 50 mm plate, a calibration cube). No brief; build now.

@@ -179,9 +179,10 @@ def test_agents_word_ceiling():
     text = AGENTS.read_text(encoding="utf-8")
     prose = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     # raised for the new spatial (measure_between/query_faces/thickness_at), instancing
-    # (set_occurrences), and joint-motion (check_motion) tool-table rows, and again for the
-    # solidifai-bug-report routing table row; deliberate, not rebloat
-    assert len(prose.split()) <= 3575
+    # (set_occurrences), and joint-motion (check_motion) tool-table rows, again for the
+    # solidifai-bug-report routing table row, and for the build-brief structured-format
+    # contract (summary is sentences, detail in fields); deliberate, not rebloat
+    assert len(prose.split()) <= 3600
 
 
 def test_template_covers_every_skill():

@@ -501,8 +501,12 @@ def check_requirements() -> Any:
 def propose_build(brief: dict) -> Any:
     """State the build brief: the short plan you commit to before building (parts and why,
     key dims, interfaces, make-it-real, and the tier). Record it here so the checks and the
-    Plan panel can see it. `brief` is `{summary, parts, key_dims, interfaces, make_real, tier}`;
-    `tier` is one of skip/stream/pause."""
+    app's brief panel can see it. `brief` is `{summary, parts, key_dims, interfaces, make_real,
+    tier}`; `tier` is one of skip/stream/pause. The brief is structured, not an essay: `summary`
+    is one or two sentences naming the object and the shape concept; every dimension goes in
+    `key_dims` (with the PARAM it drives), every part's reason in its `why`, every meeting of
+    parts in `interfaces`, and `make_real` is one line (process + material). A prose blob in
+    `summary`/`make_real` is rejected."""
     return _call("propose_build", {"brief": brief})
 
 
