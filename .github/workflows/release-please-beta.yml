@@ -2,6 +2,9 @@ name: release-please-beta
 on:
   push:
     branches: [beta]
+  # Recompute the Release PR on demand; dispatched by publish after a beta
+  # release goes public (its tag is created at publish time).
+  workflow_dispatch:
 permissions:
   contents: write
   pull-requests: write
@@ -12,6 +15,8 @@ jobs:
       release_created: ${{ steps.rp.outputs.release_created }}
       tag_name: ${{ steps.rp.outputs.tag_name }}
     steps:
+      # Release half / pending-draft check / PR half: same split as
+      # release-please.yml, filtered to prerelease drafts for this lineage.
       - id: rp
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -20,6 +25,29 @@ jobs:
           target-branch: beta
           config-file: release-please-config.beta.json
           manifest-file: .release-please-manifest.beta.json
+          skip-github-pull-request: true
+
+      - name: Check for a pending beta draft release
+        id: pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          count="$(gh api "repos/$REPO/releases?per_page=100" \
+            --jq '[.[] | select(.draft and .prerelease)] | length')"
+          echo "beta drafts pending publish: $count"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - id: rp-pr
+        if: steps.pending.outputs.count == '0'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: beta
+          config-file: release-please-config.beta.json
+          manifest-file: .release-please-manifest.beta.json
+          skip-github-release: true
 
   # Same all-or-nothing chain as main: build the draft pre-release on every
   # platform and publish it atomically.
@@ -28,6 +56,8 @@ jobs:
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
       contents: write
+      # publish re-dispatches this workflow to re-anchor the Release PR.
+      actions: write
     # Job-level, because workflow-level concurrency inside a called workflow is
     # not reliably applied; one build per tag at a time.
     concurrency:

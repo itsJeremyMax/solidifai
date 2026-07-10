@@ -62,6 +62,11 @@ Enforcement:
    signs every platform, uploads all assets to the draft, verifies the set is
    complete, and publishes the release (which is when the `vX.Y.Z` git tag is
    created, pinned to the built commit).
+5. The next Release PR appears shortly **after publish**, not at merge. While
+   the draft is pending its tag doesn't exist, so a Release PR computed then
+   would anchor on the previous tag and re-list the release being built;
+   release-please skips drafting one in that window, and the publish job
+   re-dispatches release-please so the PR is computed against the fresh tag.
 
 If a platform build fails, the release stays a draft and nothing is visible.
 Two recovery paths:

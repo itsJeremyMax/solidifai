@@ -260,6 +260,8 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      # To re-dispatch release-please after publishing (re-anchor step below).
+      actions: write
     steps:
       # Needed for scripts/build_updater_notes.py (imported by the manifest step).
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -493,6 +495,23 @@ jobs:
             # and clients simply see no update until the next beta publishes.
             cp manifest.json beta.json
             gh release upload updater beta.json --clobber -R "$REPO"
+          fi
+
+      # The release tag was just born (GitHub creates it when the draft goes
+      # public), so re-run release-please: with the draft gone its pending-draft
+      # skip lifts, and the next Release PR is computed anchored on this tag
+      # instead of waiting for the next push to the branch.
+      - name: Re-anchor the next Release PR on the new tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "$PRERELEASE" = "true" ]; then
+            gh workflow run release-please-beta.yml -R "$REPO" --ref beta
+          else
+            gh workflow run release-please.yml -R "$REPO" --ref main
           fi
 
   # Rebuild solidifai-engine-index.json from every manifest/pack on the `engine`

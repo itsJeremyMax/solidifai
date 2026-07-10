@@ -2,9 +2,9 @@ name: release-please
 on:
   push:
     branches: [main]
-  # Manual recompute of the Release PR. Useful right after a release publishes:
-  # the tag is created at publish time, so a Release PR drafted in the window
-  # between merge and publish overcounts until the next run re-anchors on it.
+  # Recompute the Release PR on demand. The publish job in release-build.yml
+  # dispatches this automatically right after a release publishes (the tag is
+  # created at publish time); manual runs remain as a fallback.
   workflow_dispatch:
 permissions:
   contents: write
@@ -16,6 +16,9 @@ jobs:
       release_created: ${{ steps.rp.outputs.release_created }}
       tag_name: ${{ steps.rp.outputs.tag_name }}
     steps:
+      # Release half: on a Release PR merge, cut the DRAFT release. Split from
+      # the PR half so the pending-draft check between them also sees a draft
+      # created by this very run.
       - id: rp
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -25,6 +28,36 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+
+      # A draft's tag does not exist until publish, so a Release PR computed in
+      # that window would anchor on the previous tag and re-list every commit
+      # of the release being built (merging it would bake that in). Skip the PR
+      # half while a stable draft is pending; publish re-dispatches this
+      # workflow once the tag exists. Prerelease drafts belong to the beta
+      # lineage and don't affect this anchor.
+      - name: Check for a pending stable draft release
+        id: pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          count="$(gh api "repos/$REPO/releases?per_page=100" \
+            --jq '[.[] | select(.draft and (.prerelease | not))] | length')"
+          echo "stable drafts pending publish: $count"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      # PR half: draft or refresh the next Release PR, now that every release
+      # it would anchor on has a tag.
+      - id: rp-pr
+        if: steps.pending.outputs.count == '0'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
 
   # release-please cut a DRAFT release for this merge: build every platform and
   # publish it atomically. Called directly (not event-triggered) so the chain
@@ -34,6 +67,8 @@ jobs:
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
       contents: write
+      # publish re-dispatches this workflow to re-anchor the Release PR.
+      actions: write
     # Job-level, because workflow-level concurrency inside a called workflow is
     # not reliably applied; one build per tag at a time.
     concurrency:
