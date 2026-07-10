@@ -64,6 +64,7 @@ Each skill's own "When to use" has the fine print.
 | Make it meet a stated spec (mass, size, wall, printable) | `solidifai-converge` |
 | Options, sweeps, "lightest that still fits" | `solidifai-explore` |
 | Build failed, empty viewport, "why isn't it showing" | `solidifai-debugging` |
+| Repeated failure looks like a genuine product defect, or the user asks to report a bug | `solidifai-bug-report` |
 | Rebuild from a scan, STL/STEP, or photo | `solidifai-reverse-engineering` |
 | Checkpoints, diffs, build report, packaging to share | `solidifai-history` |
 | Print time and cost, orientation, open in the slicer | `solidifai-fabrication` |

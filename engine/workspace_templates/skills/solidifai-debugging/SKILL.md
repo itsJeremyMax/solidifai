@@ -39,6 +39,11 @@ done-gate on a build that succeeded; this skill gets it building and looking rig
 5. **Reproduce smaller.** Comment out the last operation (the fillet, the shell, the boolean)
    and re-run. Whichever step makes it pass is the culprit; adjust that step's parameters.
 
+If you have made genuine fix attempts and the same operation keeps failing in a way that
+looks like a product defect rather than a user or modeling mistake, switch to
+**solidifai-bug-report** to offer the user a prefilled GitHub issue. Do not report a bug you
+have not actually tried to fix.
+
 ### Fast checklist
 
 - **Empty viewport, no error** → you didn't `show()`, or you edited `model.py` as a file
@@ -87,3 +92,5 @@ what the skeleton publishes and the wiring; `get_part_info(id)` reads one part's
 - **solidifai-modeling** - the modeling APIs themselves, and its
   `references/build123d-cookbook.md`.
 - **solidifai-self-verify** - the done-gate once it builds, and how to read the captured views.
+- **solidifai-bug-report** - once real fixes fail and the problem looks like a genuine
+  product defect, offer the user a prefilled GitHub issue.
