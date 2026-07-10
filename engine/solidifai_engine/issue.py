@@ -23,6 +23,12 @@ TEMPLATE = "bug_report.yml"
 # proxies vary; 6 KB leaves generous headroom while carrying real context.
 _MAX_URL = 6000
 
+# GitHub issue titles are short; cap so a pathological title can't dominate the budget.
+_MAX_TITLE = 250
+# Free-text fields shortened (in this order) to fit the URL budget. Identity fields
+# (template, title, version, os, agent) are never shortened; title is pre-capped above.
+_SHRINK_ORDER = ("logs", "steps", "what-happened")
+
 # The exact agent options in bug_report.yml; anything else is dropped (GitHub
 # ignores an unmatched dropdown value, but we normalise for a clean preview).
 _AGENT_OPTIONS = {"Claude Code", "Codex", "opencode", "Not agent-related"}
@@ -48,9 +54,10 @@ def os_dropdown() -> str | None:
 
 # Home-dir prefix (incl. the username segment) -> collapse to ~; the rest of the
 # path is kept so the report still reads. Covers unix and Windows.
-_HOME_RE = re.compile(r"(?:/Users/|/home/|[A-Za-z]:\\Users\\)[^/\\\s]+")
+_HOME_RE = re.compile(r"(?:/Users/|/home/|[A-Za-z]:\\Users\\)[A-Za-z0-9._-]+")
 _SECRET_RES = (
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"),
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._\-]{15,}"),
     re.compile(r"\bgh[oprsu]_[A-Za-z0-9]{20,}\b"),
     re.compile(r"(?i)\b(?:authorization|token|api[_-]?key|secret|password)\b\s*[:=]\s*\S+"),
     re.compile(r"\b[A-Fa-f0-9]{32,}\b"),
@@ -90,29 +97,40 @@ def _compose_logs(context: str, diag: str) -> str:
     return _fence(diag)
 
 
-def _assemble(fields: dict, logs: str) -> str:
-    full = dict(fields)
-    if logs:
-        full["logs"] = logs
-    return f"{NEW_ISSUE}?{urlencode(full)}"
+def _assemble(fields: dict) -> str:
+    return f"{NEW_ISSUE}?{urlencode(fields)}"
 
 
-def _truncate_to_fit(fields: dict, logs: str) -> str:
-    """Largest logs prefix (plus a marker) that keeps the whole URL within budget.
-    Required fields already live in `fields`, so they always survive."""
+def _within_budget(fields: dict) -> bool:
+    return len(_assemble(fields)) <= _MAX_URL
+
+
+def _fit_within_budget(fields: dict) -> dict:
+    """Shorten free-text fields in priority order until the assembled URL fits the
+    budget. Identity fields are untouched, so required context always survives."""
+    fields = dict(fields)
     marker = "\n[...truncated]"
-    lo, hi, best = 0, len(logs), ""
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        cand = logs[:mid] + (marker if mid < len(logs) else "")
-        if len(_assemble(fields, cand)) <= _MAX_URL:
-            best, lo = cand, mid + 1
-        else:
-            hi = mid - 1
-    return best
+    for key in _SHRINK_ORDER:
+        if _within_budget(fields):
+            break
+        if key not in fields:
+            continue
+        text = fields[key]
+        lo, hi, best = 0, len(text), ""
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            cand = text[:mid] + (marker if mid < len(text) else "")
+            trial = dict(fields)
+            trial[key] = cand
+            if len(_assemble(trial)) <= _MAX_URL:
+                best, lo = cand, mid + 1
+            else:
+                hi = mid - 1
+        fields[key] = best
+    return fields
 
 
-def _render_preview(fields: dict, logs: str) -> str:
+def _render_preview(fields: dict) -> str:
     lines = [
         f"Title: {fields['title']}",
         "",
@@ -124,14 +142,14 @@ def _render_preview(fields: dict, logs: str) -> str:
     meta = [f"Version: {fields.get('version', '')}", f"OS: {fields.get('os', '')}"]
     if fields.get("agent"):
         meta.append(f"Agent: {fields['agent']}")
-    lines += ["", " | ".join(meta), "", "Logs:", logs]
+    lines += ["", " | ".join(meta), "", "Logs:", fields.get("logs", "")]
     return "\n".join(lines)
 
 
 def build_report_issue(params: dict) -> dict:
     """Assemble a prefilled bug-report URL and its human preview. Redacts and
     length-caps unconditionally. Raises ValueError when a required field is empty."""
-    title = redact(str(params.get("title", "")).strip())
+    title = redact(str(params.get("title", "")).strip())[:_MAX_TITLE]
     what = redact(str(params.get("what_happened", "")).strip())
     steps = redact(str(params.get("steps") or "").strip())
     context = redact(str(params.get("context") or "").strip())
@@ -151,9 +169,7 @@ def build_report_issue(params: dict) -> dict:
         fields["os"] = os_opt
     if agent:
         fields["agent"] = agent
+    fields["logs"] = _compose_logs(context, _diagnostics())
 
-    logs = _compose_logs(context, _diagnostics())
-    if len(_assemble(fields, logs)) > _MAX_URL:
-        logs = _truncate_to_fit(fields, logs)
-
-    return {"url": _assemble(fields, logs), "preview": _render_preview(fields, logs)}
+    fields = _fit_within_budget(fields)
+    return {"url": _assemble(fields), "preview": _render_preview(fields)}

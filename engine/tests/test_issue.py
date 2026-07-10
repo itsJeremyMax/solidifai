@@ -112,3 +112,28 @@ def test_preview_is_returned_and_shows_public_fields():
     out = issue.build_report_issue({"title": "Empty viewport", "what_happened": "no cube"})
     assert "Empty viewport" in out["preview"]
     assert "no cube" in out["preview"]
+
+
+def test_length_cap_truncates_huge_what_happened():
+    out = issue.build_report_issue({"title": "t", "what_happened": "W" * 40000})
+    assert len(out["url"]) <= issue._MAX_URL
+    q = _q(out["url"])
+    assert q["title"] == "t" and q["version"] == "0.5.0"
+    assert "truncated" in q["what-happened"]
+
+
+def test_title_is_capped_so_url_fits():
+    out = issue.build_report_issue({"title": "T" * 5000, "what_happened": "w"})
+    assert len(out["url"]) <= issue._MAX_URL
+
+
+def test_redacts_bearer_token():
+    red = issue.redact(
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcDEF"
+    )
+    assert "eyJ" not in red and "[redacted]" in red
+
+
+def test_redacts_anthropic_key():
+    red = issue.redact("ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnop-QRSTUVWX")
+    assert "sk-ant" not in red
