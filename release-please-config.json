@@ -8,7 +8,14 @@
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
       "draft": true,
-      "prerelease": false
+      "prerelease": false,
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "engine/pyproject.toml",
+          "jsonpath": "$.project.version"
+        }
+      ]
     }
   }
 }
