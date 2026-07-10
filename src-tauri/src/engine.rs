@@ -662,7 +662,7 @@ fn engine_version(interpreter: &Path) -> Result<String, String> {
 /// the app loaded is out of step with this shell (typically a stale `engine-dist`
 /// bundle that predates a feature). Bump this AND `PROTOCOL_VERSION` on the engine
 /// side together whenever the RPC method set changes.
-const EXPECTED_ENGINE_PROTOCOL: u32 = 11;
+const EXPECTED_ENGINE_PROTOCOL: u32 = 12;
 
 /// Read the engine's reported protocol version. A bundle that predates the
 /// constant (or can't import the engine) prints `0`, which `check_protocol` then
@@ -719,6 +719,7 @@ fn spawn_engine_server(
     socket_path: &str,
     artifacts_dir: &str,
     config_dir: &Path,
+    app_version: &str,
     model_path: Option<&str>,
 ) -> Result<Child, String> {
     let mut cmd = quiet_command(interpreter);
@@ -736,6 +737,9 @@ fn spawn_engine_server(
     // Host owns the canonical config dir; the engine reads/writes the same global
     // library + destinations from it (one spawn covers MCP bridges via the socket).
     cmd.env("SOLIDIFAI_CONFIG_DIR", config_dir);
+    // Propagate the single-sourced app version (package.json -> tauri.conf ->
+    // package_info) so the engine can report the true release, e.g. in report_issue.
+    cmd.env("SOLIDIFAI_APP_VERSION", app_version);
     // Let the engine reach the control channel so it can delegate profile writes.
     if let Some(ctl) = crate::control::socket_path() {
         cmd.env("SOLIDIFAI_CONTROL_SOCK", ctl);
@@ -879,6 +883,7 @@ pub fn start_supervised(
 
     // Spawn + supervise. Try once, and restart a single time on unexpected exit.
     let mut attempts = 0u32;
+    let app_version = app.package_info().version.to_string();
     loop {
         // A switch/shutdown happened while we were getting here: stop.
         if state.current_generation() != generation {
@@ -891,6 +896,7 @@ pub fn start_supervised(
             &socket_path,
             &artifacts_dir,
             &config_dir,
+            &app_version,
             model_path.as_deref(),
         ) {
             Ok(child) => {
