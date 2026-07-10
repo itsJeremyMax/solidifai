@@ -1,6 +1,6 @@
 [project]
 name = "solidifai-engine"
-version = "0.5.0"
+version = "0.6.0"
 description = "App-owned build123d service: single source of truth for the solidifai 3D CAD app."
 license = "Apache-2.0"
 requires-python = ">=3.11"
