@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.0](https://github.com/itsJeremyMax/solidifai/compare/v0.6.0...v0.7.0) (2026-07-10)
+
+
+### Features
+
+* **app:** consolidate the inspector into four tabs with a fixed-geometry tab control ([d622fec](https://github.com/itsJeremyMax/solidifai/commit/d622fecffe2332a85e1a74ba69b8f1c91ad70046))
+* **app:** inject SOLIDIFAI_APP_VERSION into the engine; expect protocol 12 ([1561a75](https://github.com/itsJeremyMax/solidifai/commit/1561a752d1b45f9fe5c887644385e7067a12fc36))
+* **engine:** central app_version() accessor (env-propagated, dev fallback) ([4d33c7a](https://github.com/itsJeremyMax/solidifai/commit/4d33c7a9d5c64476da3855eee4e040cf57ad9e6d))
+* **engine:** enforce a structured build-brief format ([f446f24](https://github.com/itsJeremyMax/solidifai/commit/f446f24de95e2fe3001860b73892b9e337169b0e))
+* **engine:** expose report_issue over RPC + MCP, bump protocol 11-&gt;12 ([38100bc](https://github.com/itsJeremyMax/solidifai/commit/38100bc3e7199ba5824617b9c9f2690af248f423))
+* **engine:** report_issue URL builder with OS/arch, redaction, length cap ([c7ad5af](https://github.com/itsJeremyMax/solidifai/commit/c7ad5af952c8746a30ce8a7352c8860c5fa1ae3d))
+* **engine:** solidifai-bug-report skill + debugging escalation + AGENTS wiring ([f8eed74](https://github.com/itsJeremyMax/solidifai/commit/f8eed74aff95ab3952535d4e9945ec704e31ad4a))
+
+
+### Bug Fixes
+
+* **ci:** never draft a Release PR while a draft release is pending publish ([4ce5924](https://github.com/itsJeremyMax/solidifai/commit/4ce5924c6feff8edfcda53d93f2ad73f409cfaeb))
+* **engine:** cap whole issue URL length; redact Bearer tokens and sk-ant keys ([3bb1210](https://github.com/itsJeremyMax/solidifai/commit/3bb12108cf9643267ae2d2cb340ae951c7ca3cef))
+* **engine:** conform bug-report skill to the shared skill template; update ceilings ([5b0f4f7](https://github.com/itsJeremyMax/solidifai/commit/5b0f4f72ed2683d246618355c92baab9eb199acd))
+* **engine:** redact PEM keys, AWS keys, bare JWTs; case-insensitive home path; sync uv.lock to 0.5.0 ([6e982ef](https://github.com/itsJeremyMax/solidifai/commit/6e982efaf9345c21d389d0844a480f37b6867653))
+
 ## [0.6.0](https://github.com/itsJeremyMax/solidifai/compare/v0.5.0...v0.6.0) (2026-07-09)
 
 
