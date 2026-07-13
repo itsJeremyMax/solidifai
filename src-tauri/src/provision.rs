@@ -58,7 +58,7 @@ const CUSTOM_END: &str = "<!-- solidifai-custom:end -->";
 /// The app-managed Agent Skills collection (multiple skills, each a directory with
 /// `SKILL.md` plus optional `references/` and `examples/`). Embedded as a tree so
 /// the whole thing ships in the binary and is written into every workspace under
-/// both agent skill roots. Unlike the overridable templates, these are NOT
+/// each adapter's native skill root. Unlike the overridable templates, these are NOT
 /// per-file user-editable: we always refresh OUR skill files on each provision so
 /// improvements flow, but we never touch other skills a user adds.
 static SKILLS_DIR: include_dir::Dir =
