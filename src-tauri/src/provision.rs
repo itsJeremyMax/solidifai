@@ -864,6 +864,26 @@ mod tests {
     }
 
     #[test]
+    fn workspace_provisioning_exposes_the_six_documented_harnesses_in_display_order() {
+        let documented_names = crate::agent_harness::adapter_registry()
+            .iter()
+            .map(|adapter| adapter.display_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            documented_names,
+            [
+                "Codex",
+                "Claude Code",
+                "OpenCode",
+                "Gemini CLI",
+                "Copilot CLI",
+                "Pi",
+            ]
+        );
+    }
+
+    #[test]
     fn provision_reports_written_and_user_owned_paths() {
         let ws = tmp_ws();
         let templates = tmp_templates();

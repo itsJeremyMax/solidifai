@@ -81,7 +81,18 @@ describe("AgentConfig", () => {
     render(<AgentConfig />);
 
     expect(await screen.findByRole("heading", { name: "Agent support" })).toBeTruthy();
-    for (const name of STATUS_NAMES) expect(screen.getByText(name)).toBeTruthy();
+    const names = STATUS_NAMES.map((name) => screen.getByText(name));
+    for (const name of names) expect(name).toBeTruthy();
+    const statusPanel = names[0].parentElement?.parentElement?.parentElement;
+    expect(statusPanel).toBeTruthy();
+    expect(Array.from(statusPanel?.children ?? []).map((row) => row.textContent)).toEqual([
+      "CodexReady",
+      "Claude CodeNot installed",
+      "OpenCodeReady",
+      "Gemini CLIReady",
+      "Copilot CLINot installed",
+      "PiReady",
+    ]);
     expect(screen.queryByText("pi install npm:pi-mcp-extension")).toBeNull();
   });
 

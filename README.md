@@ -17,10 +17,11 @@
 </div>
 
 solidifai is a desktop prototyping CAD tool. Open it, drop into an embedded terminal,
-and run the CLI agent you already have: **Claude Code, Codex, or opencode**. Describe a
-part in plain language; the agent writes [build123d](https://build123d.readthedocs.io)
-(Python / OpenCascade) through a built-in MCP server, and the solid renders in a live
-three.js viewport with dimensions, a model tree, and parameter sliders you can drag.
+and run the CLI harness you already have: **Codex, Claude Code, OpenCode, Gemini CLI,
+GitHub Copilot CLI, or Pi**. Describe a part in plain language; the agent writes
+[build123d](https://build123d.readthedocs.io) (Python / OpenCascade) through a built-in
+MCP server, and the solid renders in a live three.js viewport with dimensions, a model
+tree, and parameter sliders you can drag.
 
 > [!NOTE]
 > solidifai is a **harness, not an LLM host.** There is no built-in model and no API key
@@ -49,12 +50,14 @@ three.js viewport with dimensions, a model tree, and parameter sliders you can d
 
 ## The magic moment
 
-> Open the app. An embedded terminal is waiting in a ready-to-go workspace. Type `claude`
-> (or `codex`, or `opencode`) and say *"make a 20mm cube with a 5mm hole through the top."*
+> Open the app. An embedded terminal is waiting in a ready-to-go workspace. Type `codex`
+> (or `claude`, `opencode`, `gemini`, `copilot`, or `pi`) and say *"make a 20mm cube with a
+> 5mm hole through the top."*
 > Within seconds a clean cube with a bored hole appears in the viewport, dimensioned
 > `20 × 20 × 20 mm`, with a parameter slider you can drag to re-run the model live.
 
-No new modeling language to learn, no plugin to install in your agent. You talk; it builds.
+No new modeling language to learn. You bring the CLI you use; solidifai configures its
+workspace integration but does not install any CLI or extension for you. You talk; it builds.
 
 ## Why solidifai
 
@@ -63,10 +66,10 @@ solidifai inverts that:
 
 - **Bring your own agent.** Use the CLI agent you already trust and pay for. solidifai
   never proxies your prompts or holds your keys.
-- **Workspaces come pre-wired.** Every workspace ships with the MCP server registered for
-  all three CLIs, plus `AGENTS.md` / `CLAUDE.md` and a set of skills so the agent already
-  knows the modeling conventions, the available tools, and how to recover from a failed
-  build. You don't have to teach it anything.
+- **Workspaces come pre-wired.** Every workspace receives managed MCP adapters for all six
+  supported harnesses, plus their native instruction pointers and skill roots, so the agent
+  already knows the modeling conventions, available tools, and recovery steps. solidifai
+  does not install a harness CLI or Pi extension.
 - **One render path.** The app owns a long-lived CAD engine, so what the agent builds,
   what you see, and what you export are byte-for-byte the same geometry.
 - **Real CAD output.** Parts are genuine B-rep solids (OpenCascade), exportable to STEP
@@ -85,7 +88,8 @@ solidifai inverts that:
 - **Versioned history.** Every build is committed to a git-backed timeline, with
   undo / redo and jump-to-any-state.
 - **Export to STEP, STL, glTF/GLB, BREP, or 3MF**, each with full format options.
-- **Multi-agent.** Claude Code, Codex, and opencode all work out of the box.
+- **Multi-agent.** Codex, Claude Code, OpenCode, Gemini CLI, GitHub Copilot CLI, and Pi
+  all have native workspace adapters.
 - **Multiple named workspaces** with a launcher; each is a real folder you can put
   under git.
 
@@ -131,7 +135,7 @@ The agent's tool surface (`solidifai-cad` MCP server) includes `execute_script`,
 | **Node + [pnpm](https://pnpm.io)** | the frontend (React 19 + Vite + Tailwind v4) |
 | **[Rust](https://rustup.rs) (stable)** | the Tauri 2 backend |
 | **[uv](https://docs.astral.sh/uv/)** | provisions and runs the Python engine |
-| A CLI agent | **Claude Code**, **Codex**, or **opencode** (at least one) |
+| A CLI harness | At least one of **Codex**, **Claude Code**, **OpenCode**, **Gemini CLI**, **GitHub Copilot CLI**, or **Pi** |
 
 > You do **not** need to install build123d yourself. On first run the app runs `uv sync`
 > against `engine/` to provision the engine virtualenv (downloads the `cadquery-ocp`
@@ -152,9 +156,11 @@ a background thread; the window paints immediately while the engine provisions.
 
 1. Open the app and create or pick a workspace; wait for the engine-status pill to read
    **ready**.
-2. In the **Terminal**, run your agent CLI: `claude` (or `codex` / `opencode`). The
-   workspace is already provisioned with the MCP server, skills, and instructions, so the
-   agent knows the conventions out of the box.
+2. In the **Terminal**, run your harness CLI: `codex` (or `claude`, `opencode`, `gemini`,
+   `copilot`, or `pi`). The workspace is already provisioned with the MCP server, skills,
+   and instructions for every supported harness. If you use Pi, first run
+   `pi install npm:pi-mcp-extension` once to enable its MCP tools; solidifai does not install
+   that extension.
 3. Ask for a part: *"make a 20mm cube with a 5mm hole through the top."*
 4. The agent writes build123d code through the MCP tool; the engine renders; the viewport
    updates. Drag the generated parameter slider to iterate live, or just ask for changes.
@@ -168,21 +174,33 @@ you create new ones anywhere you choose. Each workspace is provisioned idempoten
 
 - **`model.py`**, the durable, real model script the agent iterates on. It's yours: commit
   it, diff it, hand-edit it.
-- **Agent config + skills**: `.mcp.json` (Claude Code / generic MCP), `.codex/config.toml`
-  (Codex), `opencode.json` (opencode), `AGENTS.md` / `CLAUDE.md`, and the embedded skill
-  library (`using-solidifai`, `solidifai-modeling`, `solidifai-debugging`, plus a dozen
-  more covering product design, assemblies, grounding, and fabrication), so all three
-  CLIs just work.
+- **Native agent adapters + skills**: on every workspace, solidifai writes its managed
+  adapter files for all six supported harnesses once the engine interpreter is ready. It also
+  writes the embedded skill library (`using-solidifai`, `solidifai-modeling`,
+  `solidifai-debugging`, plus skills for product design, assemblies, grounding, and
+  fabrication) into each harness's native skill root. Existing user-owned files are preserved.
+  See [Supported agents](#supported-agents) for the exact paths.
 - **`.solidifai/`** holds the runtime files: the watched artifacts (`model.glb` +
   `model.json`), the engine socket, the git-backed history, and scratch/export dirs.
 
 ## Supported agents
 
-| Agent | Configured via |
-|-------|----------------|
-| [Claude Code](https://www.claude.com/product/claude-code) | `.mcp.json` + `.claude/` settings + `CLAUDE.md` |
-| [Codex](https://developers.openai.com/codex/cli/) | `.codex/config.toml` + `AGENTS.md` |
-| [opencode](https://opencode.ai) | `opencode.json` + `AGENTS.md` |
+solidifai writes its managed adapter configuration for every row below into every workspace;
+it does not install any of these CLIs. MCP configuration is written after the app resolves its
+engine interpreter, while the Claude Code and Gemini CLI instruction pointers are available
+even before that first engine launch.
+
+| Harness | Native MCP config | Native instructions and skill path |
+|---------|-------------------|------------------------------------|
+| [Codex](https://developers.openai.com/codex/cli/) | `.codex/config.toml` | `AGENTS.md`; `.agents/skills/` |
+| [Claude Code](https://www.claude.com/product/claude-code) | `.mcp.json`; `.claude/settings.json` | `CLAUDE.md` → `AGENTS.md`; `.claude/skills/` |
+| [OpenCode](https://opencode.ai) | `opencode.json` | `AGENTS.md`; `.opencode/skills/` |
+| Gemini CLI | `.gemini/settings.json` | `GEMINI.md` → `AGENTS.md`; `.gemini/skills/` |
+| GitHub Copilot CLI | `.github/mcp.json` | `AGENTS.md`; `.agents/skills/` |
+| Pi | `.pi/mcp.json` | `AGENTS.md`; `.agents/skills/` |
+
+Pi users must run `pi install npm:pi-mcp-extension` once to enable MCP tools. solidifai does
+not install the Pi extension or any harness CLI.
 
 The skills and `AGENTS.md` are generated from canonical templates in
 `engine/workspace_templates/`, so adding support for another MCP-capable CLI is mostly a
