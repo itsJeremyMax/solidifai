@@ -35,11 +35,27 @@ pub struct HarnessAdapter {
     pub executable: &'static str,
     pub skill_root: Option<&'static str>,
     pub render: fn(&str, &str) -> Vec<AdapterOutput>,
+    pub render_instructions: fn() -> Vec<AdapterOutput>,
 }
 
 impl HarnessAdapter {
-    pub fn outputs(&self, interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
+    /// MCP-bearing configuration which requires a resolved engine interpreter.
+    pub fn mcp_outputs(&self, interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
         (self.render)(interpreter, socket)
+    }
+
+    /// Non-MCP instruction files which are useful before the engine is ready.
+    pub fn instruction_outputs(&self) -> Vec<AdapterOutput> {
+        (self.render_instructions)()
+    }
+
+    /// All adapter-owned outputs. Provisioning uses the more specific methods so
+    /// it can defer only MCP configuration while the engine interpreter is absent.
+    pub fn outputs(&self, interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
+        self.mcp_outputs(interpreter, socket)
+            .into_iter()
+            .chain(self.instruction_outputs())
+            .collect()
     }
 }
 
@@ -50,6 +66,7 @@ const ADAPTERS: [HarnessAdapter; 6] = [
         executable: "codex",
         skill_root: Some(".agents/skills"),
         render: render_codex,
+        render_instructions: no_instruction_outputs,
     },
     HarnessAdapter {
         id: HarnessId::ClaudeCode,
@@ -57,6 +74,7 @@ const ADAPTERS: [HarnessAdapter; 6] = [
         executable: "claude",
         skill_root: Some(".claude/skills"),
         render: render_claude_code,
+        render_instructions: render_claude_instructions,
     },
     HarnessAdapter {
         id: HarnessId::OpenCode,
@@ -64,13 +82,15 @@ const ADAPTERS: [HarnessAdapter; 6] = [
         executable: "opencode",
         skill_root: Some(".opencode/skills"),
         render: render_opencode,
+        render_instructions: no_instruction_outputs,
     },
     HarnessAdapter {
         id: HarnessId::GeminiCli,
         display_name: "Gemini CLI",
         executable: "gemini",
-        skill_root: None,
+        skill_root: Some(".gemini/skills"),
         render: render_gemini_cli,
+        render_instructions: render_gemini_instructions,
     },
     HarnessAdapter {
         id: HarnessId::CopilotCli,
@@ -78,6 +98,7 @@ const ADAPTERS: [HarnessAdapter; 6] = [
         executable: "copilot",
         skill_root: Some(".agents/skills"),
         render: render_copilot_cli,
+        render_instructions: no_instruction_outputs,
     },
     HarnessAdapter {
         id: HarnessId::Pi,
@@ -85,6 +106,7 @@ const ADAPTERS: [HarnessAdapter; 6] = [
         executable: "pi",
         skill_root: Some(".agents/skills"),
         render: render_pi,
+        render_instructions: no_instruction_outputs,
     },
 ];
 
@@ -97,6 +119,19 @@ pub fn adapter(id: HarnessId) -> &'static HarnessAdapter {
         .iter()
         .find(|candidate| candidate.id == id)
         .expect("every HarnessId has a registered adapter")
+}
+
+/// All distinct skill roots in adapter display order.
+pub fn skill_roots() -> Vec<&'static str> {
+    adapter_registry()
+        .iter()
+        .filter_map(|adapter| adapter.skill_root)
+        .fold(Vec::new(), |mut roots, root| {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+            roots
+        })
 }
 
 fn output(path: &str, content: impl Into<String>) -> AdapterOutput {
@@ -151,8 +186,11 @@ fn render_claude_code(interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
                 }
             })),
         ),
-        output("CLAUDE.md", CLAUDE_MD),
     ]
+}
+
+fn render_claude_instructions() -> Vec<AdapterOutput> {
+    vec![output("CLAUDE.md", CLAUDE_MD)]
 }
 
 fn claude_session_start_hook(interpreter: &str) -> String {
@@ -184,15 +222,16 @@ fn render_opencode(interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
 }
 
 fn render_gemini_cli(interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
-    vec![
-        output(
-            ".gemini/settings.json",
-            managed_json(json!({
-                "mcpServers": { "solidifai-cad": mcp_server(interpreter, socket) },
-            })),
-        ),
-        output("GEMINI.md", GEMINI_MD),
-    ]
+    vec![output(
+        ".gemini/settings.json",
+        managed_json(json!({
+            "mcpServers": { "solidifai-cad": mcp_server(interpreter, socket) },
+        })),
+    )]
+}
+
+fn render_gemini_instructions() -> Vec<AdapterOutput> {
+    vec![output("GEMINI.md", GEMINI_MD)]
 }
 
 fn render_copilot_cli(interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
@@ -219,6 +258,10 @@ fn render_pi(interpreter: &str, socket: &str) -> Vec<AdapterOutput> {
             "mcpServers": { "solidifai-cad": mcp_server(interpreter, socket) },
         })),
     )]
+}
+
+fn no_instruction_outputs() -> Vec<AdapterOutput> {
+    Vec::new()
 }
 
 fn codex_config_toml(interpreter: &str, socket: &str) -> String {
@@ -250,7 +293,7 @@ fn pretty(value: &serde_json::Value) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{adapter, adapter_registry, HarnessId};
+    use super::{adapter, adapter_registry, skill_roots, HarnessId};
 
     const PY: &str = "/abs/python";
     const SOCK: &str = "/abs/engine.sock";
@@ -272,6 +315,19 @@ mod tests {
             .outputs(PY, SOCK)
             .iter()
             .any(|o| o.path == PathBuf::from(".gemini/settings.json")));
+    }
+
+    #[test]
+    fn agent_harness_registry_exposes_every_distinct_skill_root() {
+        assert_eq!(
+            skill_roots(),
+            vec![
+                ".agents/skills",
+                ".claude/skills",
+                ".opencode/skills",
+                ".gemini/skills",
+            ]
+        );
     }
 
     #[test]

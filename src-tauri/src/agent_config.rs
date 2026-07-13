@@ -3,7 +3,7 @@
 //!
 //! There is no in-app agent launch — the user runs their own agentic CLI in the
 //! terminal, which reads the workspace's provisioned skill tree
-//! (`.claude/skills` + `.opencode/skills`, written by [`crate::provision`]). So
+//! (each registered harness's `skills/` root, written by [`crate::provision`]). So
 //! "the agent launch reads the enabled set" means the PROVISIONER writes only the
 //! enabled skills; re-opening the workspace re-provisions to match the config.
 //!

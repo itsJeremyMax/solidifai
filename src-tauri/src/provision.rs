@@ -570,13 +570,17 @@ pub fn provision(
         &crate::custom_instructions::render_block(config_dir, root.as_path()),
     );
 
-    // MCP / harness config (code-generated; NOT user-editable). Every adapter
-    // embeds the interpreter as its command, so an offline first launch skips the
-    // generated files instead of writing a broken empty command. They are managed
-    // and will be refreshed the next time a resolved interpreter is available.
+    // Instruction pointers are independent of the engine and must be available
+    // on an offline first launch. MCP config embeds the interpreter as its command,
+    // so defer only those files until it has been resolved.
+    for adapter in crate::agent_harness::adapter_registry() {
+        for output in adapter.instruction_outputs() {
+            write_managed(&root.join(output.path), &output.content)?;
+        }
+    }
     if !py.is_empty() {
         for adapter in crate::agent_harness::adapter_registry() {
-            for output in adapter.outputs(py, sock) {
+            for output in adapter.mcp_outputs(py, sock) {
                 write_managed(&root.join(output.path), &output.content)?;
             }
         }
@@ -587,7 +591,7 @@ pub fn provision(
     write_managed(&root.join("AGENTS.md"), &agents)?;
 
     // App-managed Agent Skills collection: write the ENABLED embedded skills under
-    // both agent skill roots (preserving subdirs). The enabled set is the
+    // every distinct adapter skill root (preserving subdirs). The enabled set is the
     // per-workspace agent config (default: all skills, auto-provision on). When
     // auto-provision is off the user hand-manages their skill dirs and we skip
     // writing entirely. Re-writes OUR enabled skill files so improvements flow;
@@ -595,8 +599,9 @@ pub fn provision(
     let agent_cfg = crate::agent_config::load(&ws.dot);
     if agent_cfg.auto_provision_skills {
         let enabled = agent_cfg.enabled_skills.as_deref();
-        write_skills_tree(&root.join(".claude/skills"), enabled)?;
-        write_skills_tree(&root.join(".opencode/skills"), enabled)?;
+        for skill_root in crate::agent_harness::skill_roots() {
+            write_skills_tree(&root.join(skill_root), enabled)?;
+        }
     }
 
     // No starter model.py: a fresh workspace opens modelless (the viewport shows
@@ -770,8 +775,9 @@ mod tests {
             "model.py should not be provisioned into a new workspace"
         );
 
-        // The whole app-managed skill tree is provisioned under BOTH agent skill
-        // roots, preserving subdirs (SKILL.md + references/ + examples/).
+        // The whole app-managed skill tree is provisioned under every distinct
+        // adapter skill root, preserving subdirs (SKILL.md + references/ +
+        // examples/).
         let skill_tree = [
             "skills/using-solidifai/SKILL.md",
             "skills/solidifai-product-design/SKILL.md",
@@ -785,15 +791,13 @@ mod tests {
             "skills/solidifai-debugging/SKILL.md",
             "skills/solidifai-debugging/references/common-errors.md",
         ];
-        for rel in skill_tree {
-            assert!(
-                ws.root.join(".claude").join(rel).is_file(),
-                "missing .claude/{rel}"
-            );
-            assert!(
-                ws.root.join(".opencode").join(rel).is_file(),
-                "missing .opencode/{rel}"
-            );
+        for root in [".agents", ".claude", ".opencode", ".gemini"] {
+            for rel in skill_tree {
+                assert!(
+                    ws.root.join(root).join(rel).is_file(),
+                    "missing {root}/{rel}"
+                );
+            }
         }
 
         // The provisioned SKILL.md matches the embedded source (frontmatter name).
@@ -819,6 +823,40 @@ mod tests {
 
         // Second provision must not error (idempotent over our own files).
         provision(&ws, PY, SOCK, &templates).expect("second provision");
+
+        let _ = fs::remove_dir_all(&ws.root);
+        let _ = fs::remove_dir_all(&templates);
+    }
+
+    #[test]
+    fn provision_writes_harness_instruction_pointers_without_an_interpreter() {
+        let ws = tmp_ws();
+        let templates = tmp_templates();
+
+        provision(&ws, "", SOCK, &templates).expect("offline provision");
+
+        assert!(
+            ws.root.join("CLAUDE.md").is_file(),
+            "Claude pointer must not depend on the interpreter"
+        );
+        assert!(
+            ws.root.join("GEMINI.md").is_file(),
+            "Gemini pointer must not depend on the interpreter"
+        );
+        for rel in [
+            ".mcp.json",
+            ".claude/settings.json",
+            ".codex/config.toml",
+            "opencode.json",
+            ".gemini/settings.json",
+            ".github/mcp.json",
+            ".pi/mcp.json",
+        ] {
+            assert!(
+                !ws.root.join(rel).exists(),
+                "MCP configuration must wait for an interpreter: {rel}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&ws.root);
         let _ = fs::remove_dir_all(&templates);
