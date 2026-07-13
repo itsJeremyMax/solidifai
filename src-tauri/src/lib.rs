@@ -30,6 +30,7 @@ pub mod workspaces;
 
 use std::sync::Arc;
 
+use agent_harness::HarnessStatusState;
 use instances::Instances;
 use provision::WorkspaceState;
 use pty::PtyState;
@@ -90,11 +91,14 @@ pub fn run() {
     builder
         .manage(PtyState::default())
         .manage(WorkspaceState::default())
+        .manage(HarnessStatusState::default())
         .manage(instances.clone())
         .setup(move |app| {
             // Stand up logging first so anything below (and the whole session) is
             // captured to the rolling log file + stderr.
             logging::init(app.handle());
+            app.state::<HarnessStatusState>()
+                .replace(agent_harness::detect_path_only());
 
             // Do NOT open a workspace at boot — the frontend shows a launcher and
             // the engine/watcher/provisioner start in `open_workspace`.
@@ -215,6 +219,9 @@ pub fn run() {
             workspaces::list_skills,
             workspaces::get_agent_config,
             workspaces::set_agent_config,
+            // Native coding-harness readiness and explicit support refresh.
+            workspaces::get_agent_harness_statuses,
+            workspaces::refresh_agent_support,
             // Observability: record webview-side uncaught errors in the shell log.
             logging::log_frontend_error,
             // Engine status (lets a late-mounting pill seed itself).

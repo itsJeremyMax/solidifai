@@ -24,6 +24,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::agent_config::{self, AgentConfig, SkillInfo};
+use crate::agent_harness::{self, HarnessStatus, HarnessStatusState};
 use crate::app_config::{self, AppConfig};
 use crate::engine;
 use crate::instances::Instances;
@@ -106,6 +107,29 @@ fn focus_watcher(app: &AppHandle, instances: &Arc<Instances>, ws: &WorkspacePath
     instances.set_watcher(new_watcher);
 }
 
+/// Resolve the values that every provisioning pass embeds in managed harness
+/// files. Keep this shared by initial startup and explicit refresh so both paths
+/// produce the same configuration.
+fn provisioning_inputs(
+    app: &AppHandle,
+    ws: &WorkspacePaths,
+    running_interpreter: Option<String>,
+) -> Result<(String, String, PathBuf), String> {
+    let interpreter = engine::mcp_launcher(app)
+        .or(running_interpreter)
+        .or_else(|| {
+            engine::resolve_engine_dir(app)
+                .map(|dir| {
+                    engine::interpreter_path(&dir)
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .ok()
+        })
+        .unwrap_or_default();
+    Ok((interpreter, ws.socket_str(), templates_dir(app)?))
+}
+
 /// Bring a workspace fully online: ensure its engine exists in the registry,
 /// provision it (with overridable templates + resolved interpreter + its socket),
 /// retarget the single held artifact watcher onto it, and spawn the engine
@@ -123,9 +147,8 @@ pub fn start_workspace(
     let engine = instances.ensure(id.clone());
     engine.set_ws_id(&id);
 
-    let socket = ws.socket_str();
     let artifacts = ws.artifacts_str();
-    let templates = templates_dir(app)?;
+    let (interpreter, socket, templates) = provisioning_inputs(app, ws, engine.interpreter())?;
     // The workspace's durable model file. A new workspace ships without one; the
     // engine loads + runs it on startup *if it exists*, and the agent's first
     // build writes it here. Passing the path lets the engine persist to / run the
@@ -137,14 +160,6 @@ pub fn start_workspace(
     // update, so external agent configs must point at the stable launcher shim;
     // in dev that is None and we use THIS workspace's own engine interpreter (the
     // supervisor's when already resolved, else the resolved venv path).
-    let interpreter = engine::mcp_launcher(app)
-        .or_else(|| engine.interpreter())
-        .or_else(|| {
-            engine::resolve_engine_dir(app)
-                .map(|d| engine::interpreter_path(&d).to_string_lossy().into_owned())
-                .ok()
-        })
-        .unwrap_or_default();
     provision::provision(ws, &interpreter, &socket, &templates)?;
 
     // Focused watcher (single): retarget the held one onto THIS workspace.
@@ -448,6 +463,14 @@ fn focused_root_path(app: &AppHandle) -> Option<String> {
         .lock()
         .clone()
         .map(|p| p.root_str())
+}
+
+fn focused_workspace_paths(state: &WorkspaceState) -> Result<WorkspacePaths, String> {
+    state
+        .focused
+        .lock()
+        .clone()
+        .ok_or_else(|| "no workspace is open".to_string())
 }
 
 // -- workspace metadata (single writer while open) --------------------------
@@ -876,6 +899,75 @@ pub fn set_agent_config(app: AppHandle, config: AgentConfig) -> Result<AgentConf
     Ok(config)
 }
 
+fn annotate_user_owned_paths(
+    mut statuses: Vec<HarnessStatus>,
+    workspace: Option<&WorkspacePaths>,
+) -> Vec<HarnessStatus> {
+    if let Some(workspace) = workspace {
+        for status in &mut statuses {
+            status.user_owned_paths = agent_harness::user_owned_paths(status.id, &workspace.root);
+        }
+    }
+    statuses
+}
+
+/// Return the startup-cached harness statuses. This only annotates the cache
+/// with user-owned adapter paths in the focused workspace; it never runs `pi`.
+#[tauri::command]
+pub fn get_agent_harness_statuses(
+    statuses: State<'_, HarnessStatusState>,
+    workspace: State<'_, WorkspaceState>,
+) -> Vec<HarnessStatus> {
+    let workspace = workspace.focused.lock().clone();
+    annotate_user_owned_paths(statuses.statuses(), workspace.as_ref())
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshAgentSupportResult {
+    pub provision_report: provision::ProvisionReport,
+    pub statuses: Vec<HarnessStatus>,
+}
+
+/// Re-provision the focused workspace and explicitly validate Pi's MCP
+/// extension. Unlike the cached status command, this is allowed to run `pi list`.
+#[tauri::command]
+pub async fn refresh_agent_support(
+    app: AppHandle,
+    workspace: State<'_, WorkspaceState>,
+    statuses: State<'_, HarnessStatusState>,
+) -> Result<RefreshAgentSupportResult, String> {
+    let workspace = focused_workspace_paths(&workspace)?;
+    let annotation_workspace = workspace.clone();
+    let app_for_task = app.clone();
+    let (provision_report, refreshed) = tauri::async_runtime::spawn_blocking(move || {
+        refresh_agent_support_blocking(app_for_task, workspace)
+    })
+    .await
+    .map_err(|error| format!("refresh_agent_support task failed: {error}"))??;
+    statuses.replace(refreshed.clone());
+
+    Ok(RefreshAgentSupportResult {
+        provision_report,
+        statuses: annotate_user_owned_paths(refreshed, Some(&annotation_workspace)),
+    })
+}
+
+fn refresh_agent_support_blocking(
+    app: AppHandle,
+    workspace: WorkspacePaths,
+) -> Result<(provision::ProvisionReport, Vec<HarnessStatus>), String> {
+    let running_interpreter = app
+        .state::<Arc<Instances>>()
+        .get(&workspace.root_str())
+        .and_then(|engine| engine.interpreter());
+    let (interpreter, socket, templates) =
+        provisioning_inputs(&app, &workspace, running_interpreter)?;
+    let provision_report = provision::provision(&workspace, &interpreter, &socket, &templates)?;
+    let refreshed = agent_harness::detect_explicit();
+    Ok((provision_report, refreshed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,6 +1021,36 @@ mod tests {
         assert_eq!(v["name"], "AGENTS.md");
         assert_eq!(v["content"], "hi");
         assert_eq!(v["isCustom"], true);
+    }
+
+    #[test]
+    fn harness_statuses_annotate_user_owned_adapter_paths() {
+        let root = std::env::temp_dir().join(format!("sf-harness-status-{}", registry::now_ms()));
+        let paths = WorkspacePaths::for_root(&root);
+        std::fs::create_dir_all(root.join(".pi")).unwrap();
+        std::fs::write(root.join(".pi/mcp.json"), "USER OWNED").unwrap();
+
+        let statuses = annotate_user_owned_paths(
+            vec![crate::agent_harness::HarnessStatus {
+                id: crate::agent_harness::HarnessId::Pi,
+                display_name: "Pi".to_string(),
+                state: crate::agent_harness::HarnessState::Ready,
+                remediation: None,
+                user_owned_paths: Vec::new(),
+            }],
+            Some(&paths),
+        );
+
+        assert_eq!(statuses[0].user_owned_paths, vec![".pi/mcp.json"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_requires_a_focused_workspace() {
+        assert_eq!(
+            focused_workspace_paths(&WorkspaceState::default()).unwrap_err(),
+            "no workspace is open"
+        );
     }
 
     #[test]

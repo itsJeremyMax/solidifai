@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
+use serde::Serialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -44,6 +45,16 @@ fn ipc_dir() -> PathBuf {
 
 /// Marker substring that flags a file as owned/managed by solidifai.
 pub(crate) const MANAGED_MARKER: &str = "solidifai-managed";
+
+/// Summary of the managed files handled by one provisioning pass. Paths are
+/// workspace-relative so callers can surface them without exposing host paths.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionReport {
+    pub written: Vec<String>,
+    pub skipped_user_owned: Vec<String>,
+    pub errors: Vec<String>,
+}
 
 /// Canonical instructional content, embedded from `engine/workspace_templates/`
 /// so it ships in the binary and is written verbatim.
@@ -425,13 +436,18 @@ pub fn sanitize_folder_name(name: &str) -> String {
 /// Write `content` to `path` if the file is missing or is one of ours (contains
 /// the managed marker). Creates parent dirs as needed. Returns `Ok(true)` if it
 /// wrote, `Ok(false)` if it skipped a user-owned file.
-fn write_managed(path: &Path, content: &str) -> Result<bool, String> {
+enum WriteOutcome {
+    Written,
+    SkippedUserOwned,
+}
+
+fn write_managed(path: &Path, content: &str) -> Result<WriteOutcome, String> {
     if path.exists() {
         let existing = fs::read_to_string(path)
             .map_err(|e| format!("failed to read existing {}: {e}", path.display()))?;
         if !existing.contains(MANAGED_MARKER) {
             // User made this file their own; leave it untouched.
-            return Ok(false);
+            return Ok(WriteOutcome::SkippedUserOwned);
         }
     }
     if let Some(parent) = path.parent() {
@@ -439,7 +455,19 @@ fn write_managed(path: &Path, content: &str) -> Result<bool, String> {
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
     fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(true)
+    Ok(WriteOutcome::Written)
+}
+
+fn record_write(report: &mut ProvisionReport, root: &Path, path: &Path, outcome: WriteOutcome) {
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    match outcome {
+        WriteOutcome::Written => report.written.push(relative),
+        WriteOutcome::SkippedUserOwned => report.skipped_user_owned.push(relative),
+    }
 }
 
 /// Render the full `## Manufacturing profile` region (markers + lines).
@@ -556,8 +584,9 @@ pub fn provision(
     py: &str,
     sock: &str,
     templates_dir: &Path,
-) -> Result<(), String> {
+) -> Result<ProvisionReport, String> {
     let root = &ws.root;
+    let mut report = ProvisionReport::default();
 
     // Render the live manufacturing-profile region into the always-loaded brief.
     // Rust stays the sole writer of AGENTS.md. config_dir is the parent of the
@@ -575,20 +604,26 @@ pub fn provision(
     // so defer only those files until it has been resolved.
     for adapter in crate::agent_harness::adapter_registry() {
         for output in adapter.instruction_outputs() {
-            write_managed(&root.join(output.path), &output.content)?;
+            let path = root.join(output.path);
+            let outcome = write_managed(&path, &output.content)?;
+            record_write(&mut report, root, &path, outcome);
         }
     }
     if !py.is_empty() {
         for adapter in crate::agent_harness::adapter_registry() {
             for output in adapter.mcp_outputs(py, sock) {
-                write_managed(&root.join(output.path), &output.content)?;
+                let path = root.join(output.path);
+                let outcome = write_managed(&path, &output.content)?;
+                record_write(&mut report, root, &path, outcome);
             }
         }
     }
 
     // Instructions are rendered above with the live manufacturing and custom
     // regions. Harness pointers are renderer outputs owned by agent_harness.
-    write_managed(&root.join("AGENTS.md"), &agents)?;
+    let agents_path = root.join("AGENTS.md");
+    let outcome = write_managed(&agents_path, &agents)?;
+    record_write(&mut report, root, &agents_path, outcome);
 
     // App-managed Agent Skills collection: write the ENABLED embedded skills under
     // every distinct adapter skill root (preserving subdirs). The enabled set is the
@@ -607,7 +642,7 @@ pub fn provision(
     // No starter model.py: a fresh workspace opens modelless (the viewport shows
     // its empty state) and the agent's first build writes model.py itself.
 
-    Ok(())
+    Ok(report)
 }
 
 /// Recursively write the ENABLED embedded skills into `dest` (a `skills/` root),
@@ -823,6 +858,26 @@ mod tests {
 
         // Second provision must not error (idempotent over our own files).
         provision(&ws, PY, SOCK, &templates).expect("second provision");
+
+        let _ = fs::remove_dir_all(&ws.root);
+        let _ = fs::remove_dir_all(&templates);
+    }
+
+    #[test]
+    fn provision_reports_written_and_user_owned_paths() {
+        let ws = tmp_ws();
+        let templates = tmp_templates();
+        let user_owned = ws.root.join(".pi/mcp.json");
+        fs::create_dir_all(user_owned.parent().unwrap()).unwrap();
+        fs::write(&user_owned, "USER OWNED").unwrap();
+
+        let report = provision(&ws, PY, SOCK, &templates).expect("provision");
+
+        assert!(report.written.contains(&"AGENTS.md".to_string()));
+        assert!(report
+            .skipped_user_owned
+            .contains(&".pi/mcp.json".to_string()));
+        assert!(report.errors.is_empty());
 
         let _ = fs::remove_dir_all(&ws.root);
         let _ = fs::remove_dir_all(&templates);
