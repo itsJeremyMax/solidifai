@@ -140,6 +140,127 @@ export async function relaunchForUpdate(): Promise<void> {
 
 /* ──────────────────────────── agent-config ────────────────────────────── */
 
+/** The native coding harnesses the desktop provisioner can support. */
+export type HarnessId = "codex" | "claudeCode" | "openCode" | "geminiCli" | "copilotCli" | "pi";
+
+/**
+ * Readiness states exposed by the harness support surface. The current backend
+ * emits the first three values; the latter two keep the UI safe if an older or
+ * newer backend cannot report a concrete result.
+ */
+export type HarnessState = "ready" | "notInstalled" | "needsSetup" | "unknown" | "unavailable";
+
+/** One native coding harness and its current readiness for the active workspace. */
+export interface HarnessStatus {
+  id: HarnessId;
+  displayName: string;
+  state: HarnessState;
+  remediation: string | null;
+  userOwnedPaths: string[];
+}
+
+/** Files handled, preserved, or rejected by one provisioning pass. */
+export interface ProvisionReport {
+  written: string[];
+  skippedUserOwned: string[];
+  errors: string[];
+}
+
+/** Result of explicitly refreshing native agent support for the active workspace. */
+export interface RefreshAgentSupportResult {
+  provisionReport: ProvisionReport;
+  statuses: HarnessStatus[];
+}
+
+const HARNESS_IDS: readonly HarnessId[] = [
+  "codex",
+  "claudeCode",
+  "openCode",
+  "geminiCli",
+  "copilotCli",
+  "pi",
+];
+const HARNESS_STATES: readonly HarnessState[] = [
+  "ready",
+  "notInstalled",
+  "needsSetup",
+  "unknown",
+  "unavailable",
+];
+
+function toHarnessStatus(raw: unknown): HarnessStatus | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  if (
+    !HARNESS_IDS.includes(record.id as HarnessId) ||
+    typeof record.displayName !== "string" ||
+    !HARNESS_STATES.includes(record.state as HarnessState) ||
+    (record.remediation !== null && typeof record.remediation !== "string") ||
+    !Array.isArray(record.userOwnedPaths) ||
+    !record.userOwnedPaths.every((path) => typeof path === "string")
+  ) {
+    return null;
+  }
+  return {
+    id: record.id as HarnessId,
+    displayName: record.displayName,
+    state: record.state as HarnessState,
+    remediation: record.remediation,
+    userOwnedPaths: record.userOwnedPaths as string[],
+  };
+}
+
+function toProvisionReport(raw: unknown): ProvisionReport {
+  if (typeof raw !== "object" || raw === null)
+    return { written: [], skippedUserOwned: [], errors: [] };
+  const record = raw as Record<string, unknown>;
+  const strings = (value: unknown) =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return {
+    written: strings(record.written),
+    skippedUserOwned: strings(record.skippedUserOwned),
+    errors: strings(record.errors),
+  };
+}
+
+function toRefreshAgentSupportResult(raw: unknown): RefreshAgentSupportResult {
+  if (typeof raw !== "object" || raw === null) {
+    return { provisionReport: toProvisionReport(null), statuses: [] };
+  }
+  const record = raw as Record<string, unknown>;
+  return {
+    provisionReport: toProvisionReport(record.provisionReport),
+    statuses: Array.isArray(record.statuses)
+      ? record.statuses
+          .map(toHarnessStatus)
+          .filter((status): status is HarnessStatus => status !== null)
+      : [],
+  };
+}
+
+/**
+ * Get cached native harness readiness. This is a safe read so settings remains
+ * usable against an unavailable or older backend.
+ */
+export async function getAgentHarnessStatuses(): Promise<HarnessStatus[]> {
+  try {
+    const raw = await invoke<unknown>("get_agent_harness_statuses");
+    return Array.isArray(raw)
+      ? raw.map(toHarnessStatus).filter((status): status is HarnessStatus => status !== null)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Re-provision the active workspace and explicitly re-check harness readiness.
+ * Unlike the safe read, failures are re-thrown for the settings UI to display.
+ */
+export async function refreshAgentSupport(): Promise<RefreshAgentSupportResult> {
+  return toRefreshAgentSupportResult(await invoke<unknown>("refresh_agent_support"));
+}
+
 /** One available workspace skill with its enabled state (mirrors Rust `SkillInfo`). */
 export interface SkillInfo {
   name: string;
