@@ -2,7 +2,7 @@
 > **FIRST, before anything else: invoke the `using-solidifai` skill.** It orients you to
 > this workspace and the `solidifai-cad` engine every skill here drives. Do this even when
 > the request looks simple: every other skill assumes you have read it. (No skill mechanism
-> in your harness? Read `.claude/skills/using-solidifai/SKILL.md` first instead.)
+> in your harness? Read `.agents/skills/using-solidifai/SKILL.md` first instead.)
 
 # solidifai CAD workspace
 

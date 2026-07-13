@@ -1,4 +1,5 @@
 pub mod agent_config;
+pub mod agent_harness;
 pub mod app_config;
 pub mod control;
 pub mod custom_instructions;
