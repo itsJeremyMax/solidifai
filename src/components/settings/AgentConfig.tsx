@@ -30,7 +30,7 @@ const HARNESSES: readonly { id: HarnessId; displayName: string }[] = [
   { id: "claudeCode", displayName: "Claude Code" },
   { id: "openCode", displayName: "OpenCode" },
   { id: "geminiCli", displayName: "Gemini CLI" },
-  { id: "copilotCli", displayName: "Copilot CLI" },
+  { id: "copilotCli", displayName: "GitHub Copilot CLI" },
   { id: "pi", displayName: "Pi" },
 ];
 

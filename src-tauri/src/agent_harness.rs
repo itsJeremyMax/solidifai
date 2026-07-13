@@ -277,7 +277,7 @@ const ADAPTERS: [HarnessAdapter; 6] = [
     },
     HarnessAdapter {
         id: HarnessId::CopilotCli,
-        display_name: "Copilot CLI",
+        display_name: "GitHub Copilot CLI",
         executable: "copilot",
         skill_root: Some(".agents/skills"),
         render: render_copilot_cli,

@@ -877,7 +877,7 @@ mod tests {
                 "Claude Code",
                 "OpenCode",
                 "Gemini CLI",
-                "Copilot CLI",
+                "GitHub Copilot CLI",
                 "Pi",
             ]
         );

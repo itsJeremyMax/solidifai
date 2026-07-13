@@ -13,7 +13,7 @@ import {
 } from "../../lib/ipc/config";
 import AgentConfig from "./AgentConfig";
 
-const STATUS_NAMES = ["Codex", "Claude Code", "OpenCode", "Gemini CLI", "Copilot CLI", "Pi"];
+const STATUS_NAMES = ["Codex", "Claude Code", "OpenCode", "Gemini CLI", "GitHub Copilot CLI", "Pi"];
 
 const initialStatuses: HarnessStatus[] = [
   { id: "codex", displayName: "Codex", state: "ready", remediation: null, userOwnedPaths: [] },
@@ -40,7 +40,7 @@ const initialStatuses: HarnessStatus[] = [
   },
   {
     id: "copilotCli",
-    displayName: "Copilot CLI",
+    displayName: "GitHub Copilot CLI",
     state: "notInstalled",
     remediation: null,
     userOwnedPaths: [],
@@ -90,7 +90,7 @@ describe("AgentConfig", () => {
       "Claude CodeNot installed",
       "OpenCodeReady",
       "Gemini CLIReady",
-      "Copilot CLINot installed",
+      "GitHub Copilot CLINot installed",
       "PiReady",
     ]);
     expect(screen.queryByText("pi install npm:pi-mcp-extension")).toBeNull();

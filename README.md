@@ -97,7 +97,7 @@ solidifai inverts that:
 
 ```text
 Terminal (xterm) ── keystrokes via PTY channel ─────────────┐
-PTY host ── spawns your agent CLI (claude / codex / opencode) ┘
+PTY host ── spawns your selected supported CLI harness ┘
                        │ agent calls MCP tools (stdio)
                        ▼
 solidifai-cad MCP bridge ── local RPC ──┐
