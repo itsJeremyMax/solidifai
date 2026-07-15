@@ -9,8 +9,10 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+from collections.abc import Callable
 
 from solidifai_engine.control import OverrideChannel
+from solidifai_engine.export_policy import OverrideVerifier
 from solidifai_engine.logconfig import setup_logging
 from solidifai_engine.server import Server
 
@@ -20,8 +22,8 @@ def _reject_all_override(_nonce: str, **_claims: object) -> dict[str, object]:
 
 
 def build_override_verifier(
-    mode: str, bootstrap_factory=OverrideChannel.from_stdin
-) -> tuple[object, object]:
+    mode: str, bootstrap_factory: Callable[[], OverrideChannel] = OverrideChannel.from_stdin
+) -> tuple[OverrideVerifier, Callable[[], None]]:
     if mode == "eval-test":
         return _reject_all_override, lambda: None
     channel = bootstrap_factory()

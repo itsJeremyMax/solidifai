@@ -18,7 +18,7 @@ class ImportAdapter:
     loader: Callable[[str], Any]
 
 
-_CANDIDATES = (
+_CANDIDATES: tuple[tuple[str, tuple[str, ...], RoleCapability, str], ...] = (
     ("step", (".step", ".stp"), "modifiable_solid", "import_step"),
     ("brep", (".brep",), "modifiable_solid", "import_brep"),
     ("stl", (".stl",), "reference_mesh", "import_stl"),

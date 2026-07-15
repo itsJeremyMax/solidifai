@@ -787,7 +787,7 @@ class Session:
     def analyze_dfm(self, process: str | None = None) -> dict:
         return self._analysis.analyze_dfm(process)
 
-    def _infer_process(self, material_name) -> str:
+    def _infer_process(self, material_name) -> str | None:
         return self._analysis._infer_process(material_name)
 
     def _density_for(self, material_name) -> float:

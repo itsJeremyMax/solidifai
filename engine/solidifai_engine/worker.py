@@ -32,7 +32,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from solidifai_engine.operations import OperationTimeout
 
@@ -414,7 +414,7 @@ class SessionProxy:
 
     def finish_cancel(self, claim: object) -> bool:
         """Tear down only the exact call claimed before scheduler intent was set."""
-        active, token = claim  # type: ignore[misc]
+        active, token = cast(tuple[_ActiveCall, object], claim)
         with self._active_lock:
             if self._active_call is not active or active.cancellation_claim is not token:
                 return False
@@ -428,7 +428,7 @@ class SessionProxy:
 
     def release_cancel_claim(self, claim: object) -> bool:
         """Release a claim whose completion won before teardown began."""
-        active, token = claim  # type: ignore[misc]
+        active, token = cast(tuple[_ActiveCall, object], claim)
         with self._active_lock:
             if self._active_call is not active or active.cancellation_claim is not token:
                 return False
