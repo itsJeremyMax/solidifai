@@ -192,8 +192,6 @@ def stage_publication(
     if model_path is not None:
         root = workspace_root(artifacts_dir)
         write_set[relative_workspace_path(root, model_path)] = model_source or ""
-    elif model_source is not None:
-        write_set.setdefault("model.py", model_source)
     staged_inputs = os.path.join(staged, "inputs")
     for relative, value in write_set.items():
         _validate_relative_path(relative)
@@ -298,6 +296,8 @@ def workspace_write_set(root: str) -> dict[str, bytes | str]:
         "imports.json",
         "build_brief.json",
         "part_materials.json",
+        "materials.json",
+        "manufacturing-profile.json",
         "requirements.json",
     }
     captured: dict[str, bytes | str] = {}

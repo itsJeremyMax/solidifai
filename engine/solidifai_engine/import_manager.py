@@ -154,6 +154,19 @@ class ImportManager:
         """Bring an external file in as a ghosted reference fixture: copy it into
         ``assets/``, record it in ``imports.json``, and re-render. References are
         shown and measurable but never exported or DFM-checked."""
+        try:
+            adapter = get_adapter(source_path)
+        except ValueError:
+            diagnostic = unsupported_diagnostic(source_path)
+            return {"ok": False, "error": diagnostic["message"], "diagnostic": diagnostic}
+        if adapter.role_capability == "sketch":
+            return {
+                "ok": False,
+                "error": (
+                    f"{adapter.format_id} imports are {adapter.role_capability!r}, "
+                    "not supported as measurable 3D references"
+                ),
+            }
         staged = self.stage_import(source_path)
         if not staged.get("ok") or self.s.root is None:
             return staged
@@ -165,7 +178,7 @@ class ImportManager:
                 "path": staged["path"],
                 "format": staged["format"],
                 "required": required,
-                "provenance": {"sourcePath": source_path, "sourceFormat": staged["format"]},
+                "provenance": {"sourceFormat": staged["format"]},
             },
         )
         res = self.s._rebuild_preserving_params()

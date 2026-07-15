@@ -199,6 +199,18 @@ def test_nested_assembly_sources_and_manifests_are_published_and_tombstoned(tmp_
     assert "hinge/parts/pin.py" in second_manifest["deletions"]
 
 
+def test_workspace_write_set_captures_material_and_manufacturing_profiles(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "materials.json").write_text('{"materials": []}')
+    (root / "manufacturing-profile.json").write_text('{"process": "fdm"}')
+
+    captured = paths.workspace_write_set(str(root))
+
+    assert captured["materials.json"] == b'{"materials": []}'
+    assert captured["manufacturing-profile.json"] == b'{"process": "fdm"}'
+
+
 def test_history_records_the_materialized_assembly_generation(tmp_path):
     session, root, _artifacts = _assembly_session(tmp_path)
 

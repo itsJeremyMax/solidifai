@@ -233,8 +233,15 @@ class OperationQueue:
                     if record.state not in _TERMINAL:
                         record.last_heartbeat = time.monotonic()
                         record.progress = progress
-                        record.phase = phase
-                        if phase == "publishing":
+                        # A cancellation claim owns the terminal intent. A late
+                        # worker heartbeat may report its last work phase, but it
+                        # cannot turn a timeout or cancellation back into a build.
+                        if record.phase not in {"timing_out", "cancelling"}:
+                            record.phase = phase
+                        if phase == "publishing" and record.phase not in {
+                            "timing_out",
+                            "cancelling",
+                        }:
                             record.state = "publishing"
                         self._refresh_elapsed(record)
                         self._condition.notify_all()

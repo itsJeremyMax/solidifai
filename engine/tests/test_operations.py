@@ -122,6 +122,32 @@ def test_soft_timeout_uses_heartbeat_but_hard_ceiling_stops_operation():
         queue.close()
 
 
+def test_heartbeat_cannot_overwrite_timeout_intent_before_worker_raises():
+    entered = threading.Event()
+    release = threading.Event()
+
+    def execute(_method, _params, heartbeat):
+        heartbeat(0.5, "building")
+        entered.set()
+        release.wait(1)
+        heartbeat(0.5, "building")
+        raise RuntimeError("worker stopped")
+
+    queue = OperationQueue(
+        execute,
+        begin_cancel=lambda _record: object(),
+        finish_cancel=lambda _claim: release.set() or True,
+        soft_timeout=0.01,
+        hard_timeout=0.2,
+    )
+    try:
+        operation = queue.submit("execute_script", {})
+        assert entered.wait(1)
+        assert queue.wait(operation["operationId"], timeout=1)["state"] == "timed_out"
+    finally:
+        queue.close()
+
+
 def test_replacement_key_supersedes_the_running_operation():
     started = threading.Event()
     stopped = threading.Event()

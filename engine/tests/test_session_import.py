@@ -1,5 +1,7 @@
 """Session import ops: stage / import_reference / remove / apply."""
 
+import json
+
 from build123d import Box
 
 import solidifai
@@ -131,6 +133,40 @@ def test_unsupported_format_rejected(tmp_path):
     src.write_text("not real", encoding="utf-8")
     s, root = _session(tmp_path)
     assert s.import_reference(str(src))["ok"] is False
+
+
+def test_sketch_import_is_rejected_as_a_reference(tmp_path, monkeypatch):
+    src = tmp_path / "outline.svg"
+    src.write_text("<svg />", encoding="utf-8")
+    s, root = _session(tmp_path)
+
+    from solidifai_engine import import_manager
+    from solidifai_engine.import_adapters import ImportAdapter
+
+    monkeypatch.setattr(
+        import_manager,
+        "get_adapter",
+        lambda _path: ImportAdapter("svg", (".svg",), "sketch", lambda _path: None),
+    )
+
+    result = s.import_reference(str(src))
+
+    assert result["ok"] is False
+    assert not (root / "imports.json").exists()
+    assert not (root / "assets" / "outline.svg").exists()
+
+
+def test_import_reference_does_not_persist_absolute_source_path(tmp_path):
+    src = tmp_path / "pcb.stl"
+    _write_geom(str(src), "stl")
+    s, root = _session(tmp_path)
+
+    result = s.import_reference(str(src))
+
+    assert result["ok"] is True
+    entry = imports_manifest.load(str(root))[0]
+    assert str(src) not in json.dumps(entry)
+    assert entry["provenance"] == {"sourceFormat": "stl"}
 
 
 # -- script-shown references (the inside-out-packaging convention) -----------

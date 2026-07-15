@@ -8,7 +8,7 @@ import { ArrowLeftRight, ClipboardList } from "lucide-react";
 
 import CollapsibleSection from "./CollapsibleSection";
 import History from "../History";
-import type { BuildBrief } from "../../hooks/useBuildBrief";
+import { formatTrustItem, type BuildBrief } from "../../hooks/useBuildBrief";
 import type { SectionKey, SectionState } from "../../state/useInspectorPrefs";
 
 /** Text clamped to a few lines with a Show more toggle when it overflows. */
@@ -125,6 +125,15 @@ function BriefSection({ brief }: { brief: BuildBrief | null }) {
   const parts = Array.isArray(brief.parts) ? brief.parts : [];
   const keyDims = Array.isArray(brief.key_dims) ? brief.key_dims : [];
   const interfaces = Array.isArray(brief.interfaces) ? brief.interfaces : [];
+  const trust = brief.trust;
+  const trustItems = trust
+    ? [
+        ...trust.references.map((item) => formatTrustItem("Reference", item)),
+        ...trust.assumptions.map((item) => formatTrustItem("Assumption", item)),
+        ...trust.requirements.map((item) => formatTrustItem("Requirement", item)),
+        ...trust.obligations.map((item) => formatTrustItem("Obligation", item)),
+      ]
+    : [];
 
   return (
     <div className="pb-1">
@@ -215,10 +224,26 @@ function BriefSection({ brief }: { brief: BuildBrief | null }) {
         </Block>
       )}
 
+      {trustItems.length > 0 && (
+        <Block title="Trust checks">
+          <ul className="flex flex-col gap-2">
+            {trustItems.map((item, index) => (
+              <li key={`${item.label}-${index}`} className="text-caption text-ink-2">
+                <span className="block">{item.label}</span>
+                {item.detail && <span className="block text-ink-3">{item.detail}</span>}
+              </li>
+            ))}
+          </ul>
+        </Block>
+      )}
+
       {/* make it real — process + material */}
-      {brief.make_real && (
+      {(brief.make_real || trust?.manufacturing.length) && (
         <Block title="Make it real">
-          <ClampedText text={brief.make_real} className="text-caption leading-relaxed text-ink-2" />
+          <ClampedText
+            text={trust?.manufacturing.join("\n") || brief.make_real}
+            className="text-caption leading-relaxed text-ink-2"
+          />
         </Block>
       )}
     </div>

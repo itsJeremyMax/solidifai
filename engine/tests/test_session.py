@@ -596,7 +596,7 @@ def _two_part_session(tmp_path):
     root.mkdir()
     model_path = root / "model.py"
     model_path.write_text(TWO_PART_SCRIPT)
-    artifacts = tmp_path / "artifacts"
+    artifacts = root / ".solidifai" / "artifacts"
     sess = Session(str(artifacts), model_path=str(model_path))
     sess.startup()
     return sess, str(root)
@@ -930,23 +930,26 @@ def test_render_does_not_commit_or_apply_references(tmp_path, monkeypatch):
     assert counts["after_build"] == 0
 
 
-def test_execute_script_persist_failure_leaves_build_unbumped(tmp_path, monkeypatch):
-    # A _persist_model OSError must leave build_id/last_ok exactly as they
-    # were before this call -- the original ordering persisted the durable
-    # model BEFORE bumping build_id, so a persist failure never bumped it.
-    model_path = tmp_path / "model.py"
-    artifacts = tmp_path / "artifacts"
+def test_execute_script_publishes_before_compatibility_source_mirror(tmp_path, monkeypatch):
+    from solidifai_engine import paths
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    model_path = root / "model.py"
+    artifacts = root / ".solidifai" / "artifacts"
     sess = Session(str(artifacts), model_path=str(model_path))
 
-    build_id_before = sess.build_id
+    original_copy = paths._copy_atomic
 
-    def boom(code):
-        raise OSError("disk full")
+    def fail_source_mirror(source, destination):
+        if destination == str(model_path):
+            raise OSError("mirror unavailable")
+        original_copy(source, destination)
 
-    monkeypatch.setattr(sess, "_persist_model", boom)
+    monkeypatch.setattr(paths, "_copy_atomic", fail_source_mirror)
 
     res = sess.execute_script(GOOD_SCRIPT)
 
-    assert res["ok"] is False
-    assert sess.build_id == build_id_before
-    assert sess.last_ok is False
+    assert res["ok"] is True
+    assert sess.build_id == 1
+    assert paths.read_current_publication(str(artifacts)) is not None

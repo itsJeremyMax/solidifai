@@ -20,6 +20,13 @@ export interface BuildBriefInterface {
   kind: string;
   clearance: number | null;
 }
+export interface BuildBriefTrust {
+  references: Record<string, unknown>[];
+  assumptions: Record<string, unknown>[];
+  requirements: Record<string, unknown>[];
+  obligations: Record<string, unknown>[];
+  manufacturing: string[];
+}
 export interface BuildBrief {
   schema: 1 | 2;
   revision?: number;
@@ -31,6 +38,7 @@ export interface BuildBrief {
   tier: "skip" | "stream" | "pause";
   /** Unchanged v2 data for consumers that need hierarchy, risk, or evidence. */
   raw?: Record<string, unknown>;
+  trust?: BuildBriefTrust;
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -46,6 +54,20 @@ const asRows = (value: unknown): Record<string, unknown>[] =>
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const numberOrNull = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
+
+export function formatTrustItem(
+  kind: string,
+  item: Record<string, unknown>,
+): { label: string; detail: string } {
+  const label = `${kind}: ${text(item.statement) || text(item.id) || "unnamed"}`;
+  const detail = [
+    ...["required", "risk", "disposition", "source"]
+      .filter((key) => item[key] !== undefined)
+      .map((key) => `${key}: ${String(item[key])}`),
+    text(item.rationale),
+  ].filter(Boolean);
+  return { label, detail: detail.join(" | ") };
+}
 
 /** Convert either persisted schema to rows the read-only panel can render safely. */
 export function projectBuildBrief(value: unknown): BuildBrief | null {
@@ -87,6 +109,19 @@ export function projectBuildBrief(value: unknown): BuildBrief | null {
     interfaces,
     make_real: schema === 1 ? text(raw.make_real) : text(asRows(raw.manufacturing)[0]?.description),
     tier: raw.tier as BuildBrief["tier"],
+    ...(schema === 2
+      ? {
+          trust: {
+            references: asRows(raw.references),
+            assumptions: asRows(raw.assumptions),
+            requirements: asRows(raw.requirements),
+            obligations: asRows(raw.obligations),
+            manufacturing: asRows(raw.manufacturing)
+              .map((item) => text(item.description))
+              .filter(Boolean),
+          },
+        }
+      : {}),
   };
 }
 
