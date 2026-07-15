@@ -133,6 +133,19 @@ def test_build_brief_tools_forward_expected_revision(monkeypatch):
     ]
 
 
+def test_conformance_tools_are_read_only_and_mcp_has_no_override_tool(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    calls = []
+    monkeypatch.setattr(srv, "_call", lambda method, params=None: calls.append((method, params)))
+
+    srv.get_conformance()
+    srv.get_readiness()
+
+    assert calls == [("get_conformance", None), ("get_readiness", None)]
+    assert not hasattr(srv, "export_with_override")
+
+
 def test_bridge_does_not_import_build123d():
     # Importing the bridge must not pull in the heavy CAD kernel. Check in a
     # fresh interpreter so other test modules' imports don't pollute the result.

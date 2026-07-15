@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from typing import BinaryIO
 
 from solidifai_engine import ipc
 
@@ -81,3 +83,102 @@ def write_reference(entry: dict) -> dict:
     library; raises ControlError when the app is unreachable or rejects it."""
     resp = _roundtrip({"op": "write_reference", "action": "upsert", "entry": entry})
     return resp.get("library") or {}
+
+
+class OverrideChannel:
+    """Parent-only connection to the host's private override endpoint."""
+
+    def __init__(self, transport: dict[str, str]):
+        self._transport = transport
+
+    @classmethod
+    def from_stdin(cls) -> OverrideChannel:
+        try:
+            return cls(read_override_bootstrap(sys.stdin.buffer))
+        finally:
+            # The bootstrap pipe is closed before SessionProxy creates workers.
+            os.close(sys.stdin.fileno())
+
+    def consume(self, nonce: str, *, workspace_id: str, build_id: int, format: str) -> dict:
+        try:
+            conn = _connect_private_transport(self._transport)
+            conn.settimeout(_TIMEOUT_S)
+            req = {
+                "op": "consume_export_override",
+                "nonce": nonce,
+                "workspaceId": workspace_id,
+                "buildId": build_id,
+                "format": format,
+            }
+            conn.sendall((json.dumps(req) + "\n").encode("utf-8"))
+            response = b""
+            while b"\n" not in response:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                response += chunk
+            parsed = json.loads(response.decode("utf-8").splitlines()[0]) if response else {}
+            return parsed if isinstance(parsed, dict) else {"ok": False}
+        except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
+            return {"ok": False}
+        finally:
+            if "conn" in locals():
+                conn.close()
+
+    def close(self) -> None:
+        self._transport = {}
+
+
+class OverrideBootstrapError(RuntimeError):
+    """The host did not provide a valid one-shot private bootstrap frame."""
+
+
+def read_override_bootstrap(stream: BinaryIO) -> dict[str, str]:
+    header = _read_exact(stream, 4)
+    size = int.from_bytes(header, "big")
+    if size == 0 or size > 16 * 1024:
+        raise OverrideBootstrapError("invalid override bootstrap frame")
+    try:
+        payload = json.loads(_read_exact(stream, size))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OverrideBootstrapError("invalid override bootstrap frame") from error
+    transport = payload.get("transport") if isinstance(payload, dict) else None
+    if not isinstance(transport, dict):
+        raise OverrideBootstrapError("invalid override bootstrap frame")
+    kind = transport.get("kind")
+    if kind == "unix" and isinstance(transport.get("path"), str) and transport["path"]:
+        return {"kind": kind, "path": transport["path"]}
+    if (
+        kind == "tcp"
+        and isinstance(transport.get("address"), str)
+        and transport["address"]
+        and isinstance(transport.get("token"), str)
+        and transport["token"]
+    ):
+        return {"kind": kind, "address": transport["address"], "token": transport["token"]}
+    raise OverrideBootstrapError("invalid override bootstrap frame")
+
+
+def _connect_private_transport(transport: dict[str, str]):
+    """Connect only from the trusted engine parent; workers receive no transport."""
+    if transport.get("kind") == "unix":
+        return ipc.connect(transport["path"])
+    if transport.get("kind") == "tcp":
+        address = transport["address"]
+        host, _, port = address.rpartition(":")
+        import socket
+
+        conn = socket.create_connection((host, int(port)))
+        conn.sendall(f"{transport['token']}\n".encode())
+        return conn
+    raise OSError("private override transport unavailable")
+
+
+def _read_exact(stream: BinaryIO, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            raise OverrideBootstrapError("missing override bootstrap frame")
+        chunks.extend(chunk)
+    return bytes(chunks)

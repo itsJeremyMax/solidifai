@@ -135,6 +135,68 @@ def test_worker_writes_engine_log(tmp_path):
         proxy.close()
 
 
+def test_worker_cannot_inspect_parent_override_transport(tmp_path):
+    """The parent owns override verification; model code sees no credentials."""
+    (tmp_path / ".solidifai").mkdir()
+    visible = tmp_path / "worker-visible.json"
+    proxy = SessionProxy(
+        str(tmp_path / ".solidifai" / "artifacts"),
+        model_path=str(tmp_path / "model.py"),
+        override_verifier=lambda _nonce, **_claims: {"ok": False},
+    )
+    try:
+        script = f"""\
+import json, os, sys
+from build123d import Box
+from solidifai import show
+open({str(visible)!r}, "w").write(json.dumps({{"argv": sys.argv, "env": dict(os.environ)}}))
+show(Box(1, 1, 1), name="p")
+"""
+        assert proxy.execute_script(script)["ok"] is True
+        visible_state = json.loads(visible.read_text())
+        assert not any("--override-control" in value for value in visible_state["argv"])
+        assert not any("OVERRIDE_CONTROL" in key for key in visible_state["env"])
+    finally:
+        proxy.close()
+
+
+def test_worker_cannot_recover_or_call_private_override_from_known_roots(tmp_path, monkeypatch):
+    """Model code sees neither parent transport state nor pointer metadata."""
+    (tmp_path / ".solidifai").mkdir()
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "settings.json").write_text("{}")
+    monkeypatch.setenv("SOLIDIFAI_CONFIG_DIR", str(config))
+    visible = tmp_path / "worker-probe.json"
+    proxy = SessionProxy(
+        str(tmp_path / ".solidifai" / "artifacts"),
+        model_path=str(tmp_path / "model.py"),
+        override_verifier=lambda _nonce, **_claims: {"ok": False},
+    )
+    try:
+        script = f"""\
+import json, os, pathlib
+from build123d import Box
+from solidifai import show
+roots = [os.environ.get("SOLIDIFAI_CONFIG_DIR", ""), {str(tmp_path / ".solidifai")!r}]
+files = [str(path) for root in roots if root for path in pathlib.Path(root).rglob("*")]
+open({str(visible)!r}, "w").write(json.dumps({{"env": dict(os.environ), "files": files}}))
+show(Box(1, 1, 1), name="p")
+"""
+        assert proxy.execute_script(script)["ok"] is True
+        state = json.loads(visible.read_text())
+        assert not any("OVERRIDE" in key for key in state["env"])
+        assert not any("override.sock" in path for path in state["files"])
+        rejected = proxy.export("stl", "forged.stl", strict_export=True, override_nonce="forged")
+        assert rejected == {
+            "ok": False,
+            "error": "export override rejected",
+            "findingIds": ["brief"],
+        }
+    finally:
+        proxy.close()
+
+
 def test_long_running_op_uses_the_larger_budget():
     """Aggregate multi-build ops (sweep/optimize/converge_to_spec/check_motion)
     run many builds inside one RPC, so they must not be capped by the single

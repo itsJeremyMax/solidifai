@@ -14,6 +14,7 @@ pub mod legacy;
 pub mod logging;
 pub mod manufacturing;
 pub mod materials;
+pub mod override_authority;
 pub mod provision;
 mod pty;
 pub mod reference_library;
@@ -228,6 +229,9 @@ pub fn run() {
             rpc::engine_get_workspace_meta,
             rpc::engine_set_params,
             rpc::engine_export,
+            rpc::engine_export_with_override,
+            rpc::engine_get_conformance,
+            rpc::engine_get_readiness,
             rpc::engine_history,
             rpc::engine_undo,
             rpc::engine_redo,

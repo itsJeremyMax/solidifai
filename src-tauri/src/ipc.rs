@@ -24,6 +24,17 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::Duration;
 
+use serde::Serialize;
+
+/// A private endpoint's concrete connection data. Unlike normal IPC paths, this
+/// is serialized only into the engine parent's one-shot bootstrap frame.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PrivateTransport {
+    Unix { path: String },
+    Tcp { address: String, token: String },
+}
+
 pub enum IpcStream {
     #[cfg(unix)]
     Unix(UnixStream),
@@ -94,6 +105,40 @@ impl IpcListener {
         {
             Self::bind_tcp(path)
         }
+    }
+
+    /// Bind a private listener without publishing a Windows address/token pointer
+    /// file. Its transport is handed directly to the trusted parent at bootstrap.
+    pub fn bind_private(path: &Path) -> std::io::Result<(Self, PrivateTransport)> {
+        #[cfg(unix)]
+        {
+            let listener = Self::bind_unix(path)?;
+            Ok((
+                listener,
+                PrivateTransport::Unix {
+                    path: path.to_string_lossy().into_owned(),
+                },
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            Self::bind_private_tcp()
+        }
+    }
+
+    /// TCP private transport used on Windows. Unlike `bind_tcp`, it deliberately
+    /// has no path argument and therefore cannot leave a token-bearing pointer.
+    pub fn bind_private_tcp() -> std::io::Result<(Self, PrivateTransport)> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let token = new_token()?;
+        let address = listener.local_addr()?.to_string();
+        Ok((
+            Self::Tcp {
+                listener,
+                token: token.clone(),
+            },
+            PrivateTransport::Tcp { address, token },
+        ))
     }
 
     #[cfg(unix)]
@@ -254,5 +299,26 @@ mod tests {
         let mut c = TcpStream::connect(addr).unwrap();
         c.write_all(b"not-the-token\n").unwrap();
         assert!(!server.join().unwrap(), "wrong token must not authenticate");
+    }
+
+    #[test]
+    fn private_tcp_transport_never_writes_a_pointer_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pointer = dir.path().join("authority.sock");
+        let (listener, transport) = IpcListener::bind_private_tcp().unwrap();
+        assert!(!pointer.exists());
+        let PrivateTransport::Tcp { address, token } = transport else {
+            panic!("private TCP bind must expose in-memory connection data");
+        };
+        let server = std::thread::spawn(move || {
+            let (mut stream, expected) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            authenticate(&mut stream, expected.as_deref().unwrap()).unwrap()
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(format!("{token}\n").as_bytes()).unwrap();
+        assert!(server.join().unwrap());
     }
 }

@@ -172,6 +172,51 @@ def test_protocol_12_client_metadata_is_accepted_over_socket(tmp_path):
         server.shutdown()
 
 
+def test_capable_build_response_includes_readiness_without_changing_legacy_shape(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        legacy = _send(
+            sock_path, {"id": 1, "method": "execute_script", "params": {"code": GOOD_SCRIPT}}
+        )
+        capable = _send(
+            sock_path,
+            {
+                "id": 2,
+                "method": "execute_script",
+                "params": {"code": GOOD_SCRIPT},
+                "client": {"protocol": 13, "capabilities": ["readiness"]},
+            },
+        )
+        assert legacy == {"id": 1, "ok": True, "result": {"ok": True, "buildId": 1}}
+        assert capable["result"]["buildId"] == 2
+        assert capable["result"]["readiness"] == {"level": "blocked", "findingIds": ["brief"]}
+    finally:
+        server.shutdown()
+
+
+def test_strict_export_rejects_forged_source_metadata_over_raw_rpc(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        _send(sock_path, {"id": 1, "method": "execute_script", "params": {"code": GOOD_SCRIPT}})
+        response = _send(
+            sock_path,
+            {
+                "id": 2,
+                "method": "export",
+                "params": {"format": "stl", "source": "app"},
+                "client": {"protocol": 13, "capabilities": ["strict_export"]},
+            },
+        )
+        assert response == {
+            "id": 2,
+            "ok": False,
+            "error": "export blocked by readiness",
+            "findingIds": ["brief"],
+        }
+    finally:
+        server.shutdown()
+
+
 def test_v2_build_brief_updates_require_the_negotiated_capability(tmp_path):
     server, sock_path, _ = _start(tmp_path)
     try:

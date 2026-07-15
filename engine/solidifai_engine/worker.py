@@ -116,7 +116,11 @@ class RemoteSessionError(RuntimeError):
         self.traceback = traceback_str
 
 
-def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -> None:
+def _worker_main(
+    conn: Connection,
+    artifacts_dir: str,
+    model_path: str | None,
+) -> None:
     """Child entry point: hold a Session and serve one request at a time.
 
     Requests are ``(method, args, kwargs, refresh)``; replies are ``("ok",
@@ -143,7 +147,12 @@ def _worker_main(conn: Connection, artifacts_dir: str, model_path: str | None) -
     else:
         root = os.path.dirname(os.path.dirname(os.path.abspath(artifacts_dir)))
 
-    session = Session(artifacts_dir, model_path=model_path)
+    def verifier(nonce, **claims):
+        conn.send(("verify_override", nonce, claims))
+        response = conn.recv()
+        return response[1] if response[0] == "verify_result" else {"ok": False}
+
+    session = Session(artifacts_dir, model_path=model_path, override_verifier=verifier)
     if root is not None:
         materials.configure_resolver(root)
     # Session.__init__ creates artifacts_dir, so the sentinel path is writable now.
@@ -194,6 +203,7 @@ class SessionProxy:
         self,
         artifacts_dir: str,
         model_path: str | None = None,
+        override_verifier=None,
         *,
         timeout: float = _DEFAULT_TIMEOUT,
         longrun_timeout: float = _LONGRUN_TIMEOUT,
@@ -201,6 +211,7 @@ class SessionProxy:
     ):
         self._artifacts_dir = artifacts_dir
         self._model_path = model_path
+        self._override_verifier = override_verifier
         self._timeout = timeout
         self._longrun_timeout = longrun_timeout
         # Startup builds the model before replying "ready", so the ready budget
@@ -219,7 +230,11 @@ class SessionProxy:
         parent, child = self._ctx.Pipe()
         proc = self._ctx.Process(
             target=_worker_main,
-            args=(child, self._artifacts_dir, self._model_path),
+            args=(
+                child,
+                self._artifacts_dir,
+                self._model_path,
+            ),
             daemon=True,
             name="solidifai-build-worker",
         )
@@ -278,9 +293,17 @@ class SessionProxy:
         while True:
             if conn.poll(0.2):
                 try:
-                    return conn.recv()
+                    reply = conn.recv()
                 except EOFError:
                     raise KernelCrash("the modeling kernel crashed on that operation") from None
+                if reply[0] == "verify_override":
+                    verifier = self._override_verifier
+                    result = (
+                        verifier(reply[1], **reply[2]) if verifier is not None else {"ok": False}
+                    )
+                    conn.send(("verify_result", result))
+                    continue
+                return reply
             if not proc.is_alive():
                 # Died without sending: drain a possible in-flight reply, else crash.
                 if conn.poll(0):

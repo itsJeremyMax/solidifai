@@ -37,7 +37,7 @@ import threading
 from typing import Any
 
 from solidifai_engine import ipc, protocol, scratch
-from solidifai_engine.protocol import CAP_BUILD_BRIEF_V2
+from solidifai_engine.protocol import CAP_BUILD_BRIEF_V2, CAP_READINESS, CAP_STRICT_EXPORT
 from solidifai_engine.worker import RemoteSessionError, SessionProxy
 
 # -- parent-death detection ---------------------------------------------------
@@ -193,7 +193,13 @@ def _failure_response(req_id: Any, result: dict) -> dict:
 
 
 class Server:
-    def __init__(self, socket_path: str, artifacts_dir: str, model_path: str | None = None):
+    def __init__(
+        self,
+        socket_path: str,
+        artifacts_dir: str,
+        model_path: str | None = None,
+        override_verifier=None,
+    ):
         self.socket_path = socket_path
         self.artifacts_dir = artifacts_dir
         self.model_path = model_path
@@ -208,7 +214,11 @@ class Server:
         # The Session runs in a crash-isolated worker process (see worker.py): a
         # native kernel fault (a degenerate fillet, a bad boolean) kills only the
         # worker, which the proxy respawns, instead of taking the engine down.
-        self._session = SessionProxy(artifacts_dir, model_path=model_path)
+        self._session = SessionProxy(
+            artifacts_dir,
+            model_path=model_path,
+            override_verifier=override_verifier,
+        )
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._sock: socket.socket | None = None
@@ -439,7 +449,19 @@ class Server:
             )
             if v2_request and CAP_BUILD_BRIEF_V2 not in negotiation["enabledCapabilities"]:
                 raise ValueError("client must negotiate build_brief_v2 for v2 build briefs")
-            result = self._dispatch(method, params)
+            dispatch_params = dict(params)
+            if method == "export":
+                dispatch_params["_strict_export"] = (
+                    CAP_STRICT_EXPORT in negotiation["enabledCapabilities"]
+                )
+            result = self._dispatch(method, dispatch_params)
+            if (
+                CAP_READINESS in negotiation["enabledCapabilities"]
+                and isinstance(result, dict)
+                and result.get("ok") is True
+                and "buildId" in result
+            ):
+                result = {**result, "readiness": self._session.get_readiness()}
         except RemoteSessionError as exc:
             # The worker already formatted the Session error as "<Type>: message";
             # surface it verbatim so the original exception type isn't buried under
@@ -612,6 +634,8 @@ _HANDLERS: dict[str, Any] = {
         srv._require(p, "brief"), expected_revision=p.get("expectedRevision")
     ),
     "get_build_brief": lambda srv, p: srv._session.get_build_brief(),
+    "get_conformance": lambda srv, p: srv._session.get_conformance(),
+    "get_readiness": lambda srv, p: srv._session.get_readiness(),
     "update_build_brief": lambda srv, p: srv._session.update_build_brief(
         srv._require(p, "section"),
         p.get("upserts") or [],
@@ -659,7 +683,11 @@ _HANDLERS: dict[str, Any] = {
         srv._require(p, "part_id"), p.get("material")
     ),
     "export": lambda srv, p: srv._session.export(
-        srv._require(p, "format"), p.get("path"), p.get("options")
+        srv._require(p, "format"),
+        p.get("path"),
+        p.get("options"),
+        strict_export=bool(p.get("_strict_export")),
+        override_nonce=p.get("overrideNonce"),
     ),
     "capture_views": lambda srv, p: srv._session.capture_views(
         p.get("views"),

@@ -16,13 +16,17 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 import traceback
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import solidifai
 from solidifai_engine import (
     build_brief,
+    conformance,
+    export_policy,
     montage,
     part_materials,
     paths,
@@ -102,7 +106,12 @@ def _module_build_overrides(code: str, valid_names: set) -> dict:
 
 
 class Session:
-    def __init__(self, artifacts_dir: str, model_path: str | None = None):
+    def __init__(
+        self,
+        artifacts_dir: str,
+        model_path: str | None = None,
+        override_verifier: export_policy.OverrideVerifier | None = None,
+    ):
         self.artifacts_dir = artifacts_dir
         os.makedirs(artifacts_dir, exist_ok=True)
         # When set, the durable model source file. On a successful
@@ -112,6 +121,9 @@ class Session:
         # Workspace root (parent of model.py) — None for bare artifact-only
         # sessions (tests). Settings + git history are enabled only when set.
         self.root = os.path.dirname(model_path) if model_path else None
+        # Injected by the host integration only. The engine receives no signing key
+        # and never treats an RPC/MCP caller's claimed source as authorization.
+        self._override_verifier = override_verifier
         # When True, successful builds skip auto-persisting settings.json (used
         # during the startup replay so reopening a workspace doesn't rewrite
         # settings.json on every load).
@@ -704,6 +716,214 @@ class Session:
         brief = build_brief.load_build_brief(self.root) if self.root is not None else None
         return {"ok": True, "brief": brief}
 
+    def get_conformance(self) -> dict:
+        """Evaluate the durable brief against evidence available to this session."""
+        requirements_report = self.check_requirements()
+        references = {item.get("id"): True for item in self.list_imports().get("imports", [])}
+        return conformance.evaluate(
+            self.get_build_brief()["brief"],
+            self._conformance_context(requirements_report, references),
+        )
+
+    def _conformance_context(self, requirements_report: dict, references: dict) -> dict:
+        brief = self.get_build_brief()["brief"] or {}
+        dimensions = brief.get("dimensions") or []
+        object_ids = set(_node_ids(self._objects or []))
+        parts = {
+            str(item.get("id")): self._part_evidence(str(item.get("id")), object_ids)
+            for item in brief.get("parts") or []
+            if isinstance(item, dict)
+        }
+        features = {
+            str(item.get("id")): self._feature_evidence(item)
+            for item in brief.get("features") or []
+            if isinstance(item, dict)
+        }
+        bindings = {}
+        dimension_status = {}
+        for item in dimensions:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id"))
+            drives = item.get("drives")
+            if drives:
+                bindings[item_id] = self._binding_evidence(drives)
+            dimension_status[item_id] = self._dimension_evidence(item)
+        persistence = {
+            str(item.get("id")): self._persistence_evidence()
+            for item in brief.get("obligations") or []
+            if isinstance(item, dict) and item.get("kind") == "persistence"
+        }
+        assumptions = {
+            str(item.get("id")): bool(str(item.get("disposition", "")).strip()) or None
+            for item in brief.get("assumptions") or []
+            if isinstance(item, dict)
+        }
+        return {
+            "requirements_report": requirements_report,
+            "part_status": parts,
+            "feature_status": features,
+            "dimension_status": dimension_status,
+            "reference_status": references,
+            "parameter_binding_status": bindings,
+            "interface_status": self._interface_evidence(brief, parts),
+            "assumption_status": assumptions,
+            "manufacturing_status": self._manufacturing_evidence(brief),
+            "persistence_status": persistence,
+        }
+
+    def _persistence_evidence(self) -> bool | None:
+        """Compare durable source to the source that produced the last-good snapshot.
+
+        A descriptor plus before/after/path identity checks prevents an external
+        writer or atomic replacement from turning a partial read into a verdict.
+        """
+        if self.model_path is None or self._model_hash is None:
+            return None
+        try:
+            descriptor = os.open(self.model_path, os.O_RDONLY)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return None
+        try:
+            before = os.fstat(descriptor)
+            digest = hashlib.sha256()
+            remaining = before.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 65536))
+                if not chunk:
+                    return None
+                digest.update(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+            current = os.stat(self.model_path)
+        except OSError:
+            return None
+        finally:
+            os.close(descriptor)
+        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            return None
+        if identity != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
+            return None
+        return digest.hexdigest() == self._model_hash
+
+    def _part_evidence(self, part_id: str, object_ids: set[str]) -> bool | None:
+        if not self._objects:
+            return None
+        # Occurrence ids retain their primary part id plus a collision-safe suffix.
+        return any(node == part_id or node.startswith(f"{part_id}_") for node in object_ids)
+
+    def _feature_evidence(self, item: dict) -> bool | None:
+        if not self._objects:
+            return None
+        feature_id = str(item.get("id"))
+        matches = [feature for feature in self._features if feature.name == feature_id]
+        if not matches:
+            return False
+        expected_kind = item.get("kind")
+        if expected_kind is None:
+            return True
+        actual_kinds = {feature.kind for feature in matches}
+        return expected_kind in actual_kinds
+
+    def _binding_evidence(self, drives: object) -> bool | None:
+        names = (
+            [drives] if isinstance(drives, str) else drives if isinstance(drives, list) else None
+        )
+        if not names or not all(isinstance(name, str) for name in names):
+            return None
+        return all(name in self._param_values for name in names)
+
+    def _dimension_evidence(self, item: dict) -> bool | None:
+        expected = item.get("value")
+        tolerance = item.get("tolerance", 0)
+        if isinstance(expected, bool) or not isinstance(expected, (int, float)):
+            return None
+        if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or tolerance < 0:
+            return None
+        measurement = item.get("measure")
+        if isinstance(measurement, dict):
+            result = self.measure_between(
+                measurement.get("a"), measurement.get("b"), measurement.get("mode", "min")
+            )
+            actual = result.get("distance") if result.get("ok") else None
+        else:
+            drives = item.get("drives")
+            if not isinstance(drives, str) or drives not in self._param_values:
+                return None
+            actual = self._param_values[drives]
+        if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+            return None
+        return abs(float(actual) - float(expected)) <= float(tolerance) + 1e-9
+
+    def _interface_evidence(
+        self, brief: dict, part_status: dict[str, bool | None]
+    ) -> dict[str, bool | None]:
+        requested = [item for item in brief.get("interfaces") or [] if isinstance(item, dict)]
+        if not requested:
+            return {}
+        if not self._objects:
+            return {str(item.get("id")): None for item in requested}
+        report = self.check_interferences()
+        if not report.get("ok"):
+            return {str(item.get("id")): None for item in requested}
+        names = dict(
+            zip(_node_ids(self._objects), (obj.name for obj in self._objects), strict=True)
+        )
+        statuses: dict[str, bool | None] = {}
+        for item in requested:
+            item_id = str(item.get("id"))
+            participants = item.get("participants")
+            if item.get("check") != "no_interference" or not isinstance(participants, list):
+                statuses[item_id] = None
+                continue
+            if len(participants) != 2 or not all(
+                part_status.get(str(participant)) is True for participant in participants
+            ):
+                statuses[item_id] = False
+                continue
+            pair_names = {names.get(str(participant)) for participant in participants}
+            pair = next(
+                (
+                    candidate
+                    for candidate in report.get("pairs", [])
+                    if {candidate.get("a"), candidate.get("b")} == pair_names
+                ),
+                None,
+            )
+            statuses[item_id] = pair is not None and pair.get("relation") != "overlap"
+        return statuses
+
+    def _manufacturing_evidence(self, brief: dict) -> dict[str, bool | None]:
+        statuses: dict[str, bool | None] = {}
+        reports: dict[str, dict] = {}
+        for item in brief.get("manufacturing") or []:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id"))
+            process = item.get("process")
+            if not isinstance(process, str) or not process:
+                statuses[item_id] = None
+                continue
+            report = reports.setdefault(process, self.analyze_dfm(process))
+            if not report.get("ok") or not report.get("parts"):
+                statuses[item_id] = None
+                continue
+            if not all(part.get("evaluated") is True for part in report["parts"]):
+                statuses[item_id] = None
+                continue
+            max_critical = item.get("maxCritical", item.get("max_critical", 0))
+            if isinstance(max_critical, bool) or not isinstance(max_critical, int):
+                statuses[item_id] = None
+                continue
+            statuses[item_id] = report.get("summary", {}).get("critical", 0) <= max_critical
+        return statuses
+
+    def get_readiness(self) -> dict:
+        return self.get_conformance()["readiness"]
+
     def update_build_brief(
         self,
         section: str,
@@ -1101,7 +1321,15 @@ class Session:
             **({"section": section} if section is not None else {}),
         }
 
-    def export(self, format: str, path: str | None = None, options: dict | None = None) -> dict:
+    def export(
+        self,
+        format: str,
+        path: str | None = None,
+        options: dict | None = None,
+        *,
+        strict_export: bool = False,
+        override_nonce: str | None = None,
+    ) -> dict:
         """Export the current model in ``format`` with optional ``options``.
 
         Exports land in the workspace's ``exports/`` folder by default. With no
@@ -1116,6 +1344,29 @@ class Session:
         # never sets self.code. Gating on the snapshot serves both modes.
         if not self._objects:
             return {"ok": False, "error": "no model loaded"}
+        override = None
+        readiness = None
+        if strict_export:
+            readiness = self.get_readiness()
+            decision = export_policy.decide_export(readiness, strict_readiness=True)
+            if not decision["allowed"]:
+                override = export_policy.verify_override(
+                    self._override_verifier,
+                    override_nonce,
+                    workspace_id=self.root or "",
+                    build_id=self.build_id,
+                    format=format,
+                )
+                decision = export_policy.decide_export(
+                    readiness, strict_readiness=True, override=override["ok"]
+                )
+                if not decision["allowed"]:
+                    error = (
+                        "export override rejected"
+                        if override_nonce
+                        else "export blocked by readiness"
+                    )
+                    return {"ok": False, "error": error, "findingIds": readiness["findingIds"]}
         base = (
             os.path.join(self.root, "exports")
             if self.root
@@ -1126,11 +1377,78 @@ class Session:
             path = os.path.join(base, f"{scratch.slug(name)}.{format.lower()}")
         elif not os.path.isabs(path):
             path = os.path.join(base, path)
+        if override and override["ok"]:
+            assert readiness is not None
+            try:
+                self._record_export_override(
+                    format,
+                    path,
+                    readiness["findingIds"],
+                    override["nonceId"],
+                    outcome="authorized",
+                )
+            except Exception:  # noqa: BLE001 - authorization must fail closed
+                return {"ok": False, "error": "export override audit failed"}
+            directory = os.path.dirname(path) or "."
+            os.makedirs(directory, exist_ok=True)
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix=f".{os.path.basename(path)}.", suffix=f".{format.lower()}", dir=directory
+            )
+            os.close(descriptor)
+            try:
+                exports_export(format, temporary_path, options, objects=self._objects)
+                paths.atomic_finalize(temporary_path, path)
+            except Exception as exc:  # noqa: BLE001
+                with contextlib.suppress(Exception):
+                    self._record_export_override(
+                        format,
+                        path,
+                        readiness["findingIds"],
+                        override["nonceId"],
+                        outcome="failed",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary_path)
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": True, "path": path}
         try:
             out = exports_export(format, path, options, objects=self._objects)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         return {"ok": True, "path": out}
+
+    def _record_export_override(
+        self,
+        format: str,
+        destination: str,
+        finding_ids: list[str],
+        nonce_id: str,
+        *,
+        outcome: str,
+        error: str | None = None,
+    ) -> None:
+        if self.root is None:
+            raise OSError("override audit requires a workspace")
+        directory = os.path.join(self.root, ".solidifai")
+        os.makedirs(directory, exist_ok=True)
+        record = {
+            "buildId": self.build_id,
+            "format": format,
+            "destination": destination,
+            "findingIds": finding_ids,
+            "nonceId": nonce_id,
+            "outcome": outcome,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        if error is not None:
+            record["error"] = error
+        with open(
+            os.path.join(directory, "export-overrides.jsonl"), "a", encoding="utf-8"
+        ) as audit:
+            audit.write(json.dumps(record, separators=(",", ":")) + "\n")
+            audit.flush()
+            os.fsync(audit.fileno())
 
     # -- helpers ------------------------------------------------------------
 

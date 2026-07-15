@@ -523,6 +523,18 @@ def get_build_brief() -> Any:
 
 
 @mcp.tool()
+def get_conformance() -> Any:
+    """Evaluate recorded design obligations against current engine evidence."""
+    return _call("get_conformance")
+
+
+@mcp.tool()
+def get_readiness() -> Any:
+    """Return the compact export readiness level and unresolved finding IDs."""
+    return _call("get_readiness")
+
+
+@mcp.tool()
 def update_build_brief(
     section: str,
     upserts: list[dict],

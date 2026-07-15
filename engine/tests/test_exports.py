@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 from build123d import Box
 
 from solidifai import reset_registry, show
+from solidifai_engine import session as session_module
 from solidifai_engine.exports import (
     SUPPORTED,
     export,
@@ -155,6 +157,158 @@ def test_session_export_forwards_options(tmp_path):
     assert res["ok"] is True
     with open(out, "rb") as f:
         assert f.read(6) == b"solid "
+
+
+def test_strict_export_blocks_unready_build_but_legacy_export_is_unchanged(tmp_path):
+    workspace = tmp_path / "widget"
+    artifacts = str(tmp_path / ".solidifai" / "artifacts")
+    model_path = str(workspace / "model.py")
+    os.makedirs(workspace, exist_ok=True)
+    sess = Session(artifacts, model_path=model_path)
+    sess.execute_script(
+        "from build123d import Box\nfrom solidifai import show\nshow(Box(1, 1, 1))\n"
+    )
+
+    legacy = sess.export("stl", "legacy.stl")
+    strict = sess.export("stl", "strict.stl", strict_export=True)
+
+    assert legacy["ok"] is True
+    assert strict == {"ok": False, "error": "export blocked by readiness", "findingIds": ["brief"]}
+
+
+def test_legacy_export_does_not_evaluate_or_persist_readiness(tmp_path, monkeypatch):
+    artifacts = str(tmp_path / ".solidifai" / "artifacts")
+    sess = Session(artifacts)
+    sess.execute_script(
+        "from build123d import Box\nfrom solidifai import show\nshow(Box(1, 1, 1))\n"
+    )
+    monkeypatch.setattr(
+        sess,
+        "get_readiness",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy export evaluated readiness")),
+    )
+
+    assert sess.export("stl", str(tmp_path / "legacy.stl"))["ok"] is True
+
+
+def test_strict_export_consumes_host_verified_nonce_once_and_audits_it(tmp_path):
+    workspace = tmp_path / "widget"
+    artifacts = str(tmp_path / ".solidifai" / "artifacts")
+    model_path = str(workspace / "model.py")
+    os.makedirs(workspace, exist_ok=True)
+    calls = []
+
+    def consume(nonce, *, workspace_id, build_id, format):
+        calls.append((nonce, workspace_id, build_id, format))
+        return {"ok": len(calls) == 1, "nonceId": "override-1"}
+
+    sess = Session(artifacts, model_path=model_path, override_verifier=consume)
+    sess.execute_script(
+        "from build123d import Box\nfrom solidifai import show\nshow(Box(1, 1, 1))\n"
+    )
+
+    first = sess.export("stl", "approved.stl", strict_export=True, override_nonce="opaque")
+    second = sess.export("stl", "reused.stl", strict_export=True, override_nonce="opaque")
+
+    assert first["ok"] is True
+    assert second == {"ok": False, "error": "export override rejected", "findingIds": ["brief"]}
+    assert calls == [
+        ("opaque", str(workspace), 1, "stl"),
+        ("opaque", str(workspace), 1, "stl"),
+    ]
+    audit = json.loads((workspace / ".solidifai" / "export-overrides.jsonl").read_text())
+    assert audit["nonceId"] == "override-1"
+    assert audit["buildId"] == 1
+    assert audit["findingIds"] == ["brief"]
+
+
+def _override_session(tmp_path):
+    root = tmp_path / "widget"
+    root.mkdir()
+    session = Session(
+        str(root / ".solidifai" / "artifacts"),
+        model_path=str(root / "model.py"),
+        override_verifier=lambda *_args, **_kwargs: {"ok": True, "nonceId": "override-1"},
+    )
+    session.execute_script(
+        "from build123d import Box\nfrom solidifai import show\nshow(Box(1, 1, 1))\n"
+    )
+    return session, root
+
+
+def test_override_audit_failure_keeps_destination_unchanged(tmp_path, monkeypatch):
+    session, root = _override_session(tmp_path)
+    destination = root / "exports" / "override.stl"
+    destination.parent.mkdir()
+    destination.write_bytes(b"existing")
+
+    monkeypatch.setattr(
+        session,
+        "_record_export_override",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("audit unavailable")),
+    )
+
+    result = session.export("stl", str(destination), strict_export=True, override_nonce="opaque")
+
+    assert result == {"ok": False, "error": "export override audit failed"}
+    assert destination.read_bytes() == b"existing"
+
+
+def test_override_export_failure_has_authorization_and_failure_audit(tmp_path, monkeypatch):
+    session, root = _override_session(tmp_path)
+    destination = root / "exports" / "failed.stl"
+    monkeypatch.setattr(
+        session_module,
+        "exports_export",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("writer failed")),
+    )
+
+    result = session.export("stl", str(destination), strict_export=True, override_nonce="opaque")
+
+    assert result["ok"] is False and "writer failed" in result["error"]
+    assert not destination.exists()
+    records = [
+        json.loads(line)
+        for line in (root / ".solidifai" / "export-overrides.jsonl").read_text().splitlines()
+    ]
+    assert [record["outcome"] for record in records] == ["authorized", "failed"]
+
+
+def test_successful_override_is_audited_before_destination_is_visible(tmp_path, monkeypatch):
+    session, root = _override_session(tmp_path)
+    destination = root / "exports" / "approved.stl"
+
+    def write_temp(_format, temporary_path, _options, *, objects):
+        records = [
+            json.loads(line)
+            for line in (root / ".solidifai" / "export-overrides.jsonl").read_text().splitlines()
+        ]
+        assert records[-1]["outcome"] == "authorized"
+        assert not destination.exists()
+        Path(temporary_path).write_bytes(b"temporary export")
+        return temporary_path
+
+    monkeypatch.setattr(session_module, "exports_export", write_temp)
+
+    result = session.export("stl", str(destination), strict_export=True, override_nonce="opaque")
+
+    assert result == {"ok": True, "path": str(destination)}
+    assert destination.read_bytes() == b"temporary export"
+
+
+def test_legacy_export_does_not_use_override_audit(tmp_path, monkeypatch):
+    artifacts = str(tmp_path / ".solidifai" / "artifacts")
+    session = Session(artifacts)
+    session.execute_script(
+        "from build123d import Box\nfrom solidifai import show\nshow(Box(1, 1, 1))\n"
+    )
+    monkeypatch.setattr(
+        session,
+        "_record_export_override",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy audit")),
+    )
+
+    assert session.export("stl", str(tmp_path / "legacy.stl"))["ok"] is True
 
 
 def test_session_export_invalid_option_returns_error(tmp_path):

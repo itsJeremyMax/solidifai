@@ -37,6 +37,7 @@ MAX_UPDATE_ITEMS = 512
 MAX_NESTING_DEPTH = 16
 V2_SECTIONS = (
     "parts",
+    "features",
     "requirements",
     "dimensions",
     "interfaces",
@@ -382,6 +383,7 @@ def migrate_v1_to_v2(brief: Any) -> dict:
             "summary": v1["summary"],
             "tier": v1["tier"],
             "parts": parts,
+            "features": [],
             "requirements": [],
             "dimensions": dimensions,
             "interfaces": interfaces,

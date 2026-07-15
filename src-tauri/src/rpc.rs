@@ -314,6 +314,94 @@ pub async fn engine_export(
 }
 
 #[tauri::command]
+pub async fn engine_export_with_override(
+    state: State<'_, std::sync::Arc<Instances>>,
+    format: String,
+    path: String,
+    options: Option<serde_json::Value>,
+) -> Result<String, String> {
+    crate::fs_guard::validate_outgoing_path(&path)?;
+    let engine = state
+        .focused_engine()
+        .ok_or_else(|| "engine not ready: the engine has not started yet".to_string())?;
+    let workspace = engine
+        .workspace_id()
+        .ok_or_else(|| "engine workspace is unavailable".to_string())?;
+    let readiness: Value =
+        serde_json::from_str(&call(&state, "get_readiness", serde_json::json!({})).await?)
+            .map_err(|e| format!("invalid engine readiness: {e}"))?;
+    let model = if readiness.get("level").and_then(Value::as_str) == Some("ready") {
+        None
+    } else {
+        Some(
+            serde_json::from_str(&call(&state, "get_model_info", serde_json::json!({})).await?)
+                .map_err(|e| format!("invalid engine model info: {e}"))?,
+        )
+    };
+    let nonce =
+        override_nonce_for_readiness(&engine, &workspace, &readiness, model.as_ref(), &format)?;
+    call(
+        &state,
+        "export",
+        override_export_params(format, path, options, nonce),
+    )
+    .await
+}
+
+fn override_export_params(
+    format: String,
+    path: String,
+    options: Option<Value>,
+    nonce: Option<String>,
+) -> Value {
+    let mut params = serde_json::json!({ "format": format, "path": path, "options": options });
+    if let Some(nonce) = nonce {
+        params["overrideNonce"] = Value::String(nonce);
+    }
+    params
+}
+
+/// Ready exports use the normal strict channel without a capability. Any
+/// non-ready result needs a nonce bound to the build observed after readiness;
+/// if that build races before export, the engine rejects the scoped nonce.
+fn override_nonce_for_readiness(
+    authority: &crate::engine::EngineState,
+    workspace: &str,
+    readiness: &Value,
+    model: Option<&Value>,
+    format: &str,
+) -> Result<Option<String>, String> {
+    let level = readiness
+        .get("level")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "engine readiness has no level".to_string())?;
+    if level == "ready" {
+        return Ok(None);
+    }
+    let build_id = model
+        .and_then(|value| value.get("buildId"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "engine has no current build to override".to_string())?;
+    Ok(Some(
+        authority.issue_export_override(workspace, build_id, format),
+    ))
+}
+
+#[tauri::command]
+pub async fn engine_get_conformance(
+    state: State<'_, std::sync::Arc<Instances>>,
+) -> Result<String, String> {
+    call(&state, "get_conformance", serde_json::json!({})).await
+}
+
+#[tauri::command]
+pub async fn engine_get_readiness(
+    state: State<'_, std::sync::Arc<Instances>>,
+) -> Result<String, String> {
+    call(&state, "get_readiness", serde_json::json!({})).await
+}
+
+#[tauri::command]
 pub async fn engine_history(state: State<'_, std::sync::Arc<Instances>>) -> Result<String, String> {
     call(&state, "history", serde_json::json!({})).await
 }
@@ -768,5 +856,49 @@ mod tests {
             err.contains("engine not ready"),
             "expected a clear not-ready error, got: {err}"
         );
+    }
+
+    #[test]
+    fn ready_override_export_never_mints_pending_nonces() {
+        let authority = crate::engine::EngineState::default();
+        let ready = json!({"level": "ready"});
+        for _ in 0..3 {
+            assert!(
+                override_nonce_for_readiness(&authority, "/workspace", &ready, None, "stl")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(authority.pending_override_count(), 0);
+        assert!(
+            override_export_params("stl".into(), "/out.stl".into(), None, None)
+                .get("overrideNonce")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn blocked_override_nonce_is_single_use_and_wrong_build_is_rejected() {
+        let authority = crate::engine::EngineState::default();
+        let blocked = json!({"level": "blocked"});
+        let nonce = override_nonce_for_readiness(
+            &authority,
+            "/workspace",
+            &blocked,
+            Some(&json!({"buildId": 7})),
+            "stl",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(authority.pending_override_count(), 1);
+        assert!(authority
+            .consume_export_override(&nonce, "/workspace", 8, "stl")
+            .is_none());
+        assert!(authority
+            .consume_export_override(&nonce, "/workspace", 7, "stl")
+            .is_some());
+        assert!(authority
+            .consume_export_override(&nonce, "/workspace", 7, "stl")
+            .is_none());
     }
 }

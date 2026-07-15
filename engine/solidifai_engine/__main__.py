@@ -10,6 +10,7 @@ import argparse
 import os
 import signal
 
+from solidifai_engine.control import OverrideChannel
 from solidifai_engine.logconfig import setup_logging
 from solidifai_engine.server import Server
 
@@ -31,11 +32,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     setup_logging(args.artifacts)
-    server = Server(args.socket, args.artifacts, model_path=args.model)
+    override_channel = OverrideChannel.from_stdin()
+    server = Server(
+        args.socket,
+        args.artifacts,
+        model_path=args.model,
+        override_verifier=override_channel.consume,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         server.shutdown()
+    finally:
+        override_channel.close()
     return 0
 
 

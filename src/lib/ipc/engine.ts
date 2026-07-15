@@ -37,6 +37,25 @@ export async function engineExport(
   return invoke<string>("engine_export", { format, path, options: options ?? null });
 }
 
+/** Export a non-ready build after the app host issues a one-time override. */
+export async function engineExportWithOverride(
+  format: string,
+  path: string,
+  options?: Record<string, unknown>,
+): Promise<string> {
+  return invoke<string>("engine_export_with_override", { format, path, options: options ?? null });
+}
+
+/** Read the engine's four-state conformance findings, or null when unavailable. */
+export async function engineGetConformance(): Promise<string | null> {
+  return engineCall<string>("engine_get_conformance");
+}
+
+/** Read the engine's aggregate strict-export readiness, or null when unavailable. */
+export async function engineGetReadiness(): Promise<string | null> {
+  return engineCall<string>("engine_get_readiness");
+}
+
 /**
  * Ask the engine to re-render the current model (refresh GLB + manifest).
  * Returns the raw response string, or `null` if the engine isn't ready.

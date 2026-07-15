@@ -14,10 +14,12 @@
 //! Dev vs prod: [`resolve_engine_dir`] picks the bundled `engine-dist` resource
 //! in release builds and the dev `../engine` checkout under `tauri dev`.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -72,6 +74,8 @@ pub struct EngineState {
     /// The workspace canonical root path this engine serves. Stamped onto every
     /// emitted `engine-status` event so multi-workspace listeners can route by id.
     ws_id: Mutex<Option<String>>,
+    override_authority: Mutex<Arc<crate::override_authority::OverrideAuthority>>,
+    override_service: Mutex<Option<crate::override_authority::PrivateOverrideService>>,
 }
 
 impl Default for EngineState {
@@ -84,6 +88,10 @@ impl Default for EngineState {
             last_status: Mutex::new(EngineStatus::provisioning_for("")),
             generation: AtomicU64::new(0),
             ws_id: Mutex::new(None),
+            override_authority: Mutex::new(Arc::new(
+                crate::override_authority::OverrideAuthority::new(Duration::from_secs(60)),
+            )),
+            override_service: Mutex::new(None),
         }
     }
 }
@@ -111,6 +119,57 @@ impl EngineState {
         *self.ws_id.lock() = Some(id.to_string());
     }
 
+    pub fn workspace_id(&self) -> Option<String> {
+        self.ws_id.lock().clone()
+    }
+
+    fn rotate_override_authority(&self) -> Arc<crate::override_authority::OverrideAuthority> {
+        self.stop_override_service();
+        let authority = Arc::new(crate::override_authority::OverrideAuthority::new(
+            Duration::from_secs(60),
+        ));
+        *self.override_authority.lock() = authority.clone();
+        authority
+    }
+
+    fn start_override_service(&self) -> Result<crate::ipc::PrivateTransport, String> {
+        let authority = self.rotate_override_authority();
+        let service = crate::override_authority::serve_private_endpoint(authority)?;
+        let transport = service.transport();
+        *self.override_service.lock() = Some(service);
+        Ok(transport)
+    }
+
+    fn stop_override_service(&self) {
+        if let Some(service) = self.override_service.lock().take() {
+            service.stop();
+        }
+    }
+
+    pub fn issue_export_override(&self, workspace: &str, build_id: u64, format: &str) -> String {
+        self.override_authority
+            .lock()
+            .issue(workspace, build_id, format)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_override_count(&self) -> usize {
+        self.override_authority.lock().pending_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consume_export_override(
+        &self,
+        nonce: &str,
+        workspace: &str,
+        build_id: u64,
+        format: &str,
+    ) -> Option<String> {
+        self.override_authority
+            .lock()
+            .consume(nonce, workspace, build_id, format)
+    }
+
     /// Emit an `engine-status` event AND store it as the last status, so a late
     /// `get_engine_status` query always reflects the latest emitted value.
     /// The status's `ws_id` is overwritten from `self.ws_id` before storing/emitting
@@ -130,6 +189,7 @@ impl EngineState {
         // Bump first so a supervisor that wakes up between the take and its next
         // generation check sees the new value and bails out.
         self.generation.fetch_add(1, Ordering::SeqCst);
+        self.stop_override_service();
         if let Some(mut child) = self.child.lock().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -148,6 +208,12 @@ impl EngineState {
     /// same workspace can never both think they own the engine.
     pub fn claim_generation(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
+impl Drop for EngineState {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
@@ -754,7 +820,37 @@ fn spawn_engine_server(
     config_dir: &Path,
     app_version: &str,
     model_path: Option<&str>,
+    override_transport: &crate::ipc::PrivateTransport,
 ) -> Result<Child, String> {
+    let mut cmd = engine_command(interpreter, socket_path, artifacts_dir, model_path);
+    cmd.env("SOLIDIFAI_CONFIG_DIR", config_dir);
+    cmd.env("SOLIDIFAI_APP_VERSION", app_version);
+    if let Some(ctl) = crate::control::socket_path() {
+        cmd.env("SOLIDIFAI_CONTROL_SOCK", ctl);
+    }
+    let mut child = cmd
+        .current_dir(engine_dir)
+        .spawn()
+        .map_err(|e| format!("failed to spawn engine server: {e}"))?;
+    let bootstrap_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "engine stdin pipe was unavailable".to_string())
+        .and_then(|mut stdin| write_override_bootstrap(&mut stdin, override_transport));
+    if let Err(error) = bootstrap_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    Ok(child)
+}
+
+fn engine_command(
+    interpreter: &Path,
+    socket_path: &str,
+    artifacts_dir: &str,
+    model_path: Option<&str>,
+) -> Command {
     let mut cmd = quiet_command(interpreter);
     cmd.args([
         "-m",
@@ -767,19 +863,39 @@ fn spawn_engine_server(
     if let Some(model) = model_path {
         cmd.args(["--model", model]);
     }
-    // Host owns the canonical config dir; the engine reads/writes the same global
-    // library + destinations from it (one spawn covers MCP bridges via the socket).
-    cmd.env("SOLIDIFAI_CONFIG_DIR", config_dir);
-    // Propagate the single-sourced app version (package.json -> tauri.conf ->
-    // package_info) so the engine can report the true release, e.g. in report_issue.
-    cmd.env("SOLIDIFAI_APP_VERSION", app_version);
-    // Let the engine reach the control channel so it can delegate profile writes.
-    if let Some(ctl) = crate::control::socket_path() {
-        cmd.env("SOLIDIFAI_CONTROL_SOCK", ctl);
+    // The parent writes one private bootstrap frame after spawning, then closes
+    // this pipe before Python can create untrusted model workers.
+    cmd.stdin(std::process::Stdio::piped());
+    cmd
+}
+
+const MAX_OVERRIDE_BOOTSTRAP_BYTES: usize = 16 * 1024;
+
+fn bootstrap_frame(transport: &crate::ipc::PrivateTransport) -> Result<Vec<u8>, String> {
+    let payload = serde_json::to_vec(&serde_json::json!({ "transport": transport }))
+        .map_err(|error| format!("encode override bootstrap: {error}"))?;
+    let size: u32 = payload
+        .len()
+        .try_into()
+        .map_err(|_| "override bootstrap is too large".to_string())?;
+    if payload.len() > MAX_OVERRIDE_BOOTSTRAP_BYTES {
+        return Err("override bootstrap is too large".into());
     }
-    cmd.current_dir(engine_dir)
-        .spawn()
-        .map_err(|e| format!("failed to spawn engine server: {e}"))
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&size.to_be_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+fn write_override_bootstrap(
+    stdin: &mut std::process::ChildStdin,
+    transport: &crate::ipc::PrivateTransport,
+) -> Result<(), String> {
+    let frame = bootstrap_frame(transport)?;
+    stdin
+        .write_all(&frame)
+        .and_then(|()| stdin.flush())
+        .map_err(|error| format!("write override bootstrap: {error}"))
 }
 
 /// The app-global engine environment: the resolved engine source dir, its venv
@@ -913,7 +1029,6 @@ pub fn start_supervised(
             return;
         }
     };
-
     // `generation` was claimed by our spawner via `claim_generation()`. If a
     // later `kill()` or a newer supervisor bumps it, this thread stops instead
     // of restarting or clobbering the next supervisor's engine.
@@ -927,6 +1042,13 @@ pub fn start_supervised(
             return;
         }
         attempts += 1;
+        let override_transport = match state.start_override_service() {
+            Ok(service) => service,
+            Err(e) => {
+                state.set_status(&app, EngineStatus::error(e));
+                return;
+            }
+        };
         match spawn_engine_server(
             &interpreter,
             &engine_dir,
@@ -935,6 +1057,7 @@ pub fn start_supervised(
             &config_dir,
             &app_version,
             model_path.as_deref(),
+            &override_transport,
         ) {
             Ok(child) => {
                 // Wrap immediately so any bail-out before the child is stored reaps it.
@@ -943,6 +1066,7 @@ pub fn start_supervised(
                 // otherwise a newer supervisor owns it — let `child` drop and reap ours.
                 let mut guard = state.child.lock();
                 if state.current_generation() != generation {
+                    state.stop_override_service();
                     return;
                 }
                 *guard = Some(child.into_child());
@@ -954,6 +1078,7 @@ pub fn start_supervised(
                 );
             }
             Err(e) => {
+                state.stop_override_service();
                 state.set_status(&app, EngineStatus::error(e));
                 return;
             }
@@ -961,6 +1086,7 @@ pub fn start_supervised(
 
         // Block until the child exits (or is taken/killed for shutdown).
         let exit = wait_for_child(&state.child);
+        state.stop_override_service();
 
         // If our generation is stale, a switch/shutdown took the child: stop
         // silently (don't emit an error or restart for the old workspace).
@@ -1069,6 +1195,51 @@ mod tests {
             .status()
             .expect("quiet_command spawns");
         assert!(status.success());
+    }
+
+    #[test]
+    fn engine_command_uses_stdin_for_private_override_transport() {
+        let command = engine_command(
+            Path::new("python"),
+            "/tmp/engine.sock",
+            "/tmp/artifacts",
+            None,
+        );
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|arg| arg.contains("override")));
+    }
+
+    #[test]
+    fn private_override_bootstrap_is_one_bounded_typed_transport_frame() {
+        let frame = bootstrap_frame(&crate::ipc::PrivateTransport::Unix {
+            path: "private-endpoint".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
+            frame.len() - 4
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&frame[4..]).unwrap()["transport"]["kind"],
+            "unix"
+        );
+    }
+
+    #[test]
+    fn engine_command_omits_private_override_from_environment() {
+        let command = engine_command(
+            Path::new("python"),
+            "/tmp/engine.sock",
+            "/tmp/artifacts",
+            None,
+        );
+        assert!(!command
+            .get_envs()
+            .filter_map(|(key, _)| key.to_str())
+            .any(|key| key.contains("OVERRIDE")));
     }
 
     #[test]
@@ -1268,6 +1439,27 @@ mod tests {
         assert_eq!(g1, g0 + 1, "kill must advance the supervisor generation");
         state.kill();
         assert_eq!(state.current_generation(), g0 + 2);
+    }
+
+    #[test]
+    fn kill_stops_private_override_service_and_invalidates_its_nonce() {
+        let _guard = crate::override_authority::LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap();
+        let state = EngineState::default();
+        let transport = state.start_override_service().unwrap();
+        let authority = state.override_authority.lock().clone();
+        let nonce = authority.issue("/workspace", 7, "stl");
+
+        state.kill();
+
+        match transport {
+            crate::ipc::PrivateTransport::Unix { path } => {
+                assert!(crate::ipc::connect(&path).is_err())
+            }
+            crate::ipc::PrivateTransport::Tcp { .. } => {}
+        }
+        assert!(authority.consume(&nonce, "/workspace", 7, "stl").is_none());
     }
 
     /// `claim_generation()` bumps AND returns the new value in one atomic step:
