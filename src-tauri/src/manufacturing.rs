@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::store;
 
 const PROFILE_FILE: &str = "manufacturing-profile.json";
-const SCHEMA: i64 = 1;
+const SCHEMA: i64 = 2;
 
 /// Builtin defaults, embedded from the shared asset (same file the Python engine reads).
 const DEFAULTS: &str =
@@ -24,7 +24,6 @@ const DEFAULTS: &str =
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const FITS: [&str; 3] = ["loose", "normal", "tight"];
-const PROCESS_KINDS: [&str; 4] = ["fdm", "sla", "sls", "cnc"];
 // (section, sub, min, max) inclusive — mirrors manufacturing_profile.py _BOUNDS.
 const BOUNDS: &[(&str, &str, f64, f64)] = &[
     ("design", "wallMm", 0.1, 100.0),
@@ -88,10 +87,42 @@ fn load_overrides(dir: &Path) -> Value {
             if let Some(o) = v.as_object_mut() {
                 o.remove("schema");
             }
-            v
+            normalize_profile(v)
         }
         _ => json!({}),
     }
+}
+
+/// Schema 1 stored process fields beside `kind`; schema 2 makes the process id
+/// explicit and nests process-specific settings. Reads remain migration-safe.
+fn normalize_profile(mut value: Value) -> Value {
+    let Some(obj) = value.as_object_mut() else {
+        return value;
+    };
+    obj.remove("schema");
+    let Some(process) = obj.get_mut("process").and_then(Value::as_object_mut) else {
+        return value;
+    };
+    if process.contains_key("id") {
+        let id = process.remove("id").unwrap();
+        let settings = process
+            .remove("settings")
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        *process = serde_json::Map::from_iter([
+            (String::from("id"), id),
+            (String::from("settings"), settings),
+        ]);
+        return value;
+    }
+    let id = process.remove("kind");
+    let settings = Value::Object(std::mem::take(process));
+    *process = serde_json::Map::from_iter(
+        id.map(|id| (String::from("id"), id))
+            .into_iter()
+            .chain([(String::from("settings"), settings)]),
+    );
+    value
 }
 
 /// Deep-merge `override_` into `base` (objects merge recursively; scalars/arrays
@@ -181,12 +212,36 @@ pub fn validate(values: &Value) -> Result<(), String> {
                     return Err(format!("design.fit must be one of {FITS:?}, got {val}"));
                 }
             }
-            if key == "process" && sub == "kind" {
+            if key == "process" && sub == "id" {
                 let s = val.as_str().unwrap_or("");
-                if !PROCESS_KINDS.contains(&s) {
-                    return Err(format!(
-                        "process.kind must be one of {PROCESS_KINDS:?}, got {val}"
-                    ));
+                if !crate::materials::process_exists(s) {
+                    return Err(format!("unknown process.id {val}"));
+                }
+            }
+            if key == "process" && sub == "settings" {
+                let settings = val
+                    .as_object()
+                    .ok_or("process.settings must be an object")?;
+                let process_id = sec.get("id").and_then(Value::as_str).unwrap_or("fdm");
+                for (setting, value) in settings {
+                    if !crate::materials::profile_settings(process_id).contains(setting) {
+                        return Err(format!(
+                            "process {process_id:?} has no supported profile settings"
+                        ));
+                    }
+                    if let Some((_, _, lo, hi)) = BOUNDS
+                        .iter()
+                        .find(|(k, s, _, _)| *k == "process" && *s == setting)
+                    {
+                        let n = value.as_f64().ok_or_else(|| {
+                            format!("process.settings.{setting} must be a number")
+                        })?;
+                        if n < *lo || n > *hi {
+                            return Err(format!(
+                                "process.settings.{setting} must be in [{lo}, {hi}], got {n}"
+                            ));
+                        }
+                    }
                 }
             }
             if let Some((_, _, lo, hi)) = BOUNDS.iter().find(|(k, s, _, _)| k == key && s == sub) {
@@ -210,7 +265,16 @@ fn remove_dotted(obj: &mut Value, dotted: &str) {
     if let Some(map) = obj.as_object_mut() {
         let mut empty = false;
         if let Some(sec) = map.get_mut(section).and_then(|v| v.as_object_mut()) {
-            sec.remove(sub);
+            if section == "process" && sub != "id" && sub != "settings" {
+                if let Some(settings) = sec.get_mut("settings").and_then(Value::as_object_mut) {
+                    settings.remove(sub);
+                    if settings.is_empty() {
+                        sec.remove("settings");
+                    }
+                }
+            } else {
+                sec.remove(sub);
+            }
             empty = sec.is_empty();
         }
         if empty {
@@ -234,7 +298,8 @@ pub fn write(
         Scope::Workspace => workspace_root.ok_or("no workspace is open")?,
     };
     let mut merged = load_overrides(target_dir);
-    json_deep_merge(&mut merged, set);
+    let set = normalize_profile(set.clone());
+    json_deep_merge(&mut merged, &set);
     for key in unset {
         remove_dotted(&mut merged, key);
     }
@@ -350,7 +415,7 @@ mod tests {
         let r = resolve(&cfg, Some(&ws));
         assert_eq!(r["design"]["wallMm"].as_f64(), Some(1.6)); // workspace wins
         assert_eq!(r["design"]["minFeatureMm"].as_f64(), Some(1.0)); // builtin fills in
-        assert_eq!(r["schema"].as_i64(), Some(1));
+        assert_eq!(r["schema"].as_i64(), Some(2));
     }
 
     #[test]
@@ -362,7 +427,26 @@ mod tests {
         )
         .unwrap();
         let r = resolve(&cfg, None);
-        assert_eq!(r["process"]["infillPct"].as_f64(), Some(35.0));
+        assert_eq!(r["process"]["settings"]["infillPct"].as_f64(), Some(35.0));
+    }
+
+    #[test]
+    fn sparse_schema_one_process_settings_keep_global_process() {
+        let cfg = tmp("sparse-cfg");
+        let ws = tmp("sparse-ws");
+        std::fs::write(
+            cfg.join(PROFILE_FILE),
+            r#"{"schema":1,"process":{"kind":"cnc"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join(PROFILE_FILE),
+            r#"{"schema":1,"process":{"overhangDeg":55}}"#,
+        )
+        .unwrap();
+        let resolved = resolve(&cfg, Some(&ws));
+        assert_eq!(resolved["process"]["id"], "cnc");
+        assert_eq!(resolved["process"]["settings"]["overhangDeg"], 55);
     }
 
     #[test]
@@ -393,7 +477,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(on_disk["design"]["wallMm"].as_f64(), Some(1.6));
-        assert_eq!(on_disk["schema"].as_i64(), Some(1));
+        assert_eq!(on_disk["schema"].as_i64(), Some(2));
         // unset one — it drops back to inherited; the other override stays
         write(
             &cfg,

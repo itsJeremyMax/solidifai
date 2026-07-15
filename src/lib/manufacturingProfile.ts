@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
+import { profileSettings } from "./materials";
 
-/** The resolved profile is an open numeric/string object keyed by section. */
-export type ProfileValues = Record<string, Record<string, number | string>>;
+export type ProcessId = "fdm" | "sla" | "sls" | "cnc" | "injection" | string;
+export interface ProcessProfile {
+  id: ProcessId;
+  settings: Record<string, number | string>;
+}
+/** The resolved profile is an open object keyed by section, with a v2 process envelope. */
+export type ProfileValues = Record<string, unknown> & { process?: ProcessProfile };
 
 export interface ProfileView {
   resolved: ProfileValues;
@@ -12,6 +18,12 @@ export interface ProfileView {
 }
 
 const EMPTY: ProfileView = { resolved: {}, overrides: {}, material: { id: "", label: "" } };
+
+/** Settings safe to surface for a process, as declared by the shared catalog. */
+export function processSettings(process: ProcessProfile): Record<string, number | string> {
+  const allowed = new Set(profileSettings(process.id));
+  return Object.fromEntries(Object.entries(process.settings).filter(([key]) => allowed.has(key)));
+}
 
 export async function getGlobalProfile(): Promise<ProfileView> {
   try {

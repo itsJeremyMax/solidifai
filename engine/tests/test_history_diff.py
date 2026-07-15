@@ -3,6 +3,10 @@
 import os
 from pathlib import Path
 
+import pytest
+
+from solidifai_engine import materials
+from solidifai_engine.render import compound_of
 from solidifai_engine.reporting import Reporting
 from solidifai_engine.session import Session
 
@@ -55,6 +59,65 @@ def test_build_report_writes_html(tmp_path):
     html = Path(rep["path"]).read_text(encoding="utf-8")
     assert "solidifai build report" in html
     assert rep["summary"]["mass"] >= 0
+
+
+def test_drawing_spec_rejects_invalid_explicit_material_override(tmp_path, monkeypatch):
+    s = _ws(tmp_path)
+    s._objects[0].material = "widget"  # stale shown object after a hand-edited library override
+    library = tmp_path / "materials.json"
+    library.write_text('{"materials":[{"id":"widget","base":"moon-dust"}]}')
+    monkeypatch.setattr(
+        materials,
+        "RESOLVER",
+        materials.MaterialResolver(
+            [materials.BuiltinSource(), materials.JsonFileSource(str(library))]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid material 'widget'.*unknown material base"):
+        s._reporting._drawing_spec(s._objects, compound_of([o.shape for o in s._objects]))
+
+
+def test_drawing_spec_uses_default_for_missing_material(tmp_path):
+    s = _ws(tmp_path)
+    spec = s._reporting._drawing_spec(s._objects, compound_of([o.shape for o in s._objects]))
+    assert spec["material"] == "PLA"
+    assert spec["process"] == "FDM"
+    assert spec["mass_g"] > 0
+
+
+def test_measure_rejects_invalid_explicit_material_override(tmp_path, monkeypatch):
+    s = _ws(tmp_path)
+    s._objects[0].material = "widget"
+    library = tmp_path / "materials.json"
+    library.write_text('{"materials":[{"id":"widget","base":"moon-dust"}]}')
+    monkeypatch.setattr(
+        materials,
+        "RESOLVER",
+        materials.MaterialResolver(
+            [materials.BuiltinSource(), materials.JsonFileSource(str(library))]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid material 'widget'.*unknown material base"):
+        s.measure()
+
+
+def test_build_report_rejects_invalid_explicit_material_override(tmp_path, monkeypatch):
+    s = _ws(tmp_path)
+    s._objects[0].material = "widget"
+    library = tmp_path / "materials.json"
+    library.write_text('{"materials":[{"id":"widget","base":"moon-dust"}]}')
+    monkeypatch.setattr(
+        materials,
+        "RESOLVER",
+        materials.MaterialResolver(
+            [materials.BuiltinSource(), materials.JsonFileSource(str(library))]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid material 'widget'.*unknown material base"):
+        s.build_report()
 
 
 # ---------------------------------------------------------------------------

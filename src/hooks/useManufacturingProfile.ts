@@ -70,5 +70,18 @@ export function useManufacturingProfile(scope: Scope) {
     [commit],
   );
 
-  return { view, loading, error, setField, resetField };
+  const setProcessSetting = useCallback(
+    (key: string, value: number | string) =>
+      commit(
+        { process: { id: String(view.resolved.process?.id ?? "fdm"), settings: { [key]: value } } },
+        [],
+      ),
+    [commit, view],
+  );
+  const resetProcessSetting = useCallback(
+    (key: string) => commit({}, [`process.settings.${key}`]),
+    [commit],
+  );
+
+  return { view, loading, error, setField, resetField, setProcessSetting, resetProcessSetting };
 }

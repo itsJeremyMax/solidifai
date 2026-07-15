@@ -659,37 +659,55 @@ fn render_profile_block(config_dir: &Path, workspace_root: &Path) -> String {
         &["fits", &format!("{fit}Mm")],
         num(&["fits", "normalMm"], 0.2),
     );
-    let kind = prof
+    let process_id = prof
         .get("process")
-        .and_then(|p| p.get("kind"))
+        .and_then(|p| p.get("id"))
         .and_then(|v| v.as_str())
-        .unwrap_or("fdm")
-        .to_uppercase();
+        .unwrap_or("fdm");
+    let process_label =
+        crate::materials::process_label(process_id).unwrap_or_else(|| process_id.to_uppercase());
+    let process_settings = prof
+        .get("process")
+        .and_then(|p| p.get("settings"))
+        .unwrap_or(&serde_json::Value::Null);
+    let process_num = |key: &str, default: f64| {
+        process_settings
+            .get(key)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(default)
+    };
 
     // f64 Display drops trailing zeros (45.0 -> "45", 0.2 -> "0.2").
     let g = |x: f64| format!("{x}");
 
-    format!(
+    let mut block = format!(
         "{start} (managed by solidifai; reflects this workspace's manufacturing profile as of session start) -->\n\
          - Material: {mat} · Fit: {fit} ({clear} mm) · Wall: {wall} mm · Edge-break: {fillet} mm\n\
-         - Process: {kind}, {nozzle} mm nozzle, {layer} mm layers, {overhang} deg overhang, {infill}% infill\n\
-         - Print (advisory; the slicer owns the real values): {ntemp}C nozzle / {btemp}C bed, ~${cost}/kg\n\
-         {end}",
+         - Process: {label} ({id})",
         start = MFG_REGION_START,
-        end = MFG_REGION_END,
         mat = mat_label,
         fit = fit,
         clear = g(clearance),
         wall = g(num(&["design", "wallMm"], 2.4)),
         fillet = g(num(&["design", "filletMm"], 1.0)),
-        nozzle = g(num(&["process", "nozzleMm"], 0.4)),
-        layer = g(num(&["process", "layerMm"], 0.2)),
-        overhang = g(num(&["process", "overhangDeg"], 45.0)),
-        infill = g(num(&["process", "infillPct"], 20.0)),
-        ntemp = g(num(&["fabrication", "nozzleTempC"], 210.0)),
-        btemp = g(num(&["fabrication", "bedTempC"], 60.0)),
-        cost = g(num(&["fabrication", "filamentCostPerKg"], 25.0)),
-    )
+        label = process_label,
+        id = process_id,
+    );
+    if crate::materials::profile_settings(process_id).contains(&"nozzleMm".to_string()) {
+        block.push_str(&format!(
+            ", {} mm nozzle, {} mm layers, {} deg overhang, {}% infill\n\
+             - Print (advisory; the slicer owns the real values): {}C nozzle / {}C bed, ~${}/kg",
+            g(process_num("nozzleMm", 0.4)),
+            g(process_num("layerMm", 0.2)),
+            g(process_num("overhangDeg", 45.0)),
+            g(process_num("infillPct", 20.0)),
+            g(num(&["fabrication", "nozzleTempC"], 210.0)),
+            g(num(&["fabrication", "bedTempC"], 60.0)),
+            g(num(&["fabrication", "filamentCostPerKg"], 25.0)),
+        ));
+    }
+    block.push_str(&format!("\n{MFG_REGION_END}"));
+    block
 }
 
 /// Replace the marked region in `text` with `block` (inclusive of both markers).
@@ -1448,6 +1466,75 @@ mod tests {
         assert!(!out.contains("OLD"));
         assert!(out.starts_with("head"));
         assert!(out.trim_end().ends_with("tail"));
+    }
+
+    #[test]
+    fn renders_schema_one_fdm_profile_with_legacy_settings() {
+        let dir = unique("profile-v1-fdm");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("manufacturing-profile.json"),
+            r#"{"schema":1,"process":{"kind":"fdm","nozzleMm":0.6,"infillPct":35}}"#,
+        )
+        .unwrap();
+        let block = render_profile_block(Path::new("/no/config"), &dir);
+        assert!(block.contains("Process: FDM (fdm), 0.6 mm nozzle"));
+        assert!(block.contains("35% infill"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renders_v2_non_fdm_profiles_without_fdm_controls() {
+        for process in ["cnc", "sla", "sls"] {
+            let dir = unique(&format!("profile-v2-{process}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("manufacturing-profile.json"),
+                format!(r#"{{"schema":2,"process":{{"id":"{process}","settings":{{}}}}}}"#),
+            )
+            .unwrap();
+            let block = render_profile_block(Path::new("/no/config"), &dir);
+            assert!(block.contains(&format!("({process})")));
+            assert!(
+                !block.contains("nozzle"),
+                "{process} must not render nozzle controls"
+            );
+            assert!(
+                !block.contains("infill"),
+                "{process} must not render infill controls"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn sparse_workspace_profile_inherits_catalog_process_from_global() {
+        let config = unique("profile-global");
+        let workspace = unique("profile-workspace");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            config.join("manufacturing-profile.json"),
+            r#"{"schema":2,"process":{"id":"cnc","settings":{}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("manufacturing-profile.json"),
+            r#"{"schema":1,"process":{"overhangDeg":55}}"#,
+        )
+        .unwrap();
+        let block = render_profile_block(&config, &workspace);
+        assert!(block.contains("CNC (cnc)"));
+        assert!(!block.contains("nozzle"));
+        let _ = fs::remove_dir_all(&config);
+        let _ = fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn profile_region_uses_catalog_process_label_and_settings() {
+        let block = render_profile_block(Path::new("/no/config"), Path::new("/no/ws"));
+        assert!(block.contains("FDM (fdm)"));
+        assert_eq!(crate::materials::profile_settings("fdm").len(), 4);
     }
 
     #[test]

@@ -36,6 +36,11 @@ def _req_label(passed) -> str:
     return "fail" if passed is False else "unknown"
 
 
+def _material_process(mat) -> str | None:
+    """Use the resolved material's process before its catalog base default."""
+    return mat.process or _materials.process_for(mat.base)
+
+
 class Reporting:
     def __init__(self, s: Session):
         self.s = s
@@ -383,15 +388,12 @@ class Reporting:
         bom, total_mass, labels, process = [], 0.0, set(), "fdm"
         for g in groups:
             rep = g["rep"]
-            try:
-                mat = _materials.RESOLVER.resolve(rep.material, color=rep.color)
-            except Exception:  # noqa: BLE001
-                mat = _materials.RESOLVER.resolve(None)
+            mat = _materials.RESOLVER.resolve(rep.material, color=rep.color)
             mass_each = (float(rep.shape.volume) / 1000.0) * mat.density
             qty = g["qty"]
             total_mass += mass_each * qty
             labels.add(mat.label)
-            process = _materials.process_for(mat.name)
+            process = _material_process(mat) or "unresolved"
             g["shape"] = rep.shape
             g["spec"] = self._part_spec(g, mat, mass_each, process)
             bom.append(

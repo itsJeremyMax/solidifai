@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import catalog from "../../engine/solidifai_engine/manufacturing_catalog.json";
 
 /** A material in the global or workspace library (mirrors Rust `Material`). */
 export interface Material {
@@ -7,9 +8,12 @@ export interface Material {
   base: string;
   colorHex: string;
   finish: "matte" | "satin" | "gloss" | "metallic";
-  /** Optional; derived from base when absent. */
-  process?: "fdm" | "sla" | "cnc" | "injection";
+  /** Optional; derived from a known base when absent. */
+  process?: ManufacturingProcess;
 }
+
+export type ManufacturingProcess = string;
+export const CATALOG = catalog;
 
 /** A material library: an ordered set plus the chosen default id. */
 export interface MaterialLibrary {
@@ -56,6 +60,14 @@ export async function setWorkspaceMaterials(library: MaterialLibrary): Promise<M
 }
 
 /** Derive the manufacturing process from a base substance (UI mirror of the Rust/engine rule). */
-export function processForBase(base: string): "fdm" | "cnc" {
-  return ["aluminum", "steel", "stainless", "brass", "copper"].includes(base) ? "cnc" : "fdm";
+export function processForBase(base: string): ManufacturingProcess | undefined {
+  return CATALOG.bases[base as keyof typeof CATALOG.bases]?.defaultProcess;
+}
+
+export function supportedProcesses(): ManufacturingProcess[] {
+  return Object.keys(CATALOG.processes);
+}
+
+export function profileSettings(process: ManufacturingProcess): string[] {
+  return CATALOG.processes[process as keyof typeof CATALOG.processes]?.profileSettings ?? [];
 }

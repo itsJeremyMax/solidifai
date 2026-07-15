@@ -45,32 +45,32 @@ from .imports import workspace_root
 
 # Built lazily from solidifai_engine.standards so `import solidifai` stays
 # light; key names are kept for any existing model.py reading dims().
-_TABLE: dict[str, dict[str, float]] | None = None
+_TABLE: dict[str | None, dict[str, dict[str, float]]] = {}
 
 
 def _table() -> dict[str, dict[str, float]]:
-    global _TABLE
-    if _TABLE is None:
+    root = workspace_root()
+    if root not in _TABLE:
         from solidifai_engine import standards as _std
 
-        _TABLE = {
+        _TABLE[root] = {
             size: {
-                "d": _std.screw(size)["thread_dia"],
-                "head_dia": _std.screw(size)["head_dia"],  # ISO 4762
-                "head_height": _std.screw(size)["head_height"],
-                "nut_width": _std.nut(size)["width_af"],  # ISO 4032
-                "nut_thickness": _std.nut(size)["thickness"],
-                "clearance_close": _std.ISO273_CLEARANCE[size]["close"],
-                "clearance_medium": _std.ISO273_CLEARANCE[size]["medium"],
-                "clearance_coarse": _std.ISO273_CLEARANCE[size]["coarse"],
-                "tap_drill": _std.pilot_hole(size),
-                "washer_od": _std.washer(size)["od"],  # ISO 7089
-                "washer_id": _std.washer(size)["id"],
-                "washer_t": _std.washer(size)["thickness"],
+                "d": _std.screw(size, workspace_root=root)["thread_dia"],
+                "head_dia": _std.screw(size, workspace_root=root)["head_dia"],
+                "head_height": _std.screw(size, workspace_root=root)["head_height"],
+                "nut_width": _std.nut(size, workspace_root=root)["width_af"],
+                "nut_thickness": _std.nut(size, workspace_root=root)["thickness"],
+                "clearance_close": _std.clearance_hole(size, "close", workspace_root=root),
+                "clearance_medium": _std.clearance_hole(size, "medium", workspace_root=root),
+                "clearance_coarse": _std.clearance_hole(size, "coarse", workspace_root=root),
+                "tap_drill": _std.pilot_hole(size, workspace_root=root),
+                "washer_od": _std.washer(size, workspace_root=root)["od"],
+                "washer_id": _std.washer(size, workspace_root=root)["id"],
+                "washer_t": _std.washer(size, workspace_root=root)["thickness"],
             }
             for size in _std.sizes()
         }
-    return _TABLE
+    return _TABLE[root]
 
 
 def sizes() -> list:
@@ -186,7 +186,7 @@ def _thread_dims(size: str) -> tuple[float, float, float]:
     from solidifai_engine import standards as _std
 
     d = float(size[1:])
-    p = _std.thread_pitch(size)
+    p = _std.thread_pitch(size, workspace_root=workspace_root())
     d3 = d - 1.2269 * p  # ISO external minor (rounded root)
     return d, p, d3
 

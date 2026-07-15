@@ -120,7 +120,7 @@ def test_process_for_metals_is_cnc():
 
 
 def test_process_for_unknown_defaults_to_fdm():
-    assert m.process_for("unobtanium") == "fdm"
+    assert m.process_for("unobtanium") is None
 
 
 def test_hex_to_linear_white_and_black():
@@ -176,6 +176,36 @@ def test_material_from_record_metallic_finish_forces_metalness():
     assert mat.density == 2.70
 
 
+def test_unknown_custom_material_does_not_inherit_pla():
+    with pytest.raises(ValueError, match="unknown material base"):
+        m.material_from_record({"id": "mystery", "base": "moon-dust"})
+
+
+def test_legacy_material_without_base_migrates_with_diagnostic():
+    mat = m.material_from_record({"id": "legacy"})
+    assert mat.base == "pla"
+    assert mat.diagnostics == ("legacyFallback",)
+
+
+def test_custom_aluminum_material_keeps_explicit_cnc_process():
+    mat = m.material_from_record({"id": "anodized", "base": "aluminum", "process": "cnc"})
+    assert mat.density == pytest.approx(2.70)
+    assert mat.process == "cnc"
+    assert mat.process_source == "explicit"
+
+
+def test_reporting_uses_resolved_material_process_before_record_id():
+    from solidifai_engine.reporting import _material_process
+
+    mat = m.material_from_record({"id": "anodized", "base": "aluminum", "process": "cnc"})
+    assert _material_process(mat) == "cnc"
+
+
+def test_unknown_explicit_process_fails_validation():
+    with pytest.raises(ValueError, match="unknown manufacturing process"):
+        m.material_from_record({"id": "mystery", "base": "pla", "process": "laser"})
+
+
 def test_json_file_source_reads_and_resolves(tmp_path):
     p = tmp_path / "materials.json"
     p.write_text(
@@ -199,6 +229,81 @@ def test_json_file_source_reads_and_resolves(tmp_path):
     assert src.default == "cobalt-pla"
     assert src.get("cobalt-pla").label == "Cobalt PLA"
     assert src.get("missing") is None
+
+
+@pytest.mark.parametrize(
+    ("record", "error"),
+    [
+        ({"id": "pla", "base": "moon-dust"}, "unknown material base"),
+        ({"id": "pla", "base": "pla", "process": "laser"}, "unknown manufacturing process"),
+        ({"id": "pla", "base": "pla", "colorHex": "not-a-color"}, "expected #rrggbb"),
+    ],
+)
+def test_invalid_record_shadows_builtin_and_surfaces_diagnostic(tmp_path, record, error):
+    path = tmp_path / "materials.json"
+    path.write_text(json.dumps({"materials": [record]}))
+    source = m.JsonFileSource(str(path))
+    resolver = m.MaterialResolver([m.BuiltinSource(), source])
+
+    with pytest.raises(ValueError, match=f"invalid material 'pla'.*{error}"):
+        resolver.resolve("pla")
+    assert source.get("pla") is None
+    assert source.errors["pla"].startswith(error)
+
+
+def test_invalid_unknown_record_and_default_are_visible_not_dropped(tmp_path, monkeypatch):
+    config = tmp_path / "config"
+    ws = tmp_path / "ws"
+    config.mkdir()
+    ws.mkdir()
+    (ws / "materials.json").write_text(
+        json.dumps(
+            {
+                "default": "mystery",
+                "materials": [{"id": "mystery", "base": "moon-dust"}],
+            }
+        )
+    )
+    monkeypatch.setenv("SOLIDIFAI_CONFIG_DIR", str(config))
+    m.configure_resolver(str(ws))
+    try:
+        with pytest.raises(ValueError, match="invalid material 'mystery'"):
+            m.RESOLVER.resolve(None)
+        listed = m.list_effective(str(ws))
+        mystery = next(entry for entry in listed["materials"] if entry["id"] == "mystery")
+        assert mystery["invalid"] is True
+        assert "unknown material base" in mystery["error"]
+        assert listed["diagnostics"]["mystery"].startswith("unknown material base")
+    finally:
+        m.configure_resolver(str(tmp_path / "empty"))
+
+
+def test_invalid_default_without_a_record_fails_resolution(tmp_path):
+    path = tmp_path / "materials.json"
+    path.write_text(json.dumps({"default": "missing", "materials": []}))
+    resolver = m.MaterialResolver(
+        [m.BuiltinSource(), m.JsonFileSource(str(path))], default="missing"
+    )
+    with pytest.raises(ValueError, match="invalid material default 'missing'"):
+        resolver.resolve()
+
+
+def test_invalid_pla_override_has_no_packaged_mass_or_process_fields(tmp_path, monkeypatch):
+    config = tmp_path / "config"
+    ws = tmp_path / "ws"
+    config.mkdir()
+    ws.mkdir()
+    (ws / "materials.json").write_text(
+        json.dumps({"materials": [{"id": "pla", "base": "moon-dust"}]})
+    )
+    monkeypatch.setenv("SOLIDIFAI_CONFIG_DIR", str(config))
+    pla = next(entry for entry in m.list_effective(str(ws))["materials"] if entry["id"] == "pla")
+    assert pla == {
+        "id": "pla",
+        "invalid": True,
+        "error": "unknown material base 'moon-dust'",
+        "isDefault": True,
+    }
 
 
 def test_json_file_source_missing_file_is_empty():

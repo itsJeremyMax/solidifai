@@ -20,26 +20,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from solidifai_engine import manufacturing_catalog
+
 # Canonical material ids are lowercase; resolve() is case-sensitive.
 DEFAULT_MATERIAL = "pla"
 
 
-PROCESS_FOR_BASE: Mapping[str, str] = {
-    "pla": "fdm",
-    "abs": "fdm",
-    "petg": "fdm",
-    "nylon": "fdm",
-    "aluminum": "cnc",
-    "steel": "cnc",
-    "stainless": "cnc",
-    "brass": "cnc",
-    "copper": "cnc",
-}
-
-
-def process_for(base: str) -> str:
-    """The manufacturing process implied by a base substance (default fdm)."""
-    return PROCESS_FOR_BASE.get(base, "fdm")
+def process_for(base: str) -> str | None:
+    """The catalog process implied by a known base, otherwise ``None``."""
+    return manufacturing_catalog.base_process(base)
 
 
 FINISH_PRESETS: Mapping[str, dict] = {
@@ -104,6 +93,10 @@ class Material:
     roughness: float
     clearcoat: float = 0.0
     clearcoat_roughness: float = 0.0
+    base: str = ""
+    process: str | None = None
+    process_source: str = "unknown"
+    diagnostics: tuple[str, ...] = ()
 
 
 class MaterialSource(Protocol):
@@ -125,6 +118,10 @@ BUILTIN: Mapping[str, Material] = {
     "stainless": Material("stainless", "Stainless", 8.00, (0.69, 0.70, 0.72), 1.0, 0.30),
     "brass": Material("brass", "Brass", 8.50, (0.85, 0.67, 0.30), 1.0, 0.32),
     "copper": Material("copper", "Copper", 8.96, (0.85, 0.52, 0.38), 1.0, 0.34),
+}
+BUILTIN = {
+    name: replace(mat, base=name, process=process_for(name), process_source="base")
+    for name, mat in BUILTIN.items()
 }
 
 
@@ -155,8 +152,15 @@ def _validate_color(color: Any) -> tuple[float, float, float]:
 
 def material_from_record(rec: Mapping) -> Material:
     """Build a render `Material` from a user material record."""
+    legacy_base = "base" not in rec
     base = rec.get("base", DEFAULT_MATERIAL)
-    b = BUILTIN.get(base) or BUILTIN[DEFAULT_MATERIAL]
+    if base not in BUILTIN:
+        raise ValueError(f"unknown material base {base!r}")
+    b = BUILTIN[base]
+    explicit_process = rec.get("process")
+    if explicit_process is not None and manufacturing_catalog.process(explicit_process) is None:
+        raise ValueError(f"unknown manufacturing process {explicit_process!r}")
+    process = explicit_process or process_for(base)
     preset = FINISH_PRESETS.get(rec.get("finish", "matte"), FINISH_PRESETS["matte"])
     color = rec.get("colorHex")
     base_color = hex_to_linear(color) if color else b.base_color
@@ -170,6 +174,10 @@ def material_from_record(rec: Mapping) -> Material:
         roughness=preset["roughness"],
         clearcoat=preset["clearcoat"],
         clearcoat_roughness=preset["clearcoat_roughness"],
+        base=base,
+        process=process,
+        process_source="explicit" if explicit_process else "base",
+        diagnostics=("legacyFallback",) if legacy_base else (),
     )
 
 
@@ -183,6 +191,7 @@ class JsonFileSource:
     def __init__(self, path: str) -> None:
         self._by_name: dict[str, Material] = {}
         self._records: dict[str, dict] = {}
+        self._errors: dict[str, str] = {}
         self._default: str | None = None
         try:
             # Explicit UTF-8: the host writes UTF-8, and the locale default is
@@ -197,20 +206,34 @@ class JsonFileSource:
             return
         if not isinstance(data, dict):
             return
-        self._default = data.get("default")
-        for rec in data.get("materials", []):
+        default = data.get("default")
+        self._default = default if isinstance(default, str) else None
+        records = data.get("materials", [])
+        if not isinstance(records, list):
+            return
+        for rec in records:
+            record_id = rec.get("id") if isinstance(rec, Mapping) else None
+            if not isinstance(record_id, str) or not record_id:
+                continue
             try:
                 mat = material_from_record(rec)
-            except Exception:
-                continue  # skip a malformed record, keep the rest
+            except (TypeError, ValueError, KeyError) as exc:
+                self._errors[record_id] = str(exc)
+                continue
             self._by_name[mat.name] = mat
             self._records[mat.name] = dict(rec)
+        if (
+            self._default is not None
+            and self._default not in self._by_name
+            and self._default not in self._errors
+        ):
+            self._errors[self._default] = f"invalid material default {self._default!r}"
 
     def get(self, name: str) -> Material | None:
         return self._by_name.get(name)
 
     def names(self) -> list[str]:
-        return list(self._by_name)
+        return list(self._by_name.keys() | self._errors.keys())
 
     @property
     def default(self) -> str | None:
@@ -219,6 +242,10 @@ class JsonFileSource:
     @property
     def records(self) -> dict[str, dict]:
         return self._records
+
+    @property
+    def errors(self) -> dict[str, str]:
+        return self._errors
 
 
 class MaterialResolver:
@@ -238,6 +265,9 @@ class MaterialResolver:
 
     def get(self, name: str) -> Material | None:
         for source in reversed(self._sources):  # highest priority last
+            error = getattr(source, "errors", {}).get(name)
+            if error is not None:
+                raise ValueError(f"invalid material {name!r}: {error}")
             mat = source.get(name)
             if mat is not None:
                 return mat
@@ -308,6 +338,7 @@ def list_effective(workspace_root: str) -> dict:
     default = wsrc.default or gsrc.default or DEFAULT_MATERIAL
 
     merged: dict[str, dict] = {}
+    diagnostics: dict[str, str] = {}
     for name in BuiltinSource().names():
         merged[name] = _builtin_record(BUILTIN[name])
     for src in (gsrc, wsrc):  # later sources win
@@ -323,10 +354,13 @@ def list_effective(workspace_root: str) -> dict:
                 "process": rec.get("process") or process_for(base),
                 "density": b.density,
             }
+        for name, error in src.errors.items():
+            diagnostics[name] = error
+            merged[name] = {"id": name, "invalid": True, "error": error}
 
     materials = []
     for name in sorted(merged):
         entry = merged[name]
         entry["isDefault"] = name == default
         materials.append(entry)
-    return {"default": default, "materials": materials}
+    return {"default": default, "materials": materials, "diagnostics": diagnostics}

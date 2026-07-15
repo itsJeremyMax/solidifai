@@ -6,10 +6,200 @@ accidental edits, and pin fit resolution against the manufacturing profile.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 from solidifai_engine import standards
+
+
+def test_standards_catalog_is_the_only_shipped_dimension_table():
+    source = Path(standards.__file__).read_text(encoding="utf-8")
+    assert "ISO273_CLEARANCE: dict[str, dict[str, float]] = {" not in source
+    assert "ISO4762_CAP: dict[str, dict[str, float]] = {" not in source
+    assert "HEAT_SET_INSERTS: dict[str, dict[str, float]] = {" not in source
+
+
+def test_catalog_preserves_all_geometry_driving_m2_to_m8_values():
+    assert standards.sizes() == ["M2", "M2.5", "M3", "M4", "M5", "M6", "M8"]
+    assert standards.clearance_hole("M2", "close") == 2.2
+    assert standards.clearance_hole("M8", "coarse") == 10.0
+    assert standards.screw("M8")["head_dia"] == 13.0
+    assert standards.nut("M6")["thickness"] == 5.2
+    assert standards.washer("M5")["thickness"] == 1.0
+    assert standards.insert("M4")["min_hole_depth"] == 9.1
+
+
+def test_standard_results_include_catalog_provenance_additively():
+    result = standards.screw("M3")
+    provenance = result["provenance"]
+    assert result["head_dia"] == 5.5
+    assert provenance == {
+        "sourceTitle": "ISO 4762",
+        "revision": "2019",
+        "table": "Table 1",
+        "units": "mm",
+        "verifiedDate": "2026-07-13",
+    }
+
+
+def test_workspace_provider_shadows_packaged_standard_and_is_validated(tmp_path):
+    provider = {
+        "schema": 1,
+        "standards": {
+            "iso-4762-cap": {
+                "source": {
+                    "sourceTitle": "Workspace ISO 4762",
+                    "revision": "local",
+                    "table": "approved vendor table",
+                    "units": "mm",
+                    "verifiedDate": "2026-07-13",
+                },
+                "values": {"M3": {"head_dia": 5.6, "head_height": 3.0, "socket": 2.5}},
+            }
+        },
+    }
+    (tmp_path / "standards-provider.json").write_text(json.dumps(provider), encoding="utf-8")
+    result = standards.screw("M3", workspace_root=str(tmp_path))
+    assert result["head_dia"] == 5.6
+    assert result["provenance"]["sourceTitle"] == "Workspace ISO 4762"
+
+    provider["standards"]["iso-4762-cap"]["values"]["M3"] = {"head_dia": "bad"}
+    (tmp_path / "standards-provider.json").write_text(json.dumps(provider), encoding="utf-8")
+    with pytest.raises(ValueError, match="head_height"):
+        standards.screw("M3", workspace_root=str(tmp_path))
+
+
+def test_workspace_provider_shadows_user_provider(tmp_path, monkeypatch):
+    from solidifai_engine import paths
+
+    user = tmp_path / "user"
+    workspace = tmp_path / "workspace"
+    user.mkdir()
+    workspace.mkdir()
+    monkeypatch.setattr(paths, "app_config_dir", lambda: str(user))
+    for root, dia in ((user, 5.6), (workspace, 5.7)):
+        (root / "standards-provider.json").write_text(
+            json.dumps(
+                {
+                    "standards": {
+                        "iso-4762-cap": {
+                            "source": {
+                                "sourceTitle": str(root),
+                                "revision": "local",
+                                "table": "table",
+                                "units": "mm",
+                                "verifiedDate": "2026-07-13",
+                            },
+                            "values": {"M3": {"head_dia": dia, "head_height": 3.0, "socket": 2.5}},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    assert standards.screw("M3", workspace_root=str(workspace))["head_dia"] == 5.7
+
+
+def test_provider_shadows_clearance_tap_pitch_and_lookup_standard(tmp_path):
+    source = {
+        "sourceTitle": "Workspace dimensions",
+        "revision": "local",
+        "table": "approved dimensions",
+        "units": "mm",
+        "verifiedDate": "2026-07-13",
+    }
+    provider = {
+        "standards": {
+            "iso-273-clearance": {
+                "source": source,
+                "values": {"M3": {"close": 3.1, "medium": 3.3, "coarse": 3.5}},
+            },
+            "tap-drill-coarse": {"source": source, "values": {"M3": 2.4}},
+            "iso-261-pitch": {"source": source, "values": {"M3": 0.55}},
+        }
+    }
+    (tmp_path / "standards-provider.json").write_text(json.dumps(provider), encoding="utf-8")
+
+    assert standards.clearance_hole("M3", "normal", workspace_root=str(tmp_path)) == 3.3
+    assert standards.pilot_hole("M3", workspace_root=str(tmp_path)) == 2.4
+    assert standards.thread_pitch("M3", workspace_root=str(tmp_path)) == 0.55
+    lookup = standards.lookup_standard("M3 clearance and pilot", workspace_root=str(tmp_path))
+    assert lookup["clearance_hole"]["dia"] == 3.3
+    assert lookup["clearance_hole"]["series"]["close"] == 3.1
+    assert lookup["pilot_hole"] == 2.4
+
+
+def test_std_facade_forwards_workspace_provider_to_every_hardware_helper(tmp_path, monkeypatch):
+    from solidifai import std
+
+    monkeypatch.setattr(std, "workspace_root", lambda: str(tmp_path))
+    source = {
+        "sourceTitle": "Workspace dimensions",
+        "revision": "local",
+        "table": "approved dimensions",
+        "units": "mm",
+        "verifiedDate": "2026-07-13",
+    }
+    provider = {
+        "standards": {
+            "iso-4762-cap": {
+                "source": source,
+                "values": {"M3": {"head_dia": 5.6, "head_height": 3.1, "socket": 2.5}},
+            },
+            "iso-4032-nut": {
+                "source": source,
+                "values": {"M3": {"width_af": 5.6, "thickness": 2.5}},
+            },
+            "iso-7089-washer": {
+                "source": source,
+                "values": {"M3": {"od": 7.1, "id": 3.3, "thickness": 0.6}},
+            },
+            "ruthex-insert": {
+                "source": source,
+                "values": {"M3": {"hole_dia": 4.1, "length": 5.8, "min_hole_depth": 6.8}},
+            },
+            "bearing-deep-groove": {
+                "source": source,
+                "values": {"608": {"bore": 8.1, "od": 22.1, "width": 7.1}},
+            },
+        }
+    }
+    (tmp_path / "standards-provider.json").write_text(json.dumps(provider), encoding="utf-8")
+
+    assert std.screw("M3")["head_dia"] == 5.6
+    assert std.nut("M3")["width_af"] == 5.6
+    assert std.washer("M3")["od"] == 7.1
+    assert std.insert("M3")["hole_dia"] == 4.1
+    assert std.bearing("608")["bore"] == 8.1
+
+
+def test_invalid_scalar_provider_entry_raises_instead_of_falling_back(tmp_path):
+    provider = {
+        "standards": {
+            "iso-273-clearance": {
+                "source": {
+                    "sourceTitle": "Bad workspace dimensions",
+                    "revision": "local",
+                    "table": "bad table",
+                    "units": "mm",
+                    "verifiedDate": "2026-07-13",
+                },
+                "values": {"M3": {"close": "bad"}},
+            }
+        }
+    }
+    (tmp_path / "standards-provider.json").write_text(json.dumps(provider), encoding="utf-8")
+    with pytest.raises(ValueError, match="close, medium, coarse"):
+        standards.clearance_hole("M3", workspace_root=str(tmp_path))
+
+
+def test_unknown_standard_lookup_requests_actionable_dimensions():
+    result = standards.lookup_standard("M7 cap screw")
+    assert result["status"] == "unknown"
+    assert result["action"] == "request_dimensions"
+    assert "thread_dia" in result["requiredDimensions"]
+
 
 # -- screw heads --------------------------------------------------------------
 

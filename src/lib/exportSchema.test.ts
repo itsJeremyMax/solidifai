@@ -2,8 +2,8 @@ import { test, expect } from "vitest";
 
 import { FORMATS, defaultOptions, qualityTolerance, UNIT_OPTIONS } from "./exportSchema";
 
-test("FORMATS lists the five 3D formats", () => {
-  expect(FORMATS.map((f) => f.key)).toEqual(["step", "stl", "glb", "brep", "3mf"]);
+test("FORMATS lists every engine export format", () => {
+  expect(FORMATS.map((f) => f.key)).toEqual(["step", "stl", "glb", "gltf", "brep", "3mf"]);
 });
 
 test("STL defaults are binary + standard quality", () => {

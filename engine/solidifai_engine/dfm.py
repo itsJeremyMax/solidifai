@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import math
 
+from solidifai_engine import manufacturing_catalog
+
 # FDM defaults -- every number except ``min_hole_diameter_mm`` is sourced from
 # references/dfm-additive.md. ``min_hole_diameter_mm`` is a conservative tool
 # default (the lens gives hole *compensation*, not a hard minimum); violations
@@ -43,15 +45,34 @@ WALL_MAX_RAYS = 4000  # global cap; sample every Nth facet past this
 WALL_EPS = 1e-3  # nudge the ray start off the origin facet
 
 
-def analyze_part(shape, process: str = "fdm", config: dict | None = None) -> dict:
+def analyze_part(shape, process: str | None = "fdm", config: dict | None = None) -> dict:
     """Return ``{process, evaluated, violations}`` for one shown shape.
 
     Only ``fdm`` is evaluated; any other process returns
     ``evaluated=False`` with no violations (the session adds an info note).
     """
-    process = (process or "").strip().lower()
-    if process != "fdm":
-        return {"process": process, "evaluated": False, "violations": []}
+    process = process.strip().lower() if process else None
+    if not process:
+        return {
+            "process": None,
+            "evaluated": False,
+            "reason": "unresolved_process",
+            "violations": [],
+        }
+    if manufacturing_catalog.process(process) is None:
+        return {
+            "process": process,
+            "evaluated": False,
+            "reason": "unresolved_process",
+            "violations": [],
+        }
+    if manufacturing_catalog.rule_pack(process) != "fdm-v1":
+        return {
+            "process": process,
+            "evaluated": False,
+            "reason": "unsupported_rule_pack",
+            "violations": [],
+        }
     cfg = {**FDM_DEFAULTS, **(config or {})}
     violations: list[dict] = []
     min_z = _model_min_z(shape)

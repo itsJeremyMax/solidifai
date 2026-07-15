@@ -4,10 +4,10 @@
     "global": {},
     "workspace": {},
     "expected": {
-      "schema": 1,
+      "schema": 2,
       "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 },
       "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
-      "process": { "kind": "fdm", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 },
+      "process": { "id": "fdm", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } },
       "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 }
     }
   },
@@ -16,10 +16,10 @@
     "global": {},
     "workspace": { "design": { "wallMm": 1.6 } },
     "expected": {
-      "schema": 1,
+      "schema": 2,
       "design": { "fit": "normal", "wallMm": 1.6, "filletMm": 1.0, "minFeatureMm": 1.0 },
       "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
-      "process": { "kind": "fdm", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 },
+      "process": { "id": "fdm", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } },
       "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 }
     }
   },
@@ -28,10 +28,10 @@
     "global": { "design": { "wallMm": 3.0, "filletMm": 2.0 }, "process": { "infillPct": 35 } },
     "workspace": { "design": { "wallMm": 1.6 }, "fabrication": { "bedTempC": 70 } },
     "expected": {
-      "schema": 1,
+      "schema": 2,
       "design": { "fit": "normal", "wallMm": 1.6, "filletMm": 2.0, "minFeatureMm": 1.0 },
       "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
-      "process": { "kind": "fdm", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 35 },
+      "process": { "id": "fdm", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 35 } },
       "fabrication": { "nozzleTempC": 210, "bedTempC": 70, "filamentCostPerKg": 25 }
     }
   },
@@ -40,11 +40,41 @@
     "global": { "fits": { "tightMm": 0.05 }, "process": { "kind": "sla", "overhangDeg": 50 } },
     "workspace": { "design": { "fit": "tight" } },
     "expected": {
-      "schema": 1,
+      "schema": 2,
       "design": { "fit": "tight", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 },
       "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.05 },
-      "process": { "kind": "sla", "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 50, "infillPct": 20 },
+      "process": { "id": "sla", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 50, "infillPct": 20 } },
       "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 }
     }
+  },
+  {
+    "name": "v2 numeric process settings normalize empty",
+    "global": { "process": { "id": "cnc", "settings": 42 } },
+    "workspace": {},
+    "expected": { "schema": 2, "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 }, "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 }, "process": { "id": "cnc", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } }, "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 } }
+  },
+  {
+    "name": "v2 string process settings normalize empty",
+    "global": { "process": { "id": "cnc", "settings": "bad" } },
+    "workspace": {},
+    "expected": { "schema": 2, "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 }, "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 }, "process": { "id": "cnc", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } }, "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 } }
+  },
+  {
+    "name": "v2 list process settings normalize empty",
+    "global": { "process": { "id": "cnc", "settings": ["bad"] } },
+    "workspace": {},
+    "expected": { "schema": 2, "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 }, "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 }, "process": { "id": "cnc", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } }, "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 } }
+  },
+  {
+    "name": "v2 null process settings normalize empty",
+    "global": { "process": { "id": "cnc", "settings": null } },
+    "workspace": {},
+    "expected": { "schema": 2, "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 }, "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 }, "process": { "id": "cnc", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } }, "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 } }
+  },
+  {
+    "name": "v2 invalid process id is preserved for validation",
+    "global": { "process": { "id": "laser", "settings": [] } },
+    "workspace": {},
+    "expected": { "schema": 2, "design": { "fit": "normal", "wallMm": 2.4, "filletMm": 1.0, "minFeatureMm": 1.0 }, "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 }, "process": { "id": "laser", "settings": { "nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20 } }, "fabrication": { "nozzleTempC": 210, "bedTempC": 60, "filamentCostPerKg": 25 } }
   }
 ]

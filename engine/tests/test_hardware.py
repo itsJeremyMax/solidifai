@@ -60,6 +60,40 @@ def test_table_is_single_homed_on_standards():
         assert d["nut_thickness"] == standards.nut(size)["thickness"]
 
 
+def test_hardware_geometry_uses_workspace_standard_provider(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(hardware, "workspace_root", lambda: str(tmp_path))
+    provider = {
+        "standards": {
+            "iso-273-clearance": {
+                "source": {
+                    "sourceTitle": "Workspace",
+                    "revision": "local",
+                    "table": "table",
+                    "units": "mm",
+                    "verifiedDate": "2026-07-13",
+                },
+                "values": {"M3": {"close": 3.1, "medium": 3.3, "coarse": 3.5}},
+            },
+            "tap-drill-coarse": {
+                "source": {
+                    "sourceTitle": "Workspace",
+                    "revision": "local",
+                    "table": "table",
+                    "units": "mm",
+                    "verifiedDate": "2026-07-13",
+                },
+                "values": {"M3": 2.4},
+            },
+        }
+    }
+    (tmp_path / "standards-provider.json").write_text(json.dumps(provider), encoding="utf-8")
+    hardware._TABLE.clear()
+    assert hardware.dims("M3")["clearance_medium"] == 3.3
+    assert hardware.dims("M3")["tap_drill"] == 2.4
+
+
 def test_nut_thickness_corrected_to_iso4032():
     assert hardware.dims("M5")["nut_thickness"] == 4.7
     assert hardware.dims("M6")["nut_thickness"] == 5.2

@@ -686,7 +686,7 @@ def _orient_overhang(srv: Server, p: dict) -> float:
     from solidifai_engine import manufacturing_profile
 
     prof = manufacturing_profile.resolve(srv._workspace_root())
-    return float((prof.get("process") or {}).get("overhangDeg", 45))
+    return float(((prof.get("process") or {}).get("settings") or {}).get("overhangDeg", 45))
 
 
 # RPC method registry: method name -> handler(server, params) -> raw result.

@@ -42,23 +42,23 @@ def sizes() -> list[str]:
 
 
 def screw(size: str, head: str = "cap") -> dict:
-    return _standards().screw(size, head=head)
+    return _standards().screw(size, head=head, workspace_root=workspace_root())
 
 
 def nut(size: str) -> dict:
-    return _standards().nut(size)
+    return _standards().nut(size, workspace_root=workspace_root())
 
 
 def washer(size: str) -> dict:
-    return _standards().washer(size)
+    return _standards().washer(size, workspace_root=workspace_root())
 
 
 def insert(size: str) -> dict:
-    return _standards().insert(size)
+    return _standards().insert(size, workspace_root=workspace_root())
 
 
 def bearing(code: str) -> dict:
-    return _standards().bearing(code)
+    return _standards().bearing(code, workspace_root=workspace_root())
 
 
 def clearance_hole(size: str, fit: str | None = None) -> float:
@@ -66,11 +66,11 @@ def clearance_hole(size: str, fit: str | None = None) -> float:
 
 
 def pilot_hole(size: str) -> float:
-    return _standards().pilot_hole(size)
+    return _standards().pilot_hole(size, workspace_root=workspace_root())
 
 
 def thread_pitch(size: str) -> float:
-    return _standards().thread_pitch(size)
+    return _standards().thread_pitch(size, workspace_root=workspace_root())
 
 
 def lookup(query: str) -> dict:

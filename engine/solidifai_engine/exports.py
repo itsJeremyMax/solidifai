@@ -9,8 +9,10 @@ through ``export`` so option handling lives in exactly one place.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid as _uuid
+from pathlib import Path
 from typing import Any
 
 from build123d import (
@@ -51,78 +53,10 @@ MESH_TYPES = {
     "other": MeshType.OTHER,
 }
 
-# Quality preset -> linear tolerance / deflection (millimeters), per format.
-QUALITY = {
-    "stl": {"draft": 0.05, "standard": 0.01, "fine": 0.001},
-    "gltf": {"draft": 0.01, "standard": 0.001, "fine": 0.0005},
-    "3mf": {"draft": 0.01, "standard": 0.001, "fine": 0.0005},
-}
-
-_LABELS = {
-    "step": "STEP",
-    "stl": "STL",
-    "glb": "GLB",
-    "gltf": "glTF",
-    "brep": "BREP",
-    "3mf": "3MF",
-}
-
-_UNIT_CHOICES = list(UNITS)
-_MESH_QUALITY = ["draft", "standard", "fine", "custom"]
-
-
-def _f(t, default, **extra):
-    """Build a field spec."""
-    return {"type": t, "default": default, **extra}
-
-
-# Field specs per format. ``glb`` and ``gltf`` share the same fields; the format
-# string carries the binary/text container choice (glb = binary, gltf = text).
-_GLTF_FIELDS = {
-    "unit": _f("enum", "mm", choices=_UNIT_CHOICES),
-    "quality": _f("enum", "standard", choices=_MESH_QUALITY),
-    "linear_deflection": _f("float", 0.001, min=1e-5, max=10.0),
-    "angular_deflection": _f("float", 0.1, min=1e-3, max=3.1416),
-}
-
-# Per-format spec: each value mixes a str "ext" with a "fields" dict.
-_SCHEMA: dict[str, dict[str, Any]] = {
-    "step": {
-        "ext": "step",
-        "fields": {
-            "unit": _f("enum", "mm", choices=_UNIT_CHOICES),
-            "precision_mode": _f("enum", "average", choices=list(PRECISION)),
-            "write_pcurves": _f("bool", True),
-            # "current" -> build123d default (now); any other string -> fixed.
-            "timestamp": _f("str", "current"),
-        },
-    },
-    "stl": {
-        "ext": "stl",
-        "fields": {
-            "ascii": _f("bool", False),
-            "quality": _f("enum", "standard", choices=_MESH_QUALITY),
-            "tolerance": _f("float", 0.01, min=1e-5, max=10.0),
-            "angular_tolerance": _f("float", 0.1, min=1e-3, max=3.1416),
-        },
-    },
-    "glb": {"ext": "glb", "fields": _GLTF_FIELDS},
-    "gltf": {"ext": "gltf", "fields": _GLTF_FIELDS},
-    "brep": {"ext": "brep", "fields": {}},
-    "3mf": {
-        "ext": "3mf",
-        "fields": {
-            "unit": _f("enum", "mm", choices=_UNIT_CHOICES),
-            "quality": _f("enum", "standard", choices=_MESH_QUALITY),
-            "linear_deflection": _f("float", 0.001, min=1e-5, max=10.0),
-            "angular_deflection": _f("float", 0.1, min=1e-3, max=3.1416),
-            "mesh_type": _f("enum", "model", choices=list(MESH_TYPES)),
-            "part_number": _f("str", ""),
-            "uuid": _f("str", ""),
-        },
-    },
-}
-
+_SCHEMA_ASSET = Path(__file__).with_name("export_schema.json")
+_SCHEMA = json.loads(_SCHEMA_ASSET.read_text(encoding="utf-8"))["formats"]
+QUALITY = {key: value["quality"] for key, value in _SCHEMA.items() if "quality" in value}
+_LABELS = {key: value.get("validationLabel", value["label"]) for key, value in _SCHEMA.items()}
 SUPPORTED = tuple(_SCHEMA)
 
 
@@ -161,7 +95,7 @@ def _coerce(name: str, spec: dict, val: Any):
 
 
 def _qmap_key(fmt: str) -> str:
-    return "gltf" if fmt in ("glb", "gltf") else fmt
+    return fmt
 
 
 def validate_options(format: str, options: dict | None) -> dict:

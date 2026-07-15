@@ -10,8 +10,8 @@ def test_builtin_defaults_match_asset():
     assert d["design"]["wallMm"] == 2.4
     assert d["design"]["fit"] == "normal"
     assert d["fits"]["normalMm"] == 0.2
-    assert d["process"]["overhangDeg"] == 45
-    assert d["process"]["kind"] == "fdm"
+    assert d["process"]["settings"]["overhangDeg"] == 45
+    assert d["process"]["id"] == "fdm"
     assert "material" not in d  # material is echoed, never stored here
 
 
@@ -19,7 +19,55 @@ def test_resolve_returns_builtins_when_no_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLIDIFAI_CONFIG_DIR", str(tmp_path / "config"))
     prof = mp.resolve(str(tmp_path / "ws"))
     assert prof["design"]["wallMm"] == 2.4
-    assert prof["schema"] == 1
+    assert prof["schema"] == 2
+    assert prof["process"] == {
+        "id": "fdm",
+        "settings": {"nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20},
+    }
+
+
+def test_schema_one_process_normalizes_to_v2_and_accepts_dotted_legacy_updates(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLIDIFAI_CONFIG_DIR", str(tmp_path / "config"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "manufacturing-profile.json").write_text(
+        json.dumps({"schema": 1, "process": {"kind": "cnc", "overhangDeg": 55}})
+    )
+    prof = mp.resolve(str(ws))
+    assert prof["process"]["id"] == "cnc"
+    assert prof["process"]["settings"]["overhangDeg"] == 55
+
+
+@pytest.mark.parametrize("settings", [42, "invalid", ["nozzleMm"], None])
+def test_schema_two_non_object_process_settings_normalize_to_empty_mapping(settings):
+    assert mp._normalize({"schema": 2, "process": {"id": "cnc", "settings": settings}}) == {
+        "process": {"id": "cnc", "settings": {}}
+    }
+
+
+def test_schema_two_invalid_process_id_is_preserved_for_validation_diagnostics():
+    assert mp._normalize({"schema": 2, "process": {"id": "laser", "settings": []}}) == {
+        "process": {"id": "laser", "settings": {}}
+    }
+
+
+def test_sparse_schema_one_process_settings_preserve_lower_layer_process(tmp_path, monkeypatch):
+    config = tmp_path / "config"
+    ws = tmp_path / "ws"
+    config.mkdir()
+    ws.mkdir()
+    (config / "manufacturing-profile.json").write_text(
+        json.dumps({"schema": 1, "process": {"kind": "cnc"}})
+    )
+    (ws / "manufacturing-profile.json").write_text(
+        json.dumps({"schema": 1, "process": {"overhangDeg": 55}})
+    )
+    monkeypatch.setenv("SOLIDIFAI_CONFIG_DIR", str(config))
+    prof = mp.resolve(str(ws))
+    assert prof["process"]["id"] == "cnc"
+    assert prof["process"]["settings"]["overhangDeg"] == 55
 
 
 def test_workspace_overrides_global_overrides_builtin(tmp_path, monkeypatch):
@@ -36,7 +84,7 @@ def test_workspace_overrides_global_overrides_builtin(tmp_path, monkeypatch):
     assert prof["design"]["wallMm"] == 1.6  # workspace wins
     assert prof["design"]["filletMm"] == 2.0  # global fills in
     assert prof["design"]["minFeatureMm"] == 1.0  # builtin fills in
-    assert prof["process"]["overhangDeg"] == 45  # untouched section preserved
+    assert prof["process"]["settings"]["overhangDeg"] == 45  # untouched section preserved
 
 
 def test_malformed_file_falls_back_silently(tmp_path, monkeypatch):

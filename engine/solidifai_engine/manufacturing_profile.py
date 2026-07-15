@@ -27,7 +27,7 @@ from pathlib import Path
 from solidifai_engine import paths
 
 PROFILE_NAME = "manufacturing-profile.json"
-SCHEMA = 1
+SCHEMA = 2
 _ASSET = Path(__file__).with_name("manufacturing_profile_defaults.json")
 _LOG = logging.getLogger(__name__)
 
@@ -56,7 +56,27 @@ def _load_overrides(path: Path) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
+    return _normalize(data)
+
+
+def _normalize(data: dict) -> dict:
+    """Read schema 1 unchanged on disk but expose the schema-2 process envelope."""
+    data = copy.deepcopy(data)
     data.pop("schema", None)
+    process = data.get("process")
+    if not isinstance(process, dict):
+        return data
+    if "id" not in process:
+        kind = process.pop("kind", None)
+        data["process"] = {"settings": process}
+        if kind is not None:
+            data["process"]["id"] = kind
+    else:
+        settings = process.get("settings")
+        data["process"] = {
+            "id": process["id"],
+            "settings": dict(settings) if isinstance(settings, dict) else {},
+        }
     return data
 
 
@@ -66,8 +86,7 @@ def _global_path() -> Path:
 
 def resolve(workspace_root: str) -> dict:
     """builtin <= global <= workspace, deep-merged. Never raises."""
-    merged = builtin_defaults()
-    merged.pop("schema", None)
+    merged = _normalize(builtin_defaults())
     for p in (_global_path(), Path(workspace_root) / PROFILE_NAME):
         merged = _deep_merge(merged, _load_overrides(p))
     merged["schema"] = SCHEMA

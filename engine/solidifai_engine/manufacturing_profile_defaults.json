@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "design": {
     "fit": "normal",
     "wallMm": 2.4,
@@ -7,13 +7,7 @@
     "minFeatureMm": 1.0
   },
   "fits": { "looseMm": 0.4, "normalMm": 0.2, "tightMm": 0.1 },
-  "process": {
-    "kind": "fdm",
-    "nozzleMm": 0.4,
-    "layerMm": 0.2,
-    "overhangDeg": 45,
-    "infillPct": 20
-  },
+  "process": {"id": "fdm", "settings": {"nozzleMm": 0.4, "layerMm": 0.2, "overhangDeg": 45, "infillPct": 20}},
   "fabrication": {
     "nozzleTempC": 210,
     "bedTempC": 60,

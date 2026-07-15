@@ -17,6 +17,8 @@ import { useEffect, useState } from "react";
 import Select from "../ui/Select";
 import { getActiveWorkspace } from "../../lib/workspaces";
 import { useManufacturingProfile, type Scope } from "../../hooks/useManufacturingProfile";
+import { processSettings, type ProcessProfile } from "../../lib/manufacturingProfile";
+import { profileSettings, supportedProcesses } from "../../lib/materials";
 
 const INPUT =
   "h-8.5 w-24 rounded-lg border border-line-2 bg-surface-2 px-2.75 text-right text-body text-ink outline-none transition-colors duration-150 focus:border-accent focus:bg-surface focus:ring-2 focus:ring-accent-tint";
@@ -93,9 +95,11 @@ export default function ManufacturingProfile({ scope }: { scope: Scope }) {
 }
 
 function Panel({ scope }: { scope: Scope }) {
-  const { view, loading, error, setField, resetField } = useManufacturingProfile(scope);
+  const { view, loading, error, setField, resetField, setProcessSetting, resetProcessSetting } =
+    useManufacturingProfile(scope);
   // "Set here" means this layer carries the override (vs inheriting it).
-  const isSet = (section: string, key: string) => view.overrides?.[section]?.[key] !== undefined;
+  const isSet = (section: string, key: string) =>
+    (view.overrides?.[section] as Record<string, unknown> | undefined)?.[key] !== undefined;
 
   return (
     <div className="mx-auto max-w-160 py-6.5">
@@ -137,7 +141,9 @@ function Panel({ scope }: { scope: Scope }) {
               </div>
               {g.custom === "fit" && (
                 <FitRow
-                  value={String(view.resolved?.design?.fit ?? "normal")}
+                  value={String(
+                    (view.resolved?.design as Record<string, unknown> | undefined)?.fit ?? "normal",
+                  )}
                   set={isSet("design", "fit")}
                   onChange={(v) => setField("design", "fit", v)}
                   onReset={() => resetField("design", "fit")}
@@ -146,23 +152,48 @@ function Panel({ scope }: { scope: Scope }) {
               {g.custom === "method" && (
                 <SelectRow
                   label="Method"
-                  value={String(view.resolved?.process?.kind ?? "fdm")}
-                  options={["fdm", "sla", "sls", "cnc"]}
-                  set={isSet("process", "kind")}
-                  onChange={(v) => setField("process", "kind", v)}
-                  onReset={() => resetField("process", "kind")}
+                  value={String(view.resolved?.process?.id ?? "fdm")}
+                  options={supportedProcesses()}
+                  set={isSet("process", "id")}
+                  onChange={(v) => setField("process", "id", v)}
+                  onReset={() => resetField("process", "id")}
                 />
               )}
-              {g.nums?.map((n) => (
-                <NumRow
-                  key={`${n.section}.${n.key}`}
-                  num={n}
-                  value={view.resolved?.[n.section]?.[n.key]}
-                  set={isSet(n.section, n.key)}
-                  onCommit={(v) => setField(n.section, n.key, v)}
-                  onReset={() => resetField(n.section, n.key)}
-                />
-              ))}
+              {g.nums
+                ?.filter(
+                  (n) =>
+                    g.custom !== "method" ||
+                    profileSettings(String(view.resolved?.process?.id ?? ""))?.includes(n.key),
+                )
+                .map((n) => (
+                  <NumRow
+                    key={`${n.section}.${n.key}`}
+                    num={n}
+                    value={
+                      n.section === "process"
+                        ? processSettings(view.resolved.process as ProcessProfile)[n.key]
+                        : (
+                            view.resolved?.[n.section] as
+                              Record<string, number | string> | undefined
+                          )?.[n.key]
+                    }
+                    set={
+                      n.section === "process"
+                        ? view.overrides?.process?.settings?.[n.key] !== undefined
+                        : isSet(n.section, n.key)
+                    }
+                    onCommit={(v) =>
+                      n.section === "process"
+                        ? setProcessSetting(n.key, v)
+                        : setField(n.section, n.key, v)
+                    }
+                    onReset={() =>
+                      n.section === "process"
+                        ? resetProcessSetting(n.key)
+                        : resetField(n.section, n.key)
+                    }
+                  />
+                ))}
             </section>
           ))}
           <p className="mt-3 text-caption text-ink-3">

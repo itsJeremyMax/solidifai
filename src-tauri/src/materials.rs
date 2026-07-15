@@ -6,17 +6,48 @@
 //! library lives at `<workspace>/materials.json`. Invariants: the global library
 //! always has at least one material and a `default` that points at one that exists.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
 use crate::store;
+
+const CATALOG_JSON: &str = include_str!("../../engine/solidifai_engine/manufacturing_catalog.json");
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Catalog {
+    bases: BTreeMap<String, CatalogBase>,
+    processes: BTreeMap<String, CatalogProcess>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogBase {
+    default_process: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogProcess {
+    label: String,
+    profile_settings: Vec<String>,
+}
+
+fn catalog() -> Result<Catalog, String> {
+    serde_json::from_str(CATALOG_JSON).map_err(|e| format!("invalid manufacturing catalog: {e}"))
+}
+
+pub fn catalog_source() -> &'static str {
+    CATALOG_JSON
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Material {
     pub id: String,
     pub label: String,
+    #[serde(default = "legacy_base")]
     pub base: String,
     pub color_hex: String,
     pub finish: String,
@@ -39,10 +70,13 @@ impl Material {
     }
 
     /// The process for this material, deriving from `base` if unset.
-    pub fn process_resolved(&self) -> String {
-        self.process
-            .clone()
-            .unwrap_or_else(|| process_for_base(&self.base).to_string())
+    pub fn process_resolved(&self) -> Result<String, String> {
+        if let Some(process) = &self.process {
+            return process_exists(process)
+                .then(|| process.clone())
+                .ok_or_else(|| format!("unknown manufacturing process {process:?}"));
+        }
+        process_for_base(&self.base).ok_or_else(|| format!("unknown material base {:?}", self.base))
     }
 }
 
@@ -55,14 +89,52 @@ pub struct MaterialLibrary {
     pub materials: Vec<Material>,
 }
 
-pub fn process_for_base(base: &str) -> &'static str {
-    match base {
-        "aluminum" | "steel" | "stainless" | "brass" | "copper" => "cnc",
-        _ => "fdm",
-    }
+fn legacy_base() -> String {
+    "pla".into()
+}
+
+pub fn process_for_base(base: &str) -> Option<String> {
+    catalog()
+        .ok()?
+        .bases
+        .get(base)
+        .map(|entry| entry.default_process.clone())
+}
+
+pub fn process_exists(process: &str) -> bool {
+    catalog().is_ok_and(|catalog| catalog.processes.contains_key(process))
+}
+
+pub fn profile_settings(process: &str) -> Vec<String> {
+    catalog()
+        .ok()
+        .and_then(|mut catalog| catalog.processes.remove(process))
+        .map(|entry| entry.profile_settings)
+        .unwrap_or_default()
+}
+
+pub fn process_label(process: &str) -> Option<String> {
+    catalog()
+        .ok()?
+        .processes
+        .get(process)
+        .map(|entry| entry.label.clone())
 }
 
 impl MaterialLibrary {
+    fn validate(&self) -> Result<(), String> {
+        for material in &self.materials {
+            if process_for_base(&material.base).is_none() {
+                return Err(format!("unknown material base {:?}", material.base));
+            }
+            if let Some(process) = &material.process {
+                if !process_exists(process) {
+                    return Err(format!("unknown manufacturing process {process:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
     /// Remove a material by id. Rejects deleting the last material or the current
     /// default (the caller must reassign the default first).
     pub fn remove(&mut self, id: &str) -> Result<(), String> {
@@ -175,6 +247,7 @@ pub fn load_global(config_dir: &Path) -> MaterialLibrary {
 pub fn save_global(config_dir: &Path, lib: &MaterialLibrary) -> Result<(), String> {
     let mut lib = lib.clone();
     lib.enforce_invariant();
+    lib.validate()?;
     let value = serde_json::to_value(&lib).map_err(|e| format!("serialize: {e}"))?;
     store::write_json_atomic(config_dir, MATERIALS_FILE, &value)
 }
@@ -190,6 +263,7 @@ pub fn load_workspace(workspace_root: &Path) -> MaterialLibrary {
 
 /// Persist a workspace library to `<workspace>/materials.json` (atomic write).
 pub fn save_workspace(workspace_root: &Path, lib: &MaterialLibrary) -> Result<(), String> {
+    lib.validate()?;
     let value = serde_json::to_value(lib).map_err(|e| format!("serialize: {e}"))?;
     store::write_json_atomic(workspace_root, MATERIALS_FILE, &value)
 }
@@ -217,9 +291,43 @@ mod tests {
 
     #[test]
     fn process_derived_when_missing() {
-        assert_eq!(process_for_base("pla"), "fdm");
-        assert_eq!(process_for_base("aluminum"), "cnc");
-        assert_eq!(process_for_base("mystery"), "fdm");
+        assert_eq!(process_for_base("pla"), Some("fdm".into()));
+        assert_eq!(process_for_base("aluminum"), Some("cnc".into()));
+        assert_eq!(process_for_base("mystery"), None);
+    }
+
+    #[test]
+    fn explicit_unknown_process_is_rejected() {
+        let mut mat = Material::stub("mystery", "pla");
+        mat.process = Some("laser".into());
+        assert!(mat.process_resolved().is_err());
+    }
+
+    #[test]
+    fn catalog_loader_reads_the_shared_source() {
+        assert!(catalog_source().contains("\"version\": 1"));
+        assert_eq!(process_for_base("aluminum"), Some("cnc".into()));
+        assert_eq!(profile_settings("fdm").len(), 4);
+    }
+
+    #[test]
+    fn save_rejects_unknown_explicit_material_values() {
+        let dir =
+            std::env::temp_dir().join(format!("solidifai-invalid-mat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let invalid = MaterialLibrary {
+            default: Some("bad".into()),
+            materials: vec![Material {
+                id: "bad".into(),
+                label: "Bad".into(),
+                base: "moon-dust".into(),
+                color_hex: "#000000".into(),
+                finish: "matte".into(),
+                process: Some("laser".into()),
+            }],
+        };
+        assert!(save_global(&dir, &invalid).is_err());
+        assert!(!dir.join("materials.json").exists());
     }
 
     #[test]

@@ -16,6 +16,15 @@ from solidifai_engine.exports import (
 from solidifai_engine.session import Session
 
 
+def test_export_catalog_is_the_only_schema_and_quality_source():
+    from solidifai_engine import exports
+
+    source = Path(exports.__file__).read_text(encoding="utf-8")
+    assert "def _f(" not in source
+    assert "_GLTF_FIELDS =" not in source
+    assert 'QUALITY = {\n    "stl":' not in source
+
+
 def setup_function():
     reset_registry()
 
@@ -103,6 +112,12 @@ def test_supported_formats():
     assert set(SUPPORTED) == {"step", "stl", "glb", "gltf", "brep", "3mf"}
 
 
+def test_canonical_export_catalog_exposes_every_format_and_defaults():
+    catalog = options_schema()
+    assert set(catalog) == set(SUPPORTED)
+    assert catalog["gltf"]["linear_deflection"]["default"] == 0.001
+
+
 def test_options_schema_step_fields():
     fields = options_schema("step")
     assert set(fields) == {"unit", "precision_mode", "write_pcurves", "timestamp"}
@@ -120,6 +135,11 @@ def test_validate_fills_defaults():
 def test_validate_rejects_unknown_key():
     with pytest.raises(ValueError, match="Unknown option 'foo' for STL"):
         validate_options("stl", {"foo": 1})
+
+
+def test_catalog_preserves_glb_validation_label():
+    with pytest.raises(ValueError, match="Unknown option 'foo' for GLB"):
+        validate_options("glb", {"foo": 1})
 
 
 def test_validate_rejects_bad_unit():

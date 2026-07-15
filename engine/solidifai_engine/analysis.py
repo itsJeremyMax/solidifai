@@ -141,7 +141,12 @@ class Analysis:
                 "metrics": rep.get("metrics", {}),
             }
             if not rep["evaluated"]:
-                entry["note"] = f"DFM rules for '{proc}' are not implemented yet (FDM only in v1)."
+                entry["reason"] = rep["reason"]
+                entry["note"] = (
+                    "DFM process could not be resolved."
+                    if proc is None
+                    else f"DFM rules for '{proc}' are not implemented yet (FDM only in v1)."
+                )
             for v in rep["violations"]:
                 summary[v["severity"]] = summary.get(v["severity"], 0) + 1
             mw = (rep.get("metrics") or {}).get("minWallMm")
@@ -158,20 +163,21 @@ class Analysis:
             "summary": summary,
         }
 
-    def _infer_process(self, material_name) -> str:
-        """Manufacturing process for a part's material name (default fdm)."""
+    def _infer_process(self, material_name) -> str | None:
+        """Material explicit process, then base default, then workspace profile."""
         try:
             mat = _materials.RESOLVER.resolve(material_name)
-            return _materials.process_for(mat.name)
-        except ValueError:  # unknown material name -> default to fdm
-            return "fdm"
+            return mat.process or _materials.process_for(mat.base)
+        except ValueError:
+            if material_name is not None:
+                return None
+        from solidifai_engine import manufacturing_profile
+
+        return manufacturing_profile.resolve(self.s.root or "").get("process", {}).get("id")
 
     def _density_for(self, material_name) -> float:
-        """Density (g/cm^3) for a part's material name; defaults to 1.0."""
-        try:
-            return float(_materials.RESOLVER.resolve(material_name).density)
-        except ValueError:  # unknown material name -> neutral density
-            return 1.0
+        """Density (g/cm^3) for a resolved material; invalid records must fail."""
+        return float(_materials.RESOLVER.resolve(material_name).density)
 
     # -- validation (measure / stress / tolerance) --------------------------
 

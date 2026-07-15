@@ -14,37 +14,16 @@
  */
 import { Check, ChevronDown, Pin, Trash2, X } from "lucide-react";
 import type { Material } from "../../lib/materials";
-import { processForBase } from "../../lib/materials";
+import { CATALOG, processForBase } from "../../lib/materials";
 import { ACCENT_CTA } from "../../lib/styles";
 import { MAT_COPY } from "./copy";
 
 const ICON_STROKE = 1.7;
 
-/** Built-in base substances with display labels (mirrors engine BUILTIN order). */
-const BASES: { id: string; label: string }[] = [
-  { id: "pla", label: "PLA, polylactic acid" },
-  { id: "abs", label: "ABS" },
-  { id: "petg", label: "PETG" },
-  { id: "nylon", label: "Nylon" },
-  { id: "aluminum", label: "Aluminum" },
-  { id: "steel", label: "Steel" },
-  { id: "stainless", label: "Stainless steel" },
-  { id: "brass", label: "Brass" },
-  { id: "copper", label: "Copper" },
-];
-
-/** Base -> density (g/cm³); mirrors engine BUILTIN. */
-const DENSITY: Record<string, number> = {
-  pla: 1.24,
-  abs: 1.04,
-  petg: 1.27,
-  nylon: 1.14,
-  aluminum: 2.7,
-  steel: 7.85,
-  stainless: 8.0,
-  brass: 8.5,
-  copper: 8.96,
-};
+const BASES = Object.entries(CATALOG.bases).map(([id, entry]) => ({ id, label: entry.label }));
+const DENSITY = Object.fromEntries(
+  Object.entries(CATALOG.bases).map(([id, entry]) => [id, entry.density]),
+);
 
 const FINISHES: Material["finish"][] = ["matte", "satin", "gloss", "metallic"];
 const PALETTE = [
@@ -115,7 +94,9 @@ export default function MaterialEditor({
   deleteBlockedReason,
 }: MaterialEditorProps) {
   const process = processForBase(draft.base);
-  const processLabel = MAT_COPY.processLabel[process] ?? process.toUpperCase();
+  const processLabel = process
+    ? (MAT_COPY.processLabel[process] ?? process.toUpperCase())
+    : "Unknown process";
   const density = DENSITY[draft.base];
 
   // The canonical id: locked to the saved id once it exists; live-derived from

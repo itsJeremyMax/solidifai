@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "provenance": {"source": "Solidifai manufacturing catalog", "verifiedAt": "2026-07-13"},
+  "bases": {
+    "pla": {"defaultProcess": "fdm", "label": "PLA, polylactic acid", "density": 1.24}, "abs": {"defaultProcess": "fdm", "label": "ABS", "density": 1.04},
+    "petg": {"defaultProcess": "fdm", "label": "PETG", "density": 1.27}, "nylon": {"defaultProcess": "fdm", "label": "Nylon", "density": 1.14},
+    "aluminum": {"defaultProcess": "cnc", "label": "Aluminum", "density": 2.70}, "steel": {"defaultProcess": "cnc", "label": "Steel", "density": 7.85},
+    "stainless": {"defaultProcess": "cnc", "label": "Stainless steel", "density": 8.00}, "brass": {"defaultProcess": "cnc", "label": "Brass", "density": 8.50},
+    "copper": {"defaultProcess": "cnc", "label": "Copper", "density": 8.96}
+  },
+  "processes": {
+    "fdm": {"label": "FDM", "rulePack": "fdm-v1", "profileSettings": ["nozzleMm", "layerMm", "overhangDeg", "infillPct"]},
+    "sla": {"label": "SLA", "rulePack": null, "profileSettings": []},
+    "sls": {"label": "SLS", "rulePack": null, "profileSettings": []},
+    "cnc": {"label": "CNC", "rulePack": null, "profileSettings": []},
+    "injection": {"label": "Injection molding", "rulePack": null, "profileSettings": []}
+  }
+}

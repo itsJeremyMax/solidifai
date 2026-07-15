@@ -27,126 +27,70 @@ _REFERENCE_ASSET = Path(__file__).with_name("reference_dims.json")
 # Profile fit vocabulary -> ISO 273 hole series.
 FIT_TO_SERIES = {"tight": "close", "normal": "medium", "loose": "coarse"}
 
-# ISO 273 clearance holes (close / medium / coarse), mm.
-# Source: ISO 273 tables, e.g. https://amesweb.info/Screws/Clearance-Holes-Metric.aspx
-ISO273_CLEARANCE: dict[str, dict[str, float]] = {
-    "M2": {"close": 2.2, "medium": 2.4, "coarse": 2.6},
-    "M2.5": {"close": 2.7, "medium": 2.9, "coarse": 3.1},
-    "M3": {"close": 3.2, "medium": 3.4, "coarse": 3.6},
-    "M4": {"close": 4.3, "medium": 4.5, "coarse": 4.8},
-    "M5": {"close": 5.3, "medium": 5.5, "coarse": 5.8},
-    "M6": {"close": 6.4, "medium": 6.6, "coarse": 7.0},
-    "M8": {"close": 8.4, "medium": 9.0, "coarse": 10.0},
-}
-
-# Coarse-pitch tap drill (= d - pitch), mm. Standard tapping charts; in printed
-# plastic this is also the thread-forming pilot for a machine screw.
-TAP_DRILL: dict[str, float] = {
-    "M2": 1.6,  # pitch 0.4
-    "M2.5": 2.05,  # pitch 0.45
-    "M3": 2.5,  # pitch 0.5
-    "M4": 3.3,  # pitch 0.7
-    "M5": 4.2,  # pitch 0.8
-    "M6": 5.0,  # pitch 1.0
-    "M8": 6.8,  # pitch 1.25
-}
-
-# ISO 261 coarse thread pitch P (mm) per nominal size. The pitch is what a modeled
-# helical thread advances per turn; the tap drill above is just d - P, but pitch is
-# its own datum so keep it explicit rather than deriving it. Source: ISO 261 general-
-# purpose metric coarse series, e.g. https://www.fasteners.eu/tech-info/ISO/261/.
-ISO261_COARSE_PITCH: dict[str, float] = {
-    "M2": 0.4,
-    "M2.5": 0.45,
-    "M3": 0.5,
-    "M4": 0.7,
-    "M5": 0.8,
-    "M6": 1.0,
-    "M8": 1.25,
-}
-
-# Socket head cap screws, ISO 4762: head dia dk(max), head height k(max),
-# hex socket s(nom). Source: fasteners.eu ISO 4762 table.
-ISO4762_CAP: dict[str, dict[str, float]] = {
-    "M2": {"head_dia": 3.8, "head_height": 2.0, "socket": 1.5},
-    "M2.5": {"head_dia": 4.5, "head_height": 2.5, "socket": 2.0},
-    "M3": {"head_dia": 5.5, "head_height": 3.0, "socket": 2.5},
-    "M4": {"head_dia": 7.0, "head_height": 4.0, "socket": 3.0},
-    "M5": {"head_dia": 8.5, "head_height": 5.0, "socket": 4.0},
-    "M6": {"head_dia": 10.0, "head_height": 6.0, "socket": 5.0},
-    "M8": {"head_dia": 13.0, "head_height": 8.0, "socket": 6.0},
-}
-
-# Button head screws, ISO 7380-1 (standard starts at M3).
-# Source: https://www.fasteners.eu/standards/iso/7380/
-ISO7380_BUTTON: dict[str, dict[str, float]] = {
-    "M3": {"head_dia": 5.7, "head_height": 1.65, "socket": 2.0},
-    "M4": {"head_dia": 7.6, "head_height": 2.2, "socket": 2.5},
-    "M5": {"head_dia": 9.5, "head_height": 2.75, "socket": 3.0},
-    "M6": {"head_dia": 10.5, "head_height": 3.3, "socket": 4.0},
-    "M8": {"head_dia": 14.0, "head_height": 4.4, "socket": 5.0},
-}
-
-# Countersunk socket screws, ISO 10642, 90 deg head (standard starts at M3).
-# head_dia is dk actual (max). Source: https://www.fasteners.eu/standards/ISO/10642/
-ISO10642_CSK: dict[str, dict[str, float]] = {
-    "M3": {"head_dia": 6.0, "head_height": 1.7, "socket": 2.0},
-    "M4": {"head_dia": 8.0, "head_height": 2.3, "socket": 2.5},
-    "M5": {"head_dia": 10.0, "head_height": 2.8, "socket": 3.0},
-    "M6": {"head_dia": 12.0, "head_height": 3.3, "socket": 4.0},
-    "M8": {"head_dia": 16.0, "head_height": 4.4, "socket": 5.0},
-}
-
-# Hex nuts, ISO 4032 style 1: width across flats s, thickness m(max).
-# Source: https://www.fasteners.eu/standards/ISO/4032/ (NOTE: ISO 4032, not the
-# thinner DIN 934 -- M5/M6/M8 thicknesses are 4.7/5.2/6.8, not 4.0/5.0/6.5).
-ISO4032_NUT: dict[str, dict[str, float]] = {
-    "M2": {"width_af": 4.0, "thickness": 1.6},
-    "M2.5": {"width_af": 5.0, "thickness": 2.0},
-    "M3": {"width_af": 5.5, "thickness": 2.4},
-    "M4": {"width_af": 7.0, "thickness": 3.2},
-    "M5": {"width_af": 8.0, "thickness": 4.7},
-    "M6": {"width_af": 10.0, "thickness": 5.2},
-    "M8": {"width_af": 13.0, "thickness": 6.8},
-}
-
-# Plain washers, ISO 7089 normal series: od, id, thickness.
-ISO7089_WASHER: dict[str, dict[str, float]] = {
-    "M2": {"od": 5.0, "id": 2.2, "thickness": 0.3},
-    "M2.5": {"od": 6.0, "id": 2.7, "thickness": 0.5},
-    "M3": {"od": 7.0, "id": 3.2, "thickness": 0.5},
-    "M4": {"od": 9.0, "id": 4.3, "thickness": 0.8},
-    "M5": {"od": 10.0, "id": 5.3, "thickness": 1.0},
-    "M6": {"od": 12.0, "id": 6.4, "thickness": 1.6},
-    "M8": {"od": 16.0, "id": 8.4, "thickness": 1.6},
-}
-
-# Brass heat-set inserts, standard length, Ruthex-class (CNC Kitchen inserts use
-# the same install holes). hole_dia per the Ruthex HSS drill set (3.2/4.0/4.0/
-# 5.6/6.4 for M2..M5); length per product code (RX-M2x4, RX-M2.5x5.7, RX-M3x5.7,
-# RX-M4x8.1, RX-M5x9.5). min_hole_depth = length + 1.0 melt-flow relief.
-# Source: ruthex.de product pages + drill-set page.
-HEAT_SET_INSERTS: dict[str, dict[str, float]] = {
-    "M2": {"hole_dia": 3.2, "length": 4.0, "min_hole_depth": 5.0},
-    "M2.5": {"hole_dia": 4.0, "length": 5.7, "min_hole_depth": 6.7},
-    "M3": {"hole_dia": 4.0, "length": 5.7, "min_hole_depth": 6.7},
-    "M4": {"hole_dia": 5.6, "length": 8.1, "min_hole_depth": 9.1},
-    "M5": {"hole_dia": 6.4, "length": 9.5, "min_hole_depth": 10.5},
-}
-
-# Deep-groove ball bearings: bore, od, width. Source: any bearing catalog
-# (SKF/NSK designations are dimensionally identical).
-BEARINGS: dict[str, dict[str, float]] = {
-    "608": {"bore": 8.0, "od": 22.0, "width": 7.0},
-    "625": {"bore": 5.0, "od": 16.0, "width": 5.0},
-    "6201": {"bore": 12.0, "od": 32.0, "width": 10.0},
-}
-
+_CATALOG_ASSET = Path(__file__).with_name("standards_catalog.json")
+_PROVIDER_FILE = "standards-provider.json"
+_catalog = json.loads(_CATALOG_ASSET.read_text(encoding="utf-8"))["standards"]
+ISO273_CLEARANCE = _catalog["iso-273-clearance"]["values"]
+TAP_DRILL = _catalog["tap-drill-coarse"]["values"]
+ISO261_COARSE_PITCH = _catalog["iso-261-pitch"]["values"]
+ISO4762_CAP = _catalog["iso-4762-cap"]["values"]
+ISO7380_BUTTON = _catalog["iso-7380-button"]["values"]
+ISO10642_CSK = _catalog["iso-10642-countersunk"]["values"]
+ISO4032_NUT = _catalog["iso-4032-nut"]["values"]
+ISO7089_WASHER = _catalog["iso-7089-washer"]["values"]
+HEAT_SET_INSERTS = _catalog["ruthex-insert"]["values"]
+BEARINGS = _catalog["bearing-deep-groove"]["values"]
 _HEAD_TABLES = {
-    "cap": (ISO4762_CAP, "ISO 4762"),
-    "button": (ISO7380_BUTTON, "ISO 7380-1"),
-    "countersunk": (ISO10642_CSK, "ISO 10642"),
+    "cap": ("iso-4762-cap", "ISO 4762"),
+    "button": ("iso-7380-button", "ISO 7380-1"),
+    "countersunk": ("iso-10642-countersunk", "ISO 10642"),
 }
+
+
+def _standard(key: str, workspace_root: str | None = None, required: tuple[str, ...] = ()) -> dict:
+    entry = _catalog[key]
+    from solidifai_engine import paths
+
+    provider_paths = [Path(paths.app_config_dir()) / _PROVIDER_FILE]
+    if workspace_root:
+        provider_paths.append(Path(workspace_root) / _PROVIDER_FILE)
+    for path in provider_paths:
+        if path.exists():
+            try:
+                candidate = (
+                    json.loads(path.read_text(encoding="utf-8")).get("standards", {}).get(key)
+                )
+            except (OSError, ValueError):
+                candidate = None
+            if candidate is not None:
+                source, values = candidate.get("source"), candidate.get("values")
+                valid_source = isinstance(source, dict) and set(source) == {
+                    "sourceTitle",
+                    "revision",
+                    "table",
+                    "units",
+                    "verifiedDate",
+                }
+                valid_values = isinstance(values, dict) and all(
+                    (
+                        isinstance(row, dict)
+                        and all(isinstance(row.get(field), (int, float)) for field in required)
+                    )
+                    if required
+                    else isinstance(row, (int, float))
+                    for row in values.values()
+                )
+                if not valid_source or source.get("units") != "mm" or not valid_values:
+                    dimensions = ", ".join(required)
+                    raise ValueError(
+                        f"invalid provider standard {key!r}: required dimensions are {dimensions}"
+                    )
+                entry = {**entry, **candidate, "values": {**entry["values"], **values}}
+    return entry
+
+
+def _provenance(entry: dict) -> dict:
+    return dict(entry["source"])
 
 
 def sizes() -> list[str]:
@@ -164,18 +108,22 @@ def _thread_dia(size: str) -> float:
     return float(size[1:])
 
 
-def screw(size: str, head: str = "cap") -> dict:
+def screw(size: str, head: str = "cap", *, workspace_root: str | None = None) -> dict:
     """Head + thread dims for a metric screw. head = cap | button | countersunk."""
     _check_size(size)
     if head not in _HEAD_TABLES:
         raise ValueError(f"unknown head {head!r}; expected cap, button, or countersunk")
-    table, standard = _HEAD_TABLES[head]
+    key, standard = _HEAD_TABLES[head]
+    entry = _standard(key, workspace_root, ("head_dia", "head_height", "socket"))
+    table = entry["values"]
     if size not in table:
         raise ValueError(
             f"{standard} has no {size} (the standard starts at {min(table, key=_thread_dia)})"
         )
     out: dict[str, Any] = dict(table[size])
-    out.update(thread_dia=_thread_dia(size), standard=standard, head=head)
+    out.update(
+        thread_dia=_thread_dia(size), standard=standard, head=head, provenance=_provenance(entry)
+    )
     if head == "countersunk":
         out["angle_deg"] = 90
     return out
@@ -213,46 +161,60 @@ def clearance_hole(
     loose->coarse, per ISO 273)."""
     _check_size(size)
     _, series = _resolve_fit(fit, workspace_root)
-    return ISO273_CLEARANCE[size][series]
+    entry = _standard("iso-273-clearance", workspace_root, ("close", "medium", "coarse"))
+    return entry["values"][size][series]
 
 
-def pilot_hole(size: str) -> float:
+def pilot_hole(size: str, *, workspace_root: str | None = None) -> float:
     """Pilot/tap-drill diameter (mm): the coarse-pitch tapping drill, also the
     thread-forming pilot for a machine screw driven into printed plastic."""
     _check_size(size)
-    return TAP_DRILL[size]
+    return _standard("tap-drill-coarse", workspace_root)["values"][size]
 
 
-def thread_pitch(size: str) -> float:
+def thread_pitch(size: str, *, workspace_root: str | None = None) -> float:
     """Coarse thread pitch (mm) for a metric size, per ISO 261. This is the axial
     advance per turn used by a modeled helical thread (see hardware.external_thread)."""
     _check_size(size)
-    return ISO261_COARSE_PITCH[size]
+    return _standard("iso-261-pitch", workspace_root)["values"][size]
 
 
-def nut(size: str) -> dict:
+def nut(size: str, *, workspace_root: str | None = None) -> dict:
     _check_size(size)
-    return dict(ISO4032_NUT[size], thread_dia=_thread_dia(size), standard="ISO 4032")
+    entry = _standard("iso-4032-nut", workspace_root, ("width_af", "thickness"))
+    return dict(
+        entry["values"][size],
+        thread_dia=_thread_dia(size),
+        standard="ISO 4032",
+        provenance=_provenance(entry),
+    )
 
 
-def washer(size: str) -> dict:
+def washer(size: str, *, workspace_root: str | None = None) -> dict:
     _check_size(size)
-    return dict(ISO7089_WASHER[size], standard="ISO 7089")
+    entry = _standard("iso-7089-washer", workspace_root, ("od", "id", "thickness"))
+    return dict(entry["values"][size], standard="ISO 7089", provenance=_provenance(entry))
 
 
-def insert(size: str) -> dict:
+def insert(size: str, *, workspace_root: str | None = None) -> dict:
     """Heat-set insert install dims (standard-length brass, Ruthex/CNC Kitchen class)."""
     if size not in HEAT_SET_INSERTS:
         raise ValueError(
             f"no heat-set insert data for {size!r}; supported: {', '.join(HEAT_SET_INSERTS)}"
         )
-    return dict(HEAT_SET_INSERTS[size], standard="Ruthex-class brass insert")
+    entry = _standard("ruthex-insert", workspace_root, ("hole_dia", "length", "min_hole_depth"))
+    return dict(
+        entry["values"][size],
+        standard="Ruthex-class brass insert",
+        provenance=_provenance(entry),
+    )
 
 
-def bearing(code: str) -> dict:
+def bearing(code: str, *, workspace_root: str | None = None) -> dict:
     if code not in BEARINGS:
         raise ValueError(f"unknown bearing {code!r}; supported: {', '.join(BEARINGS)}")
-    return dict(BEARINGS[code], designation=code)
+    entry = _standard("bearing-deep-groove", workspace_root, ("bore", "od", "width"))
+    return dict(entry["values"][code], designation=code, provenance=_provenance(entry))
 
 
 # -- lookup tools (the MCP surface) -------------------------------------------
@@ -291,13 +253,16 @@ def lookup_standard(query: str, workspace_root: str | None = None) -> dict:
 
     code = next((c for c in BEARINGS if re.search(rf"\b{c}\b", q)), None)
     if code is not None:
-        out["bearing"] = bearing(code)
+        out["bearing"] = bearing(code, workspace_root=workspace_root)
         return out
 
     m = _SIZE_RE.search(q)
     if m is None:
         return {
             "query": query,
+            "status": "unknown",
+            "action": "request_dimensions",
+            "requiredDimensions": ["designation", "bore", "od", "width"],
             "error": "no metric size or bearing designation recognized",
             "supported": {"sizes": sizes(), "bearings": list(BEARINGS)},
         }
@@ -305,6 +270,9 @@ def lookup_standard(query: str, workspace_root: str | None = None) -> dict:
     if size not in ISO273_CLEARANCE:
         return {
             "query": query,
+            "status": "unknown",
+            "action": "request_dimensions",
+            "requiredDimensions": ["thread_dia", "head_dia", "head_height", "socket"],
             "error": f"unknown size {size!r}",
             "supported": {"sizes": sizes(), "bearings": list(BEARINGS)},
         }
@@ -318,27 +286,29 @@ def lookup_standard(query: str, workspace_root: str | None = None) -> dict:
         heads = {}
         for head in ("cap", "button", "countersunk"):
             try:
-                heads[head] = screw(size, head=head)
+                heads[head] = screw(size, head=head, workspace_root=workspace_root)
             except ValueError as exc:
                 heads[head] = {"unavailable": str(exc)}
         out["screw_heads"] = heads
     if "clearance_hole" in asked:
         fit_name, series = _resolve_fit(None, workspace_root)
+        clearance = _standard("iso-273-clearance", workspace_root, ("close", "medium", "coarse"))
         out["clearance_hole"] = {
             "fit": fit_name,
-            "dia": ISO273_CLEARANCE[size][series],
-            "series": dict(ISO273_CLEARANCE[size]),
+            "dia": clearance["values"][size][series],
+            "series": dict(clearance["values"][size]),
             "note": "fit resolved from the manufacturing profile; ISO 273 series",
+            "provenance": _provenance(clearance),
         }
     if "pilot_hole" in asked:
-        out["pilot_hole"] = pilot_hole(size)
+        out["pilot_hole"] = pilot_hole(size, workspace_root=workspace_root)
     if "nut" in asked:
-        out["nut"] = nut(size)
+        out["nut"] = nut(size, workspace_root=workspace_root)
     if "washer" in asked:
-        out["washer"] = washer(size)
+        out["washer"] = washer(size, workspace_root=workspace_root)
     if "heat_set_insert" in asked:
         out["heat_set_insert"] = (
-            insert(size)
+            insert(size, workspace_root=workspace_root)
             if size in HEAT_SET_INSERTS
             else {"unavailable": f"insert data covers {', '.join(HEAT_SET_INSERTS)}"}
         )
