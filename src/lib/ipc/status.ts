@@ -25,6 +25,7 @@ export interface EngineStatusEvent {
 /** Payload of the `model-updated` event. */
 export interface ModelUpdatedEvent {
   buildId: number;
+  publicationId?: string;
 }
 
 /**

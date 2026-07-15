@@ -94,7 +94,7 @@ function ExportMenu() {
 }
 
 /**
- * Import button — brings an existing STEP/BREP/STL in as a ghosted reference
+ * Import button — brings an engine-supported file in as a ghosted reference
  * fixture (you fit your design around it). Mirrors the Export flow: a native file
  * picker via the shared {@link useImport}, with a transient toast under the bar.
  */
@@ -107,7 +107,7 @@ function ImportButton() {
         type="button"
         onClick={() => void pickAndImport()}
         disabled={importing}
-        title="Import a STEP, BREP, or STL as a reference to fit around"
+        title="Import a supported reference file to fit around"
         className="inline-flex h-8 items-center gap-1.75 rounded-lg border border-line-2 bg-surface px-3 text-body font-medium text-ink transition-colors duration-150 hover:border-line-3 disabled:opacity-60"
       >
         {importing ? (

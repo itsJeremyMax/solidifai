@@ -5,7 +5,7 @@ import { engineCall, invoke } from "./core";
 
 /**
  * Absolute path of the engine workspace directory (where the PTY shell runs and
- * the engine writes `model.json` / `model.glb`).
+ * the engine writes immutable model generations).
  */
 export async function getWorkspaceDir(): Promise<string> {
   return invoke<string>("get_workspace_dir");
@@ -42,30 +42,17 @@ export async function workspaceHasModel(wsPath: string): Promise<boolean> {
 }
 
 /**
- * Read the `model.json` render manifest as a raw string, or `null` if no build
- * has produced one yet. Feed the result to `parseModelInfo`.
- *
- * Pass `wsId` (the workspace root path) to read that workspace's artifacts
- * directly — prevents a wrong-workspace read when the backend focus hasn't
- * caught up yet. Omit to fall back to the focused workspace.
+ * One immutable manifest + GLB publication. `publicationId` is absent only when
+ * reading root compatibility mirrors from an engine predating current.json.
  */
-export async function readModelJson(wsId?: string): Promise<string | null> {
-  return invoke<string | null>("read_model_json", { wsId });
+export interface ModelSnapshot {
+  publicationId: string | null;
+  manifest: string;
+  glb: number[];
 }
 
-/**
- * Read the `model.glb` bytes. The Rust side returns a `tauri::ipc::Response`,
- * so the bytes arrive as an `ArrayBuffer` (not a JSON `number[]`); we wrap it in a
- * `Uint8Array` view — O(1), no per-byte copy — for the GLTF loader. This avoids
- * serializing/deserializing millions of array elements per build on a large mesh.
- *
- * Pass `wsId` to read a specific workspace's GLB; omit to use the focused one.
- *
- * Throws (rejects) if no GLB exists yet — callers should guard with try/catch.
- */
-export async function readModelGlb(wsId?: string): Promise<Uint8Array> {
-  const buf = await invoke<ArrayBuffer>("read_model_glb", { wsId });
-  return new Uint8Array(buf);
+export async function readModelSnapshot(wsId?: string): Promise<ModelSnapshot | null> {
+  return invoke<ModelSnapshot | null>("read_model_snapshot", { wsId });
 }
 
 /** Payload of the `workspace-meta-updated` event. */

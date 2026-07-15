@@ -5,7 +5,7 @@ import { engineCall, invoke } from "./core";
 /**
  * Push new parameter values to the engine. The engine rebuilds the model, writes
  * fresh artifacts, and fires `model-updated`; the updated `model.params.values`
- * (flowing back through {@link readModelJson}) become the source of truth.
+ * (flowing back through `readModelSnapshot`) become the source of truth.
  *
  * @param values Partial map of `{ [paramKey]: value }` to apply.
  * @returns The raw engine response string, or `null` if the engine isn't ready.
@@ -226,11 +226,34 @@ export async function engineCheckMotion(opts: {
 /* ───────────────────────────── imports ────────────────────────────────── */
 
 /**
- * Open a native file picker for a CAD/mesh file to import (STEP/STP/BREP/STL).
+ * Open a native file picker for CAD/mesh files. With no explicit extensions this
+ * asks the engine first, then leaves Rust to use its legacy filter on startup.
  * Returns the absolute path, or `null` if the user cancelled / it's unavailable.
  */
-export async function pickCadFile(): Promise<string | null> {
-  return engineCall<string>("pick_cad_file");
+export async function pickCadFile(extensions?: string[]): Promise<string | null> {
+  let filterExtensions = extensions;
+  if (filterExtensions === undefined) {
+    const capabilities = await engineGetImportCapabilities();
+    try {
+      const formats = JSON.parse(capabilities ?? "{}").formats as Record<
+        string,
+        { extensions?: unknown }
+      >;
+      filterExtensions = Object.values(formats).flatMap(({ extensions }) =>
+        Array.isArray(extensions)
+          ? extensions.filter((extension): extension is string => typeof extension === "string")
+          : [],
+      );
+    } catch {
+      filterExtensions = undefined;
+    }
+  }
+  return engineCall<string>("pick_cad_file", { extensions: filterExtensions ?? null });
+}
+
+/** Read package-truthful import capabilities, or null while the engine starts. */
+export async function engineGetImportCapabilities(): Promise<string | null> {
+  return engineCall<string>("engine_get_import_capabilities");
 }
 
 /**
@@ -240,8 +263,17 @@ export async function pickCadFile(): Promise<string | null> {
  * viewport refreshes via {@link onModelUpdated}. Re-throws on failure so the
  * caller can surface an inline error.
  */
-export async function engineImportReference(path: string, name?: string): Promise<string> {
-  return invoke<string>("engine_import_reference", { path, name: name ?? null });
+export async function engineImportReference(
+  path: string,
+  name?: string,
+  required = false,
+): Promise<string> {
+  return invoke<string>("engine_import_reference", { path, name: name ?? null, required });
+}
+
+/** Stage a package-supported CAD/mesh file for explicit use in model.py. */
+export async function engineStageImport(path: string): Promise<string> {
+  return invoke<string>("engine_stage_import", { path });
 }
 
 /** Remove a reference import by id (from the manifest) and rebuild. */

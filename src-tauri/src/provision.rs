@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -252,28 +254,117 @@ pub fn workspace_has_model(path: String) -> bool {
     std::path::Path::new(&path).join("model.py").exists()
 }
 
-/// Contents of `<ws>/.solidifai/artifacts/model.json`, or `None` if it does not
-/// exist yet (no successful build). Read errors are reported as `None` as well,
-/// since a transient mid-write read is not a hard failure for the UI.
-///
-/// `ws_id`: when `Some`, resolve the artifacts dir from that workspace root
-/// directly (so a tab reads its own model regardless of backend focus timing);
-/// when `None`, fall back to the focused workspace via `state.paths()`.
-///
-/// `async` + `spawn_blocking`: this runs on every `model-updated` event, so the
-/// file read is kept off the main thread (which Tauri uses for sync commands).
-///
-/// Returns `Result` (not bare `Option`) because Tauri requires async commands with
-/// reference inputs (here `State<'_, _>`) to return a `Result`; there is no real
-/// error path (a missing/unreadable file is reported as `Ok(None)`), and Tauri
-/// unwraps `Ok` on the JS side so the frontend still sees `string | null`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentPublication {
+    publication_id: String,
+    model_json: String,
+    model_glb: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationManifest {
+    #[serde(default)]
+    json_sha256: Option<String>,
+    #[serde(default)]
+    glb_sha256: Option<String>,
+}
+
+/// A manifest and GLB read from one immutable publication. `publication_id` is
+/// absent only for the root-file fallback used by engines predating current.json.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSnapshot {
+    pub publication_id: Option<String>,
+    pub manifest: String,
+    pub glb: Vec<u8>,
+}
+
+fn is_file_name(value: &str) -> bool {
+    let path = Path::new(value);
+    !value.is_empty() && path.file_name().and_then(|name| name.to_str()) == Some(value)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Resolve current.json exactly once, then read its matching immutable pair. A
+/// missing pointer means this is an old engine, so root compatibility mirrors are
+/// the only valid source. Any malformed pointer or generation is an error instead
+/// of silently mixing it with root files.
+fn read_model_snapshot_from_artifacts(artifacts: &Path) -> Result<Option<ModelSnapshot>, String> {
+    let current = artifacts.join("current.json");
+    match fs::read_to_string(&current) {
+        Ok(pointer_text) => {
+            let pointer: CurrentPublication = serde_json::from_str(&pointer_text)
+                .map_err(|e| format!("could not parse {}: {e}", current.display()))?;
+            if !is_file_name(&pointer.publication_id)
+                || !is_file_name(&pointer.model_json)
+                || !is_file_name(&pointer.model_glb)
+            {
+                return Err("current.json has an unsafe generation path".to_string());
+            }
+            let generation = artifacts.join("generations").join(&pointer.publication_id);
+            let manifest_path = generation.join(&pointer.model_json);
+            let glb_path = generation.join(&pointer.model_glb);
+            let manifest = fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
+            let glb = fs::read(&glb_path)
+                .map_err(|e| format!("could not read {}: {e}", glb_path.display()))?;
+            if let Ok(generation_manifest) = fs::read_to_string(generation.join("manifest.json")) {
+                let hashes: GenerationManifest = serde_json::from_str(&generation_manifest)
+                    .map_err(|e| format!("could not parse generation manifest: {e}"))?;
+                if hashes
+                    .json_sha256
+                    .as_deref()
+                    .is_some_and(|hash| hash != sha256_hex(manifest.as_bytes()))
+                    || hashes
+                        .glb_sha256
+                        .as_deref()
+                        .is_some_and(|hash| hash != sha256_hex(&glb))
+                {
+                    return Err(
+                        "generation manifest hashes do not match published artifacts".to_string(),
+                    );
+                }
+            }
+            Ok(Some(ModelSnapshot {
+                publication_id: Some(pointer.publication_id),
+                manifest,
+                glb,
+            }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let manifest_path = artifacts.join("model.json");
+            let glb_path = artifacts.join("model.glb");
+            match (fs::read_to_string(&manifest_path), fs::read(&glb_path)) {
+                (Ok(manifest), Ok(glb)) => Ok(Some(ModelSnapshot {
+                    publication_id: None,
+                    manifest,
+                    glb,
+                })),
+                (Err(error), _) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                (_, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                (Err(error), _) => Err(format!(
+                    "could not read {}: {error}",
+                    manifest_path.display()
+                )),
+                (_, Err(error)) => Err(format!("could not read {}: {error}", glb_path.display())),
+            }
+        }
+        Err(error) => Err(format!("could not read {}: {error}", current.display())),
+    }
+}
+
+/// Read a coherent model snapshot in one IPC call. It prefers the immutable
+/// current.json generation and retains root-file compatibility for older engines.
 #[tauri::command]
-pub async fn read_model_json(
+pub async fn read_model_snapshot(
     state: State<'_, WorkspaceState>,
     ws_id: Option<String>,
-) -> Result<Option<String>, String> {
-    // Resolve the artifacts dir synchronously before the await so no `State`
-    // borrow crosses it.
+) -> Result<Option<ModelSnapshot>, String> {
     let artifacts = match ws_id {
         Some(root) => WorkspacePaths::for_root(root).artifacts,
         None => {
@@ -283,41 +374,9 @@ pub async fn read_model_json(
             paths.artifacts
         }
     };
-    let json = artifacts.join("model.json");
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || fs::read_to_string(json).ok())
-            .await
-            .ok()
-            .flatten(),
-    )
-}
-
-/// Raw bytes of `<ws>/.solidifai/artifacts/model.glb`, returned as an
-/// [`tauri::ipc::Response`] so they cross the IPC boundary as an `ArrayBuffer`
-/// instead of a JSON `number[]` (which, for a multi-MB mesh, meant serializing
-/// millions of array elements on the main thread *and* re-parsing them in JS).
-///
-/// `ws_id`: when `Some`, resolve the artifacts dir from that workspace root
-/// directly; when `None`, use the focused workspace via `state.paths()`.
-///
-/// `async` + `spawn_blocking`: the file read is offloaded so the main thread stays
-/// free. Errors if the file is absent (no model built yet) or unreadable.
-#[tauri::command]
-pub async fn read_model_glb(
-    state: State<'_, WorkspaceState>,
-    ws_id: Option<String>,
-) -> Result<tauri::ipc::Response, String> {
-    let artifacts = match ws_id {
-        Some(root) => WorkspacePaths::for_root(root).artifacts,
-        None => state.paths()?.artifacts,
-    };
-    let glb = artifacts.join("model.glb");
-    let bytes = tauri::async_runtime::spawn_blocking(move || {
-        fs::read(&glb).map_err(|e| format!("could not read {}: {e}", glb.display()))
-    })
-    .await
-    .map_err(|e| format!("read_model_glb task failed: {e}"))??;
-    Ok(tauri::ipc::Response::new(bytes))
+    tauri::async_runtime::spawn_blocking(move || read_model_snapshot_from_artifacts(&artifacts))
+        .await
+        .map_err(|e| format!("read_model_snapshot task failed: {e}"))?
 }
 
 /// The legacy fixed workspace root (`~/solidifai-workspace`). Used only to
@@ -894,6 +953,54 @@ mod tests {
         let dir = unique("tmpl-test");
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn snapshot_resolves_one_immutable_generation_even_when_legacy_mirrors_fail() {
+        let ws = tmp_ws();
+        let generation = ws.artifacts.join("generations/pub-1");
+        fs::create_dir_all(&generation).unwrap();
+        let manifest = r#"{"schema":2,"buildId":1,"publicationId":"pub-1"}"#;
+        let glb = b"matching-glb";
+        fs::write(generation.join("model.json"), manifest).unwrap();
+        fs::write(generation.join("model.glb"), glb).unwrap();
+        fs::write(
+            ws.artifacts.join("current.json"),
+            r#"{"publicationId":"pub-1","buildId":1,"modelJson":"model.json","modelGlb":"model.glb"}"#,
+        )
+        .unwrap();
+        // Compatibility mirrors are written after current.json and may be stale or
+        // unavailable without invalidating the immutable published pair.
+        fs::write(ws.artifacts.join("model.json"), "not json").unwrap();
+
+        let snapshot = read_model_snapshot_from_artifacts(&ws.artifacts)
+            .unwrap()
+            .expect("published snapshot");
+        assert_eq!(snapshot.publication_id.as_deref(), Some("pub-1"));
+        assert_eq!(snapshot.manifest, manifest);
+        assert_eq!(snapshot.glb, glb);
+
+        let _ = fs::remove_dir_all(&ws.root);
+    }
+
+    #[test]
+    fn snapshot_falls_back_to_legacy_root_artifacts_without_current_pointer() {
+        let ws = tmp_ws();
+        fs::write(
+            ws.artifacts.join("model.json"),
+            r#"{"schema":1,"buildId":4}"#,
+        )
+        .unwrap();
+        fs::write(ws.artifacts.join("model.glb"), b"legacy-glb").unwrap();
+
+        let snapshot = read_model_snapshot_from_artifacts(&ws.artifacts)
+            .unwrap()
+            .expect("legacy snapshot");
+        assert_eq!(snapshot.publication_id, None);
+        assert_eq!(snapshot.manifest, r#"{"schema":1,"buildId":4}"#);
+        assert_eq!(snapshot.glb, b"legacy-glb");
+
+        let _ = fs::remove_dir_all(&ws.root);
     }
 
     #[test]

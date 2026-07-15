@@ -7,18 +7,24 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
-import { IMPORT_EXTENSIONS } from "./useImport";
+import { LEGACY_IMPORT_EXTENSIONS } from "./useImport";
 
-function firstSupported(paths: string[]): string | undefined {
-  return paths.find((p) =>
-    (IMPORT_EXTENSIONS as readonly string[]).includes((p.split(".").pop() ?? "").toLowerCase()),
-  );
+export function firstSupported(
+  paths: string[],
+  extensions: readonly string[] = LEGACY_IMPORT_EXTENSIONS,
+): string | undefined {
+  return paths.find((path) => extensions.includes((path.split(".").pop() ?? "").toLowerCase()));
 }
 
-export function useFileDrop(onDrop: (path: string) => void): boolean {
+export function useFileDrop(
+  onDrop: (path: string) => void,
+  extensions: readonly string[] = LEGACY_IMPORT_EXTENSIONS,
+): boolean {
   const [dragging, setDragging] = useState(false);
   const onDropRef = useRef(onDrop);
   onDropRef.current = onDrop;
+  const extensionsRef = useRef(extensions);
+  extensionsRef.current = extensions;
 
   useEffect(() => {
     let cancelled = false;
@@ -31,7 +37,7 @@ export function useFileDrop(onDrop: (path: string) => void): boolean {
           setDragging(true);
         } else if (p.type === "drop") {
           setDragging(false);
-          const match = firstSupported(p.paths);
+          const match = firstSupported(p.paths, extensionsRef.current);
           if (match) onDropRef.current(match);
         } else {
           setDragging(false); // leave / cancel

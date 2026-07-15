@@ -673,26 +673,35 @@ def analyze_import(name: str | None = None) -> Any:
 
 
 @mcp.tool()
-def import_reference(path: str, name: str | None = None) -> Any:
+def import_reference(path: str, name: str | None = None, required: bool = False) -> Any:
     """Bring an existing CAD/mesh file into the workspace as a ghosted REFERENCE
     fixture -- a part you fit around (a PCB, a motor, a mating component), not one
-    you modify. ``path`` is an absolute path to a .step/.stp/.brep/.stl file; it
-    is copied into the workspace ``assets/`` dir and recorded in ``imports.json``.
+    you modify. ``path`` is an absolute path in a format returned by
+    ``import_capabilities``; it is copied into ``assets/`` and recorded in
+    ``imports.json``. Set ``required`` when readiness must block if it cannot load.
     References render translucent, are measurable and collision-checkable against
     your design, but are never exported or DFM-checked. To instead MODIFY an
     imported solid (e.g. add tabs to a bracket), use ``stage_import`` then call
     ``import_cad(<path>)`` in model.py and build on it."""
-    return _call("import_reference", {"path": path, "name": name})
+    return _call("import_reference", {"path": path, "name": name, "required": required})
 
 
 @mcp.tool()
 def stage_import(path: str) -> Any:
     """Copy an external CAD file into the workspace ``assets/`` dir and return its
     workspace-relative path, WITHOUT registering a reference. Use this for the
-    modify workflow: stage a .step/.stp/.brep, then in model.py write
-    ``part = import_cad("assets/<file>")`` and edit it with build123d ops
+    modify workflow: stage a modifiable-solid format from ``import_capabilities``,
+    then in model.py write ``part = import_cad("assets/<file>")`` and edit it with build123d ops
     (boolean/fillet/cut) -- it becomes a normal, exported part."""
     return _call("stage_import", {"path": path})
+
+
+@mcp.tool()
+def import_capabilities() -> Any:
+    """List the CAD import formats this engine can load in this packaged build.
+    Use the returned extensions and roleCapability values before offering an import
+    workflow; unavailable converters are intentionally not advertised."""
+    return _call("import_capabilities")
 
 
 @mcp.tool()

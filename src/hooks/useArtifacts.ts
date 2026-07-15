@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { onModelUpdated } from "../lib/ipc/status";
-import { readModelGlb, readModelJson } from "../lib/ipc/workspace";
+import { readModelSnapshot } from "../lib/ipc/workspace";
 import { parseModelInfo, type ModelInfo } from "../lib/artifacts";
 
 /** Module-level artifact cache keyed by wsPath — survives EditorPanes unmount/remount
@@ -29,6 +29,7 @@ interface ArtifactCacheEntry {
   model: ModelInfo | null;
   glbBytes: Uint8Array | null;
   buildId: number;
+  publicationId: string | null;
 }
 const ARTIFACT_CACHE = new Map<string, ArtifactCacheEntry>();
 export const clearArtifactCache = (wsPath: string): void => void ARTIFACT_CACHE.delete(wsPath);
@@ -41,6 +42,8 @@ export interface ArtifactsState {
   glbBytes: Uint8Array | null;
   /** buildId of the GLB currently in `glbBytes` (-1 = none loaded). */
   buildId: number;
+  /** Immutable generation identity; unlike buildId it survives engine restarts. */
+  publicationId: string | null;
   /**
    * Re-read the manifest + (if the build changed) the GLB. Call after a mutation
    * RPC resolves so the viewport reflects the new build without waiting on an
@@ -55,63 +58,52 @@ export function useArtifacts(wsPath: string): ArtifactsState {
   const [model, setModel] = useState<ModelInfo | null>(() => cached?.model ?? null);
   const [glbBytes, setGlbBytes] = useState<Uint8Array | null>(() => cached?.glbBytes ?? null);
   const [buildId, setBuildId] = useState<number>(() => cached?.buildId ?? -1);
+  const [publicationId, setPublicationId] = useState<string | null>(
+    () => cached?.publicationId ?? null,
+  );
 
-  // Highest buildId whose GLB we've fetched — guards redundant / out-of-order GLB
-  // loads when several refreshes overlap. A ref so the latest value is visible
-  // synchronously inside the async body. Seed from cache so we don't re-fetch
-  // the GLB when the cached build is still current after a remount.
-  const loadedBuildRef = useRef<number>(cached?.buildId ?? -1);
+  // Each request gets a strictly increasing epoch, so an older filesystem/IPC
+  // completion can never replace the newest publication.
+  const refreshEpochRef = useRef(0);
   // Flipped true on unmount so an in-flight refresh doesn't setState after teardown.
   const cancelledRef = useRef<boolean>(false);
 
   const refresh = useCallback(async (): Promise<void> => {
-    // 1. Manifest — always re-read so metadata (dims, mass, params) stays live.
-    let info: ModelInfo | null;
+    const epoch = ++refreshEpochRef.current;
     try {
-      info = parseModelInfo(await readModelJson(wsPath));
-    } catch {
-      info = null;
-    }
-    if (cancelledRef.current) return;
-    setModel(info);
-    // Keep the cache's model field current; preserve the existing glb/buildId
-    // until we have fresh bytes (below) so a concurrent read of the cache is
-    // always coherent (model + bytes belonging to the same build or a newer one).
-    const prevEntry = ARTIFACT_CACHE.get(wsPath);
-    ARTIFACT_CACHE.set(wsPath, {
-      model: info,
-      glbBytes: prevEntry?.glbBytes ?? null,
-      buildId: prevEntry?.buildId ?? -1,
-    });
-
-    // Reload the GLB whenever the build identity CHANGES — not only when it
-    // increases. The engine's buildId restarts from 1 when the engine process
-    // restarts, so a strict "newer only" check would wrongly ignore a fresh model
-    // whose id is ≤ one persisted from a previous run (a viewport/inspector
-    // desync: metadata updates while the 3D mesh stays stale).
-    const nextBuildId = info?.buildId ?? -1;
-    if (!Number.isFinite(nextBuildId) || nextBuildId === loadedBuildRef.current) {
-      return; // Exact same build already loaded — skip the redundant GLB fetch.
-    }
-
-    try {
-      const bytes = await readModelGlb(wsPath);
-      if (cancelledRef.current) return;
-      loadedBuildRef.current = nextBuildId;
+      const snapshot = await readModelSnapshot(wsPath);
+      if (cancelledRef.current || epoch !== refreshEpochRef.current) return;
+      if (!snapshot) {
+        setModel(null);
+        setGlbBytes(null);
+        setBuildId(-1);
+        setPublicationId(null);
+        ARTIFACT_CACHE.delete(wsPath);
+        return;
+      }
+      const info = parseModelInfo(snapshot.manifest);
+      if (!info) return;
+      const bytes = new Uint8Array(snapshot.glb);
+      const nextBuildId = info.buildId;
+      const nextPublicationId = snapshot.publicationId;
+      setModel(info);
       setGlbBytes(bytes);
       setBuildId(nextBuildId);
-      ARTIFACT_CACHE.set(wsPath, { model: info, glbBytes: bytes, buildId: nextBuildId });
+      setPublicationId(nextPublicationId);
+      ARTIFACT_CACHE.set(wsPath, {
+        model: info,
+        glbBytes: bytes,
+        buildId: nextBuildId,
+        publicationId: nextPublicationId,
+      });
     } catch {
-      // GLB not present yet (e.g. json landed first) — manifest still applied.
+      // Keep the last coherent pair. A malformed pointer/mirror failure is
+      // transient during publication and must not blank a valid viewport.
     }
   }, [wsPath]);
 
   useEffect(() => {
     cancelledRef.current = false;
-    // loadedBuildRef is already seeded from the cache (or -1 for a cold start) —
-    // no reset needed. Each EditorPanes mount is a fresh component instance with a
-    // fresh useRef, so there is no stale value to clear here.
-
     // Initial load: pull whatever build already exists.
     void refresh();
 
@@ -134,5 +126,5 @@ export function useArtifacts(wsPath: string): ArtifactsState {
     };
   }, [wsPath, refresh]);
 
-  return { model, glbBytes, buildId, refresh };
+  return { model, glbBytes, buildId, publicationId, refresh };
 }

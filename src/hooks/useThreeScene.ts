@@ -544,6 +544,20 @@ export function useThreeScene(
     const handle = refs.current;
     if (!handle || !glbBytes || buildId < 0) return;
 
+    if ((objectsRef.current?.length ?? 0) === 0) {
+      highlightRef.current?.clear();
+      for (let i = handle.modelGroup.children.length - 1; i >= 0; i--) {
+        const child = handle.modelGroup.children[i];
+        handle.modelGroup.remove(child);
+        disposeObject(child);
+      }
+      subtreesRef.current = [];
+      clearMeasurement(handle.measure);
+      setHasModel(false);
+      handle.requestRender();
+      return;
+    }
+
     let cancelled = false;
     const loader = new GLTFLoader();
 

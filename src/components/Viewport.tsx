@@ -106,7 +106,7 @@ function VTool({
 }
 
 /** Props: the live artifacts (sans the inspector-only `refresh`) + active tab, owned by {@link AppShell}. */
-type ViewportProps = Omit<ArtifactsState, "refresh"> & {
+type ViewportProps = Omit<ArtifactsState, "refresh" | "publicationId"> & {
   activeTab: InteractionTab;
   selectedId?: string | null;
   hiddenIds?: ReadonlySet<string>;
@@ -172,7 +172,8 @@ function Viewport(
   // not merely when the bytes land. Otherwise the grid + mesh pop in a beat
   // after the cover lifts. hasModel never resets, so rebuilds (which keep it
   // true and use the `building` overlay) never flash this cover.
-  const showCover = loading || (model != null && !hasModel);
+  const emptyPublication = model?.objects.length === 0;
+  const showCover = loading || (model != null && !emptyPublication && !hasModel);
 
   const { config, setFlag } = useAppConfig();
 
@@ -343,11 +344,11 @@ function Viewport(
     setMenu(null);
   };
 
-  const dims = model ? formatDims(model.bbox.size) : null;
-  const mass = model ? `${model.mass.value.toFixed(1)} g` : null;
+  const dims = model?.bbox ? formatDims(model.bbox.size) : null;
+  const mass = model && !emptyPublication ? `${model.mass.value.toFixed(1)} g` : null;
 
-  const { note: importNote, importPath, pickAndImport } = useImport();
-  const dragging = useFileDrop(importPath);
+  const { note: importNote, importPath, pickAndImport, extensions: importExtensions } = useImport();
+  const dragging = useFileDrop(importPath, importExtensions);
 
   return (
     <section
@@ -372,7 +373,7 @@ function Viewport(
             <Upload size={26} strokeWidth={1.6} className="text-term-ink" />
             <div className="text-body font-medium text-term-ink">Drop to import</div>
             <div className="font-mono text-caption text-[#6B7280]">
-              STEP, BREP, or STL as a reference
+              Supported CAD, mesh, or sketch as a reference
             </div>
           </div>
         </div>
@@ -400,7 +401,7 @@ function Viewport(
           />
         </div>
       )}
-      {!showCover && !hasModel && (
+      {!showCover && (!hasModel || emptyPublication) && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <div className="flex flex-col items-center gap-3 text-center">
             <span className="grid h-12 w-12 place-items-center rounded-xl border border-[rgba(255,255,255,.1)] bg-[rgba(20,23,30,.4)] text-term-ink-dim">

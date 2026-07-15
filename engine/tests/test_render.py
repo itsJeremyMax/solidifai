@@ -1,10 +1,12 @@
 import json
 import os
+from hashlib import sha256
 
 import pytest
 from build123d import Box
 
 from solidifai import reset_registry, show
+from solidifai_engine import paths
 from solidifai_engine import render as render_mod
 from solidifai_engine.render import render_to
 
@@ -205,3 +207,175 @@ def test_failure_after_tessellation_keeps_last_good_artifacts(tmp_path, monkeypa
     # (b) no temp files left behind
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
+
+
+def test_publication_is_immutable_and_pair_consistent(tmp_path):
+    source = tmp_path / "model.py"
+    source.write_text("old")
+    artifacts = tmp_path / ".solidifai" / "artifacts"
+    artifacts.mkdir(parents=True)
+
+    publication = paths.commit_publication(
+        str(artifacts),
+        paths.stage_publication(
+            str(artifacts),
+            paths.Publication(build_id=1, source_hash=sha256(b"old").hexdigest()),
+            model_source="old",
+            model_path=str(source),
+            model_json=b'{"buildId":1}',
+            model_glb=b"glTF fixture",
+        ),
+    )
+
+    generation = artifacts / "generations" / publication.publication_id
+    manifest = json.loads((generation / "manifest.json").read_text())
+    assert manifest["publicationId"] == publication.publication_id
+    assert sha256((generation / "model.glb").read_bytes()).hexdigest() == manifest["glbSha256"]
+    pointer = json.loads((artifacts / "current.json").read_text())
+    assert pointer["publicationId"] == publication.publication_id
+    assert (artifacts / "model.glb").read_bytes() == b"glTF fixture"
+
+
+def test_failed_publication_leaves_current_source_and_mirrors_unchanged(tmp_path, monkeypatch):
+    source = tmp_path / "model.py"
+    source.write_text("old")
+    artifacts = tmp_path / ".solidifai" / "artifacts"
+    artifacts.mkdir(parents=True)
+    paths.commit_publication(
+        str(artifacts),
+        paths.stage_publication(
+            str(artifacts),
+            paths.Publication(build_id=1, source_hash=sha256(b"old").hexdigest()),
+            model_source="old",
+            model_path=str(source),
+            model_json=b'{"buildId":1}',
+            model_glb=b"glTF old",
+        ),
+    )
+
+    staged = paths.stage_publication(
+        str(artifacts),
+        paths.Publication(build_id=2, source_hash=sha256(b"new").hexdigest()),
+        model_source="new",
+        model_path=str(source),
+        model_json=b'{"buildId":2}',
+        model_glb=b"glTF new",
+    )
+    original = paths.atomic_finalize
+
+    def fail_on_source(tmp, final):
+        if final == str(source):
+            raise OSError("source disk full")
+        original(tmp, final)
+
+    monkeypatch.setattr(paths, "atomic_finalize", fail_on_source)
+    second = paths.commit_publication(str(artifacts), staged)
+
+    pointer = json.loads((artifacts / "current.json").read_text())
+    assert pointer["publicationId"] == second.publication_id
+    assert source.read_text() == "old"
+    assert (artifacts / "model.glb").read_bytes() == b"glTF old"
+    monkeypatch.setattr(paths, "atomic_finalize", original)
+    assert paths.recover_publication(str(artifacts)) == second
+    assert source.read_text() == "new"
+
+
+@pytest.mark.parametrize("phase", ["intent", "source", "pointer", "mirrors"])
+def test_recovery_completes_or_rolls_back_interrupted_publication(tmp_path, monkeypatch, phase):
+    source = tmp_path / "model.py"
+    source.write_text("old")
+    artifacts = tmp_path / ".solidifai" / "artifacts"
+    artifacts.mkdir(parents=True)
+    paths.commit_publication(
+        str(artifacts),
+        paths.stage_publication(
+            str(artifacts),
+            paths.Publication(build_id=1, source_hash=sha256(b"old").hexdigest()),
+            model_source="old",
+            model_path=str(source),
+            model_json=b'{"buildId":1}',
+            model_glb=b"glTF old",
+        ),
+    )
+    staged = paths.stage_publication(
+        str(artifacts),
+        paths.Publication(build_id=2, source_hash=sha256(b"new").hexdigest()),
+        model_source="new",
+        model_path=str(source),
+        model_json=b'{"buildId":2}',
+        model_glb=b"glTF new",
+    )
+    original = paths.atomic_finalize
+    calls = 0
+
+    def interrupt(tmp, final):
+        nonlocal calls
+        calls += 1
+        if phase == "intent" and calls == 1:
+            raise OSError("interrupted")
+        if phase == "source" and final == str(source):
+            raise OSError("interrupted")
+        if phase == "pointer" and final == str(artifacts / "current.json"):
+            raise OSError("interrupted")
+        if phase == "mirrors" and final == str(artifacts / "model.json"):
+            raise OSError("interrupted")
+        original(tmp, final)
+
+    monkeypatch.setattr(paths, "atomic_finalize", interrupt)
+    if phase in {"intent", "pointer"}:
+        with pytest.raises(OSError):
+            paths.commit_publication(str(artifacts), staged)
+    else:
+        paths.commit_publication(str(artifacts), staged)
+    monkeypatch.setattr(paths, "atomic_finalize", original)
+
+    recovered = paths.recover_publication(str(artifacts))
+    assert recovered is not None
+    pointer = json.loads((artifacts / "current.json").read_text())
+    assert pointer["publicationId"] == recovered.publication_id
+    assert source.read_text() in {"old", "new"}
+
+
+def test_pointer_commit_is_authoritative_when_compatibility_mirror_fails(tmp_path, monkeypatch):
+    root = tmp_path
+    artifacts = root / ".solidifai" / "artifacts"
+    artifacts.mkdir(parents=True)
+    staged = paths.stage_publication(
+        str(artifacts),
+        paths.Publication(build_id=1, source_hash=sha256(b"source").hexdigest()),
+        model_source="source",
+        write_set={"model.py": "source", "settings.json": '{"size": 20}'},
+        model_json=b'{"buildId":1}',
+        model_glb=b"glTF fixture",
+    )
+    original = paths.atomic_finalize
+
+    def fail_mirror(tmp, final):
+        if final == str(root / "model.py"):
+            raise OSError("mirror unavailable")
+        original(tmp, final)
+
+    monkeypatch.setattr(paths, "atomic_finalize", fail_mirror)
+    publication = paths.commit_publication(str(artifacts), staged)
+
+    assert paths.read_current_publication(str(artifacts)) == publication
+    generation = artifacts / "generations" / publication.publication_id
+    assert (generation / "inputs" / "model.py").read_text() == "source"
+    assert not (root / "model.py").exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["../escape.py", "C:\\escape.py", "\\\\server\\share\\escape.py", "parts\\..\\escape.py"],
+)
+def test_publication_rejects_cross_platform_unsafe_write_set_paths(tmp_path, relative):
+    artifacts = tmp_path / ".solidifai" / "artifacts"
+    artifacts.mkdir(parents=True)
+    with pytest.raises(ValueError, match="unsafe"):
+        paths.stage_publication(
+            str(artifacts),
+            paths.Publication(build_id=1, source_hash=""),
+            write_set={relative: "bad"},
+            model_json=b"{}",
+            model_glb=b"glTF",
+        )

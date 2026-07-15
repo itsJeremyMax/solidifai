@@ -99,7 +99,7 @@ export default function EditorPanes({
     if (!hasModel) return;
     const t = window.setTimeout(() => void captureNow(), 800);
     return () => window.clearTimeout(t);
-  }, [artifacts.buildId, hasModel, captureNow]);
+  }, [artifacts.publicationId, hasModel, captureNow]);
 
   // Selection + per-part visibility (session state; pruned when the object set
   // changes). Read by the viewport (apply to the scene) and the inspector

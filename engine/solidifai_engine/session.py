@@ -70,6 +70,62 @@ if TYPE_CHECKING:
 COALESCE_WINDOW = 0.7
 
 
+def _publication_result(result: dict) -> dict:
+    """Expose the immutable generation identity without widening legacy responses."""
+    return {key: result[key] for key in ("publicationId", "sourceHash") if key in result}
+
+
+def _staged_mutation(method):
+    """Run build-coupled authoring against a disposable workspace clone."""
+
+    def wrapped(self, *args, **kwargs):
+        if self.root is None or self._staging_root is not None:
+            return method(self, *args, **kwargs)
+        original_root, original_path = self.root, self.model_path
+        state = {
+            "build_id": self.build_id,
+            "last_ok": self.last_ok,
+            "code": self.code,
+            "_model_hash": self._model_hash,
+            "_model": self._model,
+            "_objects": self._objects,
+            "_last_params_block": self._last_params_block,
+            "_features": self._features,
+            "_params_schema": self._params_schema,
+            "_param_values": self._param_values,
+            "_material_overrides": self._material_overrides,
+            "_reference_status": self._reference_status,
+        }
+        deferred_actions: list[tuple[str, bool | str]] = []
+        prior_actions = getattr(self, "_deferred_actions", None)
+        self._deferred_actions = deferred_actions
+        with paths.staged_workspace(original_root) as staged:
+            self.root = staged
+            self._staging_root = staged
+            try:
+                result = method(self, *args, **kwargs)
+                if isinstance(result, dict) and not result.get("ok"):
+                    for name, value in state.items():
+                        setattr(self, name, value)
+            finally:
+                self._staging_root = None
+                self.root, self.model_path = original_root, original_path
+                self._deferred_actions = prior_actions
+        if (
+            isinstance(result, dict)
+            and result.get("ok")
+            and not paths.publication_pending(self.artifacts_dir)
+        ):
+            for action, value in deferred_actions:
+                if action == "build":
+                    self._after_build(structural=bool(value))
+                else:
+                    self._after_assembly_edit(result, str(value))
+        return result
+
+    return wrapped
+
+
 def _module_build_overrides(code: str, valid_names: set) -> dict:
     """Statically read the literal keyword args of a top-level ``build(...)`` call
     in ``code``. When a script calls ``build(size=50)`` at module level (an
@@ -121,6 +177,8 @@ class Session:
         # Workspace root (parent of model.py) — None for bare artifact-only
         # sessions (tests). Settings + git history are enabled only when set.
         self.root = os.path.dirname(model_path) if model_path else None
+        self._staging_root: str | None = None
+        self._deferred_actions: list[tuple[str, bool | str]] | None = None
         # Injected by the host integration only. The engine receives no signing key
         # and never treats an RPC/MCP caller's claimed source as authorization.
         self._override_verifier = override_verifier
@@ -175,6 +233,9 @@ class Session:
         self._last_params_block: dict | None = None
         # Last-good snapshot of declared features (parallels self._model).
         self._features: list = []
+        # Rebuilt alongside manifest references; entries retain loader diagnostics
+        # so conformance can distinguish a missing reference from a bad one.
+        self._reference_status: dict[str, dict] = {}
         # Collaborators: cohesive method groups that hold a back-reference to
         # this session (they read/write self._... state and call lifecycle
         # helpers that stay on Session). The public methods below delegate to
@@ -222,8 +283,13 @@ class Session:
         }
 
     def _render_and_snapshot(
-        self, next_build: int, *, params: dict | None, duration_ms: int | None
-    ) -> None:
+        self,
+        next_build: int,
+        *,
+        params: dict | None,
+        duration_ms: int | None,
+        model_source: str | None = None,
+    ) -> dict:
         """Render the current registry to ``next_build`` and snapshot it into
         _model/_objects/_features. Raises on failure -- the caller converts the
         exception via ``_build_failed``. Does NOT apply references, bump
@@ -236,13 +302,31 @@ class Session:
             "params": params,
             "overrides": self._material_overrides,
         }
+        if self.root is not None:
+            write_set: dict[str, bytes | str] = paths.workspace_write_set(self.root)
+            if params is not None and not self._suppress_persist:
+                # Settings drive a parametric rebuild, so the exact values belong to
+                # the immutable generation rather than only the compatibility root.
+                write_set[settings.SETTINGS_NAME] = json.dumps(
+                    {"schema": settings.SCHEMA, "params": params["values"]}, indent=2
+                )
+            render_kwargs["write_set"] = write_set
         if duration_ms is not None:
             render_kwargs["duration_ms"] = duration_ms
-        render_to(self.artifacts_dir, next_build, **render_kwargs)
-        self._model = _compound_from_registry(solidifai._registry())
-        self._objects = list(solidifai._registry())
+        if model_source is not None:
+            render_kwargs["model_source"] = model_source
+            render_kwargs["model_path"] = self.model_path
+        # A render publication is durable before this method changes any last-good
+        # in-memory state. A source/pointer/mirror failure therefore leaves capture,
+        # export, and conformance attached to the previous generation.
+        result = render_to(self.artifacts_dir, next_build, **render_kwargs)
+        next_model = _compound_from_registry(solidifai._registry())
+        next_objects = list(solidifai._registry())
+        self._model = next_model
+        self._objects = next_objects
         self._last_params_block = params
         self._snapshot_features()
+        return result
 
     def _build_failed(self, exc: Exception) -> dict:
         """Shared build-failure handling: discard temps, mark last_ok False,
@@ -323,26 +407,18 @@ class Session:
             # appear in the GLB/model.json and the snapshot, but never in model.py.
             self._apply_references()
             duration_ms = int((time.perf_counter() - started) * 1000)
-            self._render_and_snapshot(next_build, params=params_block, duration_ms=duration_ms)
+            publication = self._render_and_snapshot(
+                next_build,
+                params=params_block,
+                duration_ms=duration_ms,
+                model_source=code,
+            )
         except Exception as exc:  # noqa: BLE001 - report any script/render error
             self._params_schema = prior_schema
             self._param_values = prior_values
             self._build_fn = prior_build_fn
             return self._build_failed(exc)
 
-        # Success: persist the durable model (only on success, never on
-        # failure) and commit new state.
-        if self.model_path is not None:
-            try:
-                self._persist_model(code)
-            except OSError as exc:  # pragma: no cover - rare disk error
-                self.last_ok = False
-                return {
-                    "ok": False,
-                    "error": f"model rendered but could not be persisted to "
-                    f"{self.model_path!r}: {exc}",
-                    "traceback": traceback.format_exc(),
-                }
         # Record the hash of the source that produced the live build_fn so
         # set_params can detect an out-of-band model.py edit before committing a
         # snapshot whose code and geometry never coexisted (see set_params).
@@ -352,7 +428,7 @@ class Session:
         self.last_ok = True
         if not self._suppress_persist:
             self._after_build(structural=True)
-        return {"ok": True, "buildId": self.build_id}
+        return {"ok": True, "buildId": self.build_id, **_publication_result(publication)}
 
     def get_params(self) -> dict:
         """Return the current parameter ``{schema, values}`` (the normalized,
@@ -364,6 +440,7 @@ class Session:
             return {"schema": {}, "values": {}}
         return block
 
+    @_staged_mutation
     def set_params(self, values: dict) -> dict:
         """Override parameter values, rebuild via ``build(**values)`` and
         render with the next buildId. No-op error if no PARAMS script is loaded.
@@ -410,8 +487,11 @@ class Session:
             self._build_fn(**merged)
             self._apply_references()
             duration_ms = int((time.perf_counter() - started) * 1000)
-            self._render_and_snapshot(
-                next_build, params=self._params_block(merged), duration_ms=duration_ms
+            publication = self._render_and_snapshot(
+                next_build,
+                params=self._params_block(merged),
+                duration_ms=duration_ms,
+                model_source=self.code,
             )
         except Exception as exc:  # noqa: BLE001
             return self._build_failed(exc)
@@ -421,7 +501,7 @@ class Session:
         self.last_ok = True
         if not self._suppress_persist:
             self._after_build(structural=False)
-        return {"ok": True, "buildId": self.build_id}
+        return {"ok": True, "buildId": self.build_id, **_publication_result(publication)}
 
     def _validate_param_values(self, values: dict) -> dict | None:
         """Validate a set_params request against the loaded schema; return an error
@@ -474,12 +554,20 @@ class Session:
             return None  # unreadable: let the rebuild surface the real error
         if disk_hash == self._model_hash:
             return None
+        relative = paths.relative_workspace_path(
+            paths.workspace_root(self.artifacts_dir), self.model_path
+        )
+        if paths.stale_mirror_matches_prior_source(
+            self.artifacts_dir, relative, disk_hash, self._model_hash
+        ):
+            return None
         return {
             "ok": False,
             "error": "model.py changed on disk since it was loaded; run it again "
             "with run_file before adjusting parameters",
         }
 
+    @_staged_mutation
     def set_part_material(self, part_id: str, material) -> dict:
         """Assign (or clear, when ``material`` is None) the material for one part,
         persist the override, and re-render. ``part_id`` is the slugified id that
@@ -719,7 +807,7 @@ class Session:
     def get_conformance(self) -> dict:
         """Evaluate the durable brief against evidence available to this session."""
         requirements_report = self.check_requirements()
-        references = {item.get("id"): True for item in self.list_imports().get("imports", [])}
+        references = self.get_reference_status()
         return conformance.evaluate(
             self.get_build_brief()["brief"],
             self._conformance_context(requirements_report, references),
@@ -780,6 +868,9 @@ class Session:
         """
         if self.model_path is None or self._model_hash is None:
             return None
+        publication = paths.read_current_publication(self.artifacts_dir)
+        if publication is None or publication.source_hash != self._model_hash:
+            return False
         try:
             descriptor = os.open(self.model_path, os.O_RDONLY)
         except FileNotFoundError:
@@ -1086,6 +1177,7 @@ class Session:
                 next_build,
                 params=self._last_params_block,
                 overrides=self._material_overrides,
+                write_set=paths.workspace_write_set(self.root) if self.root else None,
             )
             self._model = _compound_from_registry(solidifai._registry())
             self._objects = list(solidifai._registry())
@@ -1101,14 +1193,24 @@ class Session:
     def stage_import(self, source_path: str) -> dict:
         return self._imports.stage_import(source_path)
 
-    def import_reference(self, source_path: str, name: str | None = None) -> dict:
-        return self._imports.import_reference(source_path, name)
+    @_staged_mutation
+    def import_reference(
+        self, source_path: str, name: str | None = None, required: bool = False
+    ) -> dict:
+        return self._imports.import_reference(source_path, name, required)
 
+    @_staged_mutation
     def remove_import(self, import_id: str) -> dict:
         return self._imports.remove_import(import_id)
 
     def list_imports(self) -> dict:
         return self._imports.list_imports()
+
+    def get_reference_status(self) -> dict:
+        return dict(self._reference_status)
+
+    def import_capabilities(self) -> dict:
+        return self._imports.import_capabilities()
 
     # -- technical drawing --------------------------------------------------
 
@@ -1212,18 +1314,22 @@ class Session:
             return {"ok": False, "error": "no model loaded"}
         next_build = self.build_id + 1
         try:
-            render_to(
+            write_set = paths.workspace_write_set(self.root) if self.root is not None else None
+            publication = render_to(
                 self.artifacts_dir,
                 next_build,
                 params=self._last_params_block,
                 overrides=self._material_overrides,
                 objects=self._objects,
+                model_source=self.code,
+                model_path=self.model_path if self.code is not None else None,
+                write_set=write_set,
             )
         except Exception as exc:  # noqa: BLE001
             return self._build_failed(exc)
         self.build_id = next_build
         self.last_ok = True
-        return {"ok": True, "buildId": self.build_id}
+        return {"ok": True, "buildId": self.build_id, **_publication_result(publication)}
 
     def capture_views(
         self,
@@ -1462,6 +1568,12 @@ class Session:
     def _after_build(self, *, structural: bool) -> None:
         """Persist current settings and auto-commit. Best-effort: a git failure
         is logged and never fails the build (the model already rendered)."""
+        if self._staging_root is not None:
+            if self._deferred_actions is not None:
+                self._deferred_actions.append(("build", structural))
+            return
+        if paths.publication_pending(self.artifacts_dir):
+            return
         self._persist_settings()
         if self.history is None or not self.history.enabled():
             return
@@ -1483,6 +1595,12 @@ class Session:
         to restore and compare. Best-effort: a commit failure never fails the edit
         (the model already composed). Suppressed during startup/restore replay."""
         if self._suppress_persist or not res.get("ok"):
+            return res
+        if self._staging_root is not None:
+            if self._deferred_actions is not None:
+                self._deferred_actions.append(("assembly", message))
+            return res
+        if paths.publication_pending(self.artifacts_dir):
             return res
         self._persist_settings()
         if self.history is None or not self.history.enabled():
@@ -1604,6 +1722,8 @@ class Session:
         older state, since committing there would discard the redo stack."""
         if self.history is None or not self.history.enabled():
             return {"ok": False, "error": "history unavailable"}
+        if paths.publication_pending(self.artifacts_dir):
+            return {"ok": False, "error": "publication mirrors are still pending recovery"}
         if self.history.can_redo():
             return {"ok": False, "error": "check out the latest state before checkpointing"}
         try:
@@ -1637,6 +1757,19 @@ class Session:
             return {"entries": [], "index": -1}
         return {"entries": self.history.entries(), "index": self.history.index}
 
+    def _record_recovered_publication(self, publication: paths.Publication) -> None:
+        """Commit a mirror-recovered generation once its fileset is hash-verified."""
+        if self.history is None or not self.history.enabled():
+            return
+        if not paths.publication_matches_workspace(self.artifacts_dir, publication):
+            logging.getLogger(__name__).warning("recovered publication does not match workspace")
+            return
+        try:
+            self.history.commit(f"recover publication (build {publication.build_id})", amend=False)
+            self._last_param_commit_t = 0.0
+        except Exception:  # noqa: BLE001 - history remains best-effort after recovery
+            logging.getLogger(__name__).warning("recovery auto-commit failed", exc_info=True)
+
     def startup(self) -> None:
         """Load the workspace and ensure a first commit exists for a fresh repo.
 
@@ -1644,6 +1777,11 @@ class Session:
         of running a single model.py. Never raises."""
         if not self.root:
             return
+        pending = paths.publication_pending(self.artifacts_dir)
+        selected = paths.read_current_publication(self.artifacts_dir)
+        recovered = paths.recover_publication(self.artifacts_dir)
+        if pending and selected is not None and recovered == selected:
+            self._record_recovered_publication(recovered)
         # Re-opening a workspace clears any authoring round. A crashed orchestrator
         # could leave a round active with no end_round, which would otherwise refuse
         # set_skeleton forever; the round is in-memory and transient, so a fresh open
@@ -1735,15 +1873,36 @@ class Session:
                 disk=self._disk_cache,
                 features_out=assembly_features,
             )
+            write_set = paths.workspace_write_set(self.root)
+            if params is not None and not self._suppress_persist:
+                write_set[settings.SETTINGS_NAME] = json.dumps(
+                    {"schema": settings.SCHEMA, "params": params}, indent=2
+                )
             # Empty composition: branch explicitly on a typed signal (no children vs
             # children-but-no-geometry) instead of matching a render error string.
             if not objects:
                 has_children = bool(manifest_mod.load_manifest(self.root).children)
                 if not has_children:
-                    # Skeleton-only or emptied assembly: benign in-progress state.
-                    # Leave the last-good artifacts untouched and report success.
+                    publication = render_to(
+                        self.artifacts_dir,
+                        next_build,
+                        objects=[],
+                        params=self._params_block(params or self._param_values),
+                        overrides=self._material_overrides,
+                        write_set=write_set,
+                        allow_empty=True,
+                    )
+                    self._model = None
+                    self._objects = []
+                    self._features = []
+                    self.build_id = next_build
                     self.last_ok = True
-                    return {"ok": True, "buildId": self.build_id, "empty": True}
+                    return {
+                        "ok": True,
+                        "buildId": self.build_id,
+                        "empty": True,
+                        **_publication_result(publication),
+                    }
                 # Children exist but produced nothing: a real problem, not silent ok.
                 # composeEmpty is a typed marker so structural-edit callers can tell
                 # this apart from a build crash without matching the error string.
@@ -1760,6 +1919,7 @@ class Session:
                 node_ids=compose.path_ids(objects),
                 params=self._params_block(params or self._param_values),
                 overrides=self._material_overrides,
+                write_set=write_set,
             )
         except Exception as exc:  # noqa: BLE001
             self.last_ok = False
@@ -1866,6 +2026,7 @@ class Session:
 
     # -- assembly authoring tools -------------------------------------------
 
+    @_staged_mutation
     def set_skeleton(self, code: str) -> dict:
         """Write skeleton.py, (re)initialize assembly mode, reload params, rebuild.
 
@@ -1900,6 +2061,7 @@ class Session:
                 "traceback": traceback.format_exc(),
             }
 
+    @_staged_mutation
     def set_part(
         self,
         part_id: str,
@@ -2351,6 +2513,7 @@ class Session:
             normalized.append(manifest_mod.Occurrence(frame=frame, mirror=mirror))
         return self._reattach_or_rewire(part_id, occurrences=normalized, set_occurrences=True)
 
+    @_staged_mutation
     def _reattach_or_rewire(
         self,
         part_id: str,
@@ -2433,6 +2596,7 @@ class Session:
                 "traceback": traceback.format_exc(),
             }
 
+    @_staged_mutation
     def remove_part(self, part_id: str) -> dict:
         """Drop a child (part or sub-assembly) and delete its source, then rebuild.
 
@@ -2477,6 +2641,7 @@ class Session:
                 "traceback": traceback.format_exc(),
             }
 
+    @_staged_mutation
     def add_subassembly(self, child_id: str, *, attach=None, inputs=None) -> dict:
         """Scaffold a nested sub-assembly node (its own skeleton + parts) wired to a
         skeleton frame, then rebuild.

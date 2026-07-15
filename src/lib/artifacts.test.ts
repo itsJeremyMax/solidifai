@@ -57,3 +57,28 @@ describe("parseModelInfo with import fields", () => {
     expect(m!.objects[0].role).toBeUndefined();
   });
 });
+
+describe("parseModelInfo empty publications", () => {
+  it("accepts an empty publication with null extents", () => {
+    const empty = JSON.stringify({
+      ...JSON.parse(baseModel({})),
+      objects: [],
+      bbox: null,
+      centerOfMass: null,
+      volume: 0,
+      mass: { value: 0, material: "PLA", density: 1.24 },
+    });
+
+    expect(parseModelInfo(empty)?.objects).toEqual([]);
+  });
+
+  it("rejects a non-empty manifest with null extents", () => {
+    const malformed = JSON.stringify({
+      ...JSON.parse(baseModel({})),
+      bbox: null,
+      centerOfMass: null,
+    });
+
+    expect(parseModelInfo(malformed)).toBeNull();
+  });
+});

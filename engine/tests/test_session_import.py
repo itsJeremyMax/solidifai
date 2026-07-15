@@ -81,6 +81,14 @@ def test_stage_import_copies_without_manifest(tmp_path):
     assert imports_manifest.load(str(root)) == []  # staging alone records nothing
 
 
+def test_stage_stp_preserves_legacy_manifest_format(tmp_path):
+    src = tmp_path / "bracket.stp"
+    _write_geom(str(src), "step")
+    s, _root = _session(tmp_path)
+
+    assert s.stage_import(str(src))["format"] == "stp"
+
+
 def test_bad_reference_path_is_skipped_not_fatal(tmp_path):
     s, root = _session(tmp_path)
     imports_manifest.add(
@@ -89,6 +97,33 @@ def test_bad_reference_path_is_skipped_not_fatal(tmp_path):
 
     assert s.run_file(str(root / "model.py"))["ok"]  # build survives a missing reference
     assert not any(o.role == "reference" for o in s._objects)
+
+
+def test_required_bad_reference_is_reported_and_blocks_readiness(tmp_path):
+    bad_step = tmp_path / "broken.step"
+    bad_step.write_text("not a STEP file", encoding="utf-8")
+    s, root = _session(tmp_path)
+    s.propose_build(
+        {
+            "schema": 2,
+            "parts": [],
+            "requirements": [],
+            "dimensions": [],
+            "interfaces": [],
+            "references": [{"id": "board", "required": True}],
+            "assumptions": [],
+            "manufacturing": [],
+            "obligations": [],
+        },
+        expected_revision=0,
+    )
+
+    result = s.import_reference(str(bad_step), name="board", required=True)
+
+    assert result["ok"]
+    assert s.get_reference_status()["board"]["status"] == "failed"
+    assert s.get_readiness()["level"] == "blocked"
+    assert imports_manifest.load(str(root))[0]["required"] is True
 
 
 def test_unsupported_format_rejected(tmp_path):

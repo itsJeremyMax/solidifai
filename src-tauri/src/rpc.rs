@@ -183,11 +183,13 @@ pub(crate) async fn engine_rpc_on(
         .map_err(|e| format!("engine call task failed: {e}"))?
 }
 
-/// `model-updated` payload — mirrors the watcher's contract (`{ buildId }`).
+/// `model-updated` payload — mirrors the watcher's publication contract.
 #[derive(Clone, Serialize)]
 struct ModelUpdated {
     #[serde(rename = "buildId")]
     build_id: u64,
+    #[serde(rename = "publicationId", skip_serializing_if = "Option::is_none")]
+    publication_id: Option<String>,
 }
 
 /// Run a build-producing RPC and, on success, emit `model-updated { buildId }`
@@ -217,7 +219,17 @@ async fn call_and_notify(
     // buildId is present so only genuine new builds trigger a viewport refresh.
     if let Ok(v) = serde_json::from_str::<Value>(&result) {
         if let Some(build_id) = v.get("buildId").and_then(Value::as_u64) {
-            let _ = app.emit("model-updated", ModelUpdated { build_id });
+            let publication_id = v
+                .get("publicationId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let _ = app.emit(
+                "model-updated",
+                ModelUpdated {
+                    build_id,
+                    publication_id,
+                },
+            );
         }
     }
     Ok(result)
@@ -652,15 +664,39 @@ pub async fn engine_import_reference(
     state: State<'_, std::sync::Arc<Instances>>,
     path: String,
     name: Option<String>,
+    required: Option<bool>,
 ) -> Result<String, String> {
     crate::fs_guard::validate_outgoing_path(&path)?;
     call_and_notify(
         &app,
         &state,
         "import_reference",
-        serde_json::json!({ "path": path, "name": name }),
+        serde_json::json!({ "path": path, "name": name, "required": required.unwrap_or(false) }),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn engine_stage_import(
+    app: AppHandle,
+    state: State<'_, std::sync::Arc<Instances>>,
+    path: String,
+) -> Result<String, String> {
+    crate::fs_guard::validate_outgoing_path(&path)?;
+    call_and_notify(
+        &app,
+        &state,
+        "stage_import",
+        serde_json::json!({ "path": path }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn engine_get_import_capabilities(
+    state: State<'_, std::sync::Arc<Instances>>,
+) -> Result<String, String> {
+    call(&state, "import_capabilities", serde_json::json!({})).await
 }
 
 #[tauri::command]

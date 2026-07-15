@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
+import json
 import math
 import os
 import re
@@ -147,6 +149,10 @@ def render_to(
     overrides: dict | None = None,
     objects: list | None = None,  # explicit object list (composed assembly)
     node_ids: list | None = None,  # explicit ids aligned with objects
+    model_source: str | None = None,
+    model_path: str | None = None,
+    write_set: dict[str, bytes | str] | None = None,
+    allow_empty: bool = False,
 ) -> dict:
     """Render the current registry into ``artifacts_dir``.
 
@@ -159,8 +165,47 @@ def render_to(
     registry path is used unchanged.
     """
     objects = list(objects) if objects is not None else list(_registry())
-    if not objects:
+    if not objects and not allow_empty:
         raise ValueError("nothing to render: registry is empty (did you call show()?)")
+
+    if not objects:
+        publication = paths.Publication(
+            build_id=build_id,
+            source_hash=hashlib.sha256(model_source.encode()).hexdigest() if model_source else "",
+        )
+        model = {
+            "schema": 2,
+            "buildId": build_id,
+            "publicationId": publication.publication_id,
+            "sourceHash": publication.source_hash,
+            "generatedAt": datetime.now(UTC).isoformat(),
+            "units": UNITS,
+            "build": {"ok": True, "durationMs": int(duration_ms), "warnings": list(warnings or [])},
+            "objects": [],
+            "bbox": None,
+            "volume": 0.0,
+            "centerOfMass": None,
+            "mass": {"value": 0.0, "material": "mixed", "density": 0},
+            "valid": True,
+            "manifold": True,
+            "params": params if params is not None else {"schema": {}, "values": {}},
+        }
+        staged = paths.stage_publication(
+            artifacts_dir,
+            publication,
+            model_json=json.dumps(model, indent=2).encode(),
+            model_glb=_empty_glb(),
+            model_source=model_source,
+            model_path=model_path,
+            write_set=write_set,
+        )
+        paths.commit_publication(artifacts_dir, staged)
+        return {
+            "ok": True,
+            "buildId": build_id,
+            "publicationId": publication.publication_id,
+            "sourceHash": publication.source_hash,
+        }
 
     overrides = overrides or {}
     # Compute the collision-safe ids ONCE, up front: they key the per-part
@@ -274,9 +319,15 @@ def render_to(
         else:
             build_label, build_density = "mixed", 0
 
+        publication = paths.Publication(
+            build_id=build_id,
+            source_hash=hashlib.sha256(model_source.encode()).hexdigest() if model_source else "",
+        )
         model = {
             "schema": 2,
             "buildId": build_id,
+            "publicationId": publication.publication_id,
+            "sourceHash": publication.source_hash,
             "generatedAt": datetime.now(UTC).isoformat(),
             "units": UNITS,
             "build": {
@@ -303,23 +354,49 @@ def render_to(
         _cleanup(glb_tmp, json_tmp)
         raise
 
-    # Commit phase: both temps are complete, so replace the live files. Order is
-    # intentional -- GLB first, then JSON. The Rust watcher triggers on
-    # model.json changes, so finalizing the GLB before the JSON guarantees that
-    # when the new JSON (and its buildId) becomes visible, the matching GLB is
-    # already in place. On the rare chance the second replace fails, clean up the
-    # orphan json temp.
-    paths.atomic_finalize(glb_tmp, glb_final)
     try:
-        paths.atomic_finalize(json_tmp, json_final)
+        with open(glb_tmp, "rb") as handle:
+            glb = handle.read()
+        with open(json_tmp, "rb") as handle:
+            model_json = handle.read()
+        staged = paths.stage_publication(
+            artifacts_dir,
+            publication,
+            model_json=model_json,
+            model_glb=glb,
+            model_source=model_source,
+            model_path=model_path,
+            write_set=write_set,
+        )
+        paths.commit_publication(artifacts_dir, staged)
     except BaseException:
-        _cleanup(json_tmp)
+        _cleanup(glb_tmp, json_tmp)
         raise
 
-    return {"ok": True, "buildId": build_id}
+    _cleanup(glb_tmp, json_tmp)
+    return {
+        "ok": True,
+        "buildId": build_id,
+        "publicationId": publication.publication_id,
+        "sourceHash": publication.source_hash,
+    }
 
 
 def _cleanup(*temp_paths: str) -> None:
     for tmp in temp_paths:
         with contextlib.suppress(OSError):
             os.remove(tmp)
+
+
+def _empty_glb() -> bytes:
+    """Return a minimal valid glTF binary whose default scene has no nodes."""
+    document = json.dumps(
+        {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": []}]}
+    ).encode()
+    document += b" " * (-len(document) % 4)
+    return (
+        b"glTF"
+        + (2).to_bytes(4, "little")
+        + (20 + len(document)).to_bytes(4, "little")
+        + (len(document).to_bytes(4, "little") + b"JSON" + document)
+    )

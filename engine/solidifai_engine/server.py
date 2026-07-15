@@ -666,9 +666,10 @@ _HANDLERS: dict[str, Any] = {
     "diff_against": lambda srv, p: srv._session.diff_against(int(srv._require(p, "index"))),
     "build_report": lambda srv, p: srv._session.build_report(p.get("views")),
     "import_reference": lambda srv, p: srv._session.import_reference(
-        srv._require(p, "path"), p.get("name")
+        srv._require(p, "path"), p.get("name"), bool(p.get("required", False))
     ),
     "stage_import": lambda srv, p: srv._session.stage_import(srv._require(p, "path")),
+    "import_capabilities": lambda srv, _p: srv._session.import_capabilities(),
     "remove_import": lambda srv, p: srv._session.remove_import(srv._require(p, "id")),
     "list_imports": lambda srv, p: srv._session.list_imports(),
     "create_drawing": lambda srv, p: srv._session.create_drawing(p.get("path"), p.get("options")),

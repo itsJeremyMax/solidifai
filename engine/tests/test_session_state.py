@@ -1,6 +1,6 @@
 import json
 
-from solidifai_engine import settings
+from solidifai_engine import paths, settings
 from solidifai_engine.session import Session
 
 PARAM_SCRIPT = """
@@ -41,6 +41,12 @@ def test_set_params_writes_settings_json(tmp_path):
 
     sess.set_params({"size": 42.0})
     assert settings.load_params(str(root)) == {"size": 42.0}
+    pointer = paths.read_current_publication(str(artifacts))
+    assert pointer is not None
+    generation = artifacts / "generations" / pointer.publication_id
+    assert json.loads((generation / "inputs" / "settings.json").read_text())["params"] == {
+        "size": 42.0
+    }
 
 
 def test_startup_applies_saved_values_over_defaults(tmp_path):
@@ -180,3 +186,45 @@ def test_restore_rebuild_failure_returns_clean_error(tmp_path, monkeypatch):
     assert res["ok"] is False
     assert "traceback" not in res  # no internal traceback leaked
     assert res["error"] == "could not rebuild the restored model state"
+
+
+def test_source_publication_failure_keeps_last_good_session_state(tmp_path, monkeypatch):
+    root, model, artifacts = _ws(tmp_path)
+    sess = Session(str(artifacts), model_path=str(model))
+    assert sess.execute_script(PARAM_SCRIPT)["ok"] is True
+    prior_objects = sess._objects
+    prior_model = sess._model
+    prior_hash = sess._model_hash
+    prior_build = sess.build_id
+    prior_source = model.read_text()
+    original = paths.atomic_finalize
+
+    def fail_source(tmp, final):
+        if final == str(model):
+            raise OSError("source disk full")
+        original(tmp, final)
+
+    monkeypatch.setattr(paths, "atomic_finalize", fail_source)
+    result = sess.execute_script(PARAM_SCRIPT.replace("20.0", "30.0"))
+
+    assert result["ok"] is True
+    assert sess.build_id == prior_build + 1
+    assert sess._objects is not prior_objects
+    assert sess._model is not prior_model
+    assert sess._model_hash != prior_hash
+    assert model.read_text() == prior_source
+    monkeypatch.setattr(paths, "atomic_finalize", original)
+    paths.recover_publication(str(artifacts))
+    assert model.read_text() != prior_source
+
+
+def test_model_metadata_and_conformance_bind_to_publication_source_hash(tmp_path):
+    root, model, artifacts = _ws(tmp_path)
+    sess = Session(str(artifacts), model_path=str(model))
+    result = sess.execute_script(PARAM_SCRIPT)
+
+    metadata = json.loads((artifacts / "model.json").read_text())
+    pointer = json.loads((artifacts / "current.json").read_text())
+    assert metadata["publicationId"] == result["publicationId"] == pointer["publicationId"]
+    assert metadata["sourceHash"] == sess._model_hash == pointer["sourceHash"]
+    assert sess._persistence_evidence() is True

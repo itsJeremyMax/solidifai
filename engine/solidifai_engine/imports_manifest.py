@@ -42,7 +42,21 @@ def _write(root: str, entries: list[dict]) -> None:
 
 
 def add(root: str, entry: dict) -> dict:
-    """Append ``entry`` (a collision-safe ``id`` is assigned from its name/id)."""
+    """Append ``entry`` (a collision-safe ``id`` is assigned from its name/id).
+
+    The v1 ``id``/``name``/``path``/``format`` records remain valid. New callers
+    may additionally persist ``required`` and a small source ``provenance`` map.
+    """
+    if "required" in entry and not isinstance(entry["required"], bool):
+        raise ValueError("import.required must be a boolean")
+    provenance = entry.get("provenance")
+    if provenance is not None and (
+        not isinstance(provenance, dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in provenance.items()
+        )
+    ):
+        raise ValueError("import.provenance must be a string-to-string object")
     entries = load(root)
     used = {e["id"] for e in entries}
     base = _slug(entry.get("id") or entry.get("name") or "import")

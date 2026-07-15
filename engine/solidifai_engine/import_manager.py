@@ -17,6 +17,11 @@ from typing import TYPE_CHECKING
 import solidifai
 from solidifai_engine import imports_manifest, paths
 from solidifai_engine import reverse as reverse_mod
+from solidifai_engine.import_adapters import (
+    get_adapter,
+    import_capabilities,
+    unsupported_diagnostic,
+)
 
 if TYPE_CHECKING:
     from solidifai_engine.session import Session
@@ -56,19 +61,48 @@ class ImportManager:
         touch model.py. Script-shown references (``show(..., role="reference")``,
         the inside-out-packaging convention) are NOT manifest entries and must
         survive — only objects this refresh itself added are swept."""
+        self.s._reference_status = {}
         if self.s.root is None:
             return
         reg = solidifai._registry()
         reg[:] = [o for o in reg if not getattr(o, "_from_manifest", False)]
         solidifai.set_workspace_root(self.s.root)
         for e in imports_manifest.load(self.s.root):
+            import_id = str(e["id"])
+            status = {
+                "required": bool(e.get("required", False)),
+                "path": e["path"],
+                "format": e.get("format"),
+            }
+            try:
+                get_adapter(e["path"])
+            except ValueError:
+                self.s._reference_status[import_id] = {
+                    **status,
+                    "status": "unsupported",
+                    "diagnostic": unsupported_diagnostic(e["path"]),
+                }
+                continue
             try:
                 shape = solidifai.import_cad(e["path"])
+                # Imported STL shells are intentionally not always topologically
+                # valid solids, but a null shape is never usable as a reference.
+                if shape is None or shape.is_null:
+                    raise ValueError("loader returned an empty shape")
                 obj = solidifai.show(shape, name=e.get("name") or e["id"], role="reference")
                 obj._from_manifest = True
-            except Exception:  # noqa: BLE001 - a bad reference never breaks the build
+                self.s._reference_status[import_id] = {**status, "status": "loaded"}
+            except Exception as exc:  # noqa: BLE001 - retain the dependency failure as evidence
+                self.s._reference_status[import_id] = {
+                    **status,
+                    "status": "failed",
+                    "diagnostic": {
+                        "code": "reference_load_failed",
+                        "message": f"{type(exc).__name__}: {exc}",
+                    },
+                }
                 logging.getLogger(__name__).warning(
-                    "reference %r skipped", e.get("id"), exc_info=True
+                    "reference %r failed to load", import_id, exc_info=True
                 )
 
     @staticmethod
@@ -93,11 +127,13 @@ class ImportManager:
             return {"ok": False, "error": "imports need a saved workspace"}
         if not os.path.exists(source_path):
             return {"ok": False, "error": f"file not found: {source_path!r}"}
-        ext = os.path.splitext(source_path)[1].lower()
-        if ext not in (".step", ".stp", ".brep", ".stl"):
+        try:
+            adapter = get_adapter(source_path)
+        except ValueError:
             return {
                 "ok": False,
-                "error": f"unsupported import format {ext!r}; expected .step/.stp/.brep/.stl",
+                "error": unsupported_diagnostic(source_path)["message"],
+                "diagnostic": unsupported_diagnostic(source_path),
             }
         assets = paths.assets_dir(self.s.root)
         os.makedirs(assets, exist_ok=True)
@@ -106,10 +142,15 @@ class ImportManager:
         return {
             "ok": True,
             "path": os.path.join("assets", os.path.basename(dest)),
-            "format": ext.lstrip("."),
+            # Preserve v1's extension-level format field (.stp stayed "stp")
+            # while capability metadata uses the canonical adapter format id.
+            "format": os.path.splitext(source_path)[1].lower().lstrip("."),
+            "roleCapability": adapter.role_capability,
         }
 
-    def import_reference(self, source_path: str, name: str | None = None) -> dict:
+    def import_reference(
+        self, source_path: str, name: str | None = None, required: bool = False
+    ) -> dict:
         """Bring an external file in as a ghosted reference fixture: copy it into
         ``assets/``, record it in ``imports.json``, and re-render. References are
         shown and measurable but never exported or DFM-checked."""
@@ -119,7 +160,13 @@ class ImportManager:
         label = name or os.path.splitext(os.path.basename(staged["path"]))[0]
         entry = imports_manifest.add(
             self.s.root,
-            {"name": label, "path": staged["path"], "format": staged["format"]},
+            {
+                "name": label,
+                "path": staged["path"],
+                "format": staged["format"],
+                "required": required,
+                "provenance": {"sourcePath": source_path, "sourceFormat": staged["format"]},
+            },
         )
         res = self.s._rebuild_preserving_params()
         if not res.get("ok"):
@@ -142,3 +189,6 @@ class ImportManager:
         if self.s.root is None:
             return {"imports": []}
         return {"imports": imports_manifest.load(self.s.root)}
+
+    def import_capabilities(self) -> dict:
+        return {"formats": import_capabilities()}

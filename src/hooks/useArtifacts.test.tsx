@@ -5,41 +5,58 @@ import { renderHook, waitFor, act } from "@testing-library/react";
 
 import { useArtifacts, clearArtifactCache } from "./useArtifacts";
 
-// Mock the ipc boundary. parseModelInfo (from ../lib/artifacts) is NOT mocked, so
-// readModelJson must return a real, valid manifest string for the parse to land a
-// model. onModelUpdated returns an unlisten fn so the effect cleanup is a no-op.
+// Mock the IPC boundary. parseModelInfo (from ../lib/artifacts) is NOT mocked, so
+// snapshots carry real manifest strings. onModelUpdated returns an unlisten fn so
+// the event path stays inert unless a test drives it.
 vi.mock("../lib/ipc/workspace", () => ({
-  readModelJson: vi.fn(),
-  readModelGlb: vi.fn(),
+  readModelSnapshot: vi.fn(),
 }));
 vi.mock("../lib/ipc/status", () => ({
   onModelUpdated: vi.fn(),
 }));
 
-import { readModelJson, readModelGlb } from "../lib/ipc/workspace";
+import { readModelSnapshot } from "../lib/ipc/workspace";
 import { onModelUpdated } from "../lib/ipc/status";
 
-const readModelJsonMock = vi.mocked(readModelJson);
-const readModelGlbMock = vi.mocked(readModelGlb);
+const readModelSnapshotMock = vi.mocked(readModelSnapshot);
 const onModelUpdatedMock = vi.mocked(onModelUpdated);
 
 // Minimal manifest that satisfies parseModelInfo's strict validation, parameterized
 // by buildId so we can simulate distinct builds.
-function manifest(buildId: number): string {
+function manifest(
+  buildId: number,
+  publicationId = `pub-${buildId}`,
+  { empty = false }: { empty?: boolean } = {},
+): string {
   return JSON.stringify({
     schema: 2,
     buildId,
+    publicationId,
     units: "mm",
     build: { ok: true, durationMs: 1, warnings: [] },
-    objects: [],
-    bbox: { size: [1, 1, 1], min: [0, 0, 0], max: [1, 1, 1] },
-    volume: 1,
-    centerOfMass: [0, 0, 0],
+    objects: empty
+      ? []
+      : [{ id: "body", name: "Body", kind: "Solid", node: "body", visible: true }],
+    bbox: empty ? null : { size: [1, 1, 1], min: [0, 0, 0], max: [1, 1, 1] },
+    volume: empty ? 0 : 1,
+    centerOfMass: empty ? null : [0, 0, 0],
     mass: { value: 1, material: "aluminum", density: 2.7 },
     valid: true,
     manifold: true,
     params: { schema: {}, values: {} },
   });
+}
+
+function snapshot(buildId: number, glb: number[] = [buildId]) {
+  return { publicationId: `pub-${buildId}`, manifest: manifest(buildId), glb };
+}
+
+function emptySnapshot(buildId: number) {
+  return {
+    publicationId: `pub-${buildId}`,
+    manifest: manifest(buildId, `pub-${buildId}`, { empty: true }),
+    glb: [],
+  };
 }
 
 describe("useArtifacts", () => {
@@ -57,8 +74,7 @@ describe("useArtifacts", () => {
   });
 
   it("populates the model + glb on the initial load", async () => {
-    readModelJsonMock.mockResolvedValue(manifest(1));
-    readModelGlbMock.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    readModelSnapshotMock.mockResolvedValue(snapshot(1, [1, 2, 3]));
 
     const { result } = renderHook(() => useArtifacts("/ws/a"));
 
@@ -67,31 +83,28 @@ describe("useArtifacts", () => {
     expect(result.current.glbBytes).toEqual(new Uint8Array([1, 2, 3]));
   });
 
-  it("applies the manifest even when the GLB read fails (json landed first)", async () => {
-    // GLB not on disk yet: the manifest still applies, glb stays null. This is the
-    // "out of order / partial write" recovery the hook is built to tolerate.
-    readModelJsonMock.mockResolvedValue(manifest(2));
-    readModelGlbMock.mockRejectedValue(new Error("no glb yet"));
+  it("keeps the existing coherent pair when a snapshot read fails", async () => {
+    readModelSnapshotMock.mockRejectedValue(new Error("snapshot unavailable"));
 
     const { result } = renderHook(() => useArtifacts("/ws/a"));
 
-    await waitFor(() => expect(result.current.model?.buildId).toBe(2));
+    await waitFor(() => expect(readModelSnapshotMock).toHaveBeenCalled());
+    expect(result.current.model).toBeNull();
     expect(result.current.glbBytes).toBeNull();
-    expect(result.current.buildId).toBe(-1); // never advanced past the GLB failure
+    expect(result.current.buildId).toBe(-1);
   });
 
   it("recovers on a refresh after an initial error", async () => {
     // First load: json itself throws -> model stays null (clean empty state).
-    readModelJsonMock.mockRejectedValueOnce(new Error("engine not ready"));
-    readModelGlbMock.mockResolvedValue(new Uint8Array([9]));
+    readModelSnapshotMock.mockRejectedValueOnce(new Error("engine not ready"));
 
     const { result } = renderHook(() => useArtifacts("/ws/a"));
 
-    await waitFor(() => expect(readModelJsonMock).toHaveBeenCalled());
+    await waitFor(() => expect(readModelSnapshotMock).toHaveBeenCalled());
     expect(result.current.model).toBeNull();
 
     // Engine comes up; an explicit refresh now succeeds and populates state.
-    readModelJsonMock.mockResolvedValue(manifest(3));
+    readModelSnapshotMock.mockResolvedValue(snapshot(3, [9]));
     await act(async () => {
       await result.current.refresh();
     });
@@ -101,29 +114,93 @@ describe("useArtifacts", () => {
     expect(result.current.glbBytes).toEqual(new Uint8Array([9]));
   });
 
-  // Latest-wins note: a fully deterministic "overlapping refresh, latest wins"
-  // race is impractical to force here AND is not actually guaranteed by the hook.
-  // The hook only guards the GLB fetch against the EXACT already-loaded buildId
-  // (loadedBuildRef equality), and setModel runs unconditionally per refresh, so a
-  // late-resolving stale json can still overwrite a newer one. We therefore assert
-  // the deduping that IS guaranteed: re-reading the SAME build skips the redundant
-  // GLB fetch (no stale re-fetch / churn), rather than asserting cross-refresh
-  // ordering the implementation does not promise.
-  it("skips the redundant GLB fetch when the build is unchanged", async () => {
-    readModelJsonMock.mockResolvedValue(manifest(5));
-    readModelGlbMock.mockResolvedValue(new Uint8Array([7]));
+  it("uses publication identity when an engine restart reuses a build id", async () => {
+    readModelSnapshotMock.mockResolvedValueOnce(snapshot(5, [7]));
 
     const { result } = renderHook(() => useArtifacts("/ws/a"));
 
     await waitFor(() => expect(result.current.buildId).toBe(5));
-    expect(readModelGlbMock).toHaveBeenCalledTimes(1);
+    expect(result.current.glbBytes).toEqual(new Uint8Array([7]));
 
-    // Same buildId again: manifest is re-read, but the GLB fetch is deduped.
+    readModelSnapshotMock.mockResolvedValueOnce({
+      publicationId: "pub-after-restart",
+      manifest: manifest(5, "pub-after-restart"),
+      glb: [8],
+    });
     await act(async () => {
       await result.current.refresh();
     });
 
-    expect(readModelGlbMock).toHaveBeenCalledTimes(1);
-    expect(readModelJsonMock.mock.calls.length).toBeGreaterThan(1);
+    expect(result.current.glbBytes).toEqual(new Uint8Array([8]));
+  });
+
+  it("replaces the final part with an empty publication", async () => {
+    readModelSnapshotMock.mockResolvedValueOnce(snapshot(1, [1]));
+    const { result } = renderHook(() => useArtifacts("/ws/a"));
+    await waitFor(() => expect(result.current.model?.buildId).toBe(1));
+
+    readModelSnapshotMock.mockResolvedValueOnce(emptySnapshot(2));
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.model?.objects).toEqual([]);
+    expect(result.current.glbBytes).toEqual(new Uint8Array());
+    expect(result.current.buildId).toBe(2);
+  });
+
+  it("keeps the latest empty publication when an older non-empty refresh resolves", async () => {
+    let resolveFirst!: (value: ReturnType<typeof snapshot>) => void;
+    const first = new Promise<ReturnType<typeof snapshot>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    readModelSnapshotMock.mockReturnValueOnce(first).mockResolvedValueOnce(emptySnapshot(2));
+
+    const { result } = renderHook(() => useArtifacts("/ws/a"));
+    await act(async () => {
+      await result.current.refresh();
+    });
+    await waitFor(() => expect(result.current.model?.objects).toEqual([]));
+
+    await act(async () => {
+      resolveFirst(snapshot(1, [1]));
+      await first;
+    });
+    expect(result.current.model?.objects).toEqual([]);
+    expect(result.current.glbBytes).toEqual(new Uint8Array());
+  });
+
+  it("keeps accepting a legacy publication without a publication id", async () => {
+    readModelSnapshotMock.mockResolvedValue({
+      publicationId: null,
+      manifest: manifest(4, "legacy"),
+      glb: [4],
+    });
+
+    const { result } = renderHook(() => useArtifacts("/ws/a"));
+    await waitFor(() => expect(result.current.model?.buildId).toBe(4));
+    expect(result.current.publicationId).toBeNull();
+    expect(result.current.glbBytes).toEqual(new Uint8Array([4]));
+  });
+
+  it("keeps the latest snapshot when an older refresh resolves afterwards", async () => {
+    let resolveFirst!: (value: ReturnType<typeof snapshot>) => void;
+    const first = new Promise<ReturnType<typeof snapshot>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    readModelSnapshotMock.mockReturnValueOnce(first).mockResolvedValueOnce(snapshot(2, [2]));
+
+    const { result } = renderHook(() => useArtifacts("/ws/a"));
+    await act(async () => {
+      await result.current.refresh();
+    });
+    await waitFor(() => expect(result.current.model?.buildId).toBe(2));
+
+    await act(async () => {
+      resolveFirst(snapshot(1, [1]));
+      await first;
+    });
+    expect(result.current.model?.buildId).toBe(2);
+    expect(result.current.glbBytes).toEqual(new Uint8Array([2]));
   });
 });

@@ -1,10 +1,10 @@
 //! Artifact watcher: emits `model-updated` when the engine writes a new model,
 //! and `workspace-meta-updated` when its `workspace.json` changes.
 //!
-//! The engine atomically replaces `<ws>/.solidifai/artifacts/model.json` on every
-//! successful build (GLB first, then JSON — see `engine/solidifai_engine/render.py`).
-//! We watch the artifacts directory and, on a debounced change to `model.json`,
-//! read it, parse `buildId`, and emit `model-updated { buildId }` to the frontend.
+//! The engine atomically replaces `<ws>/.solidifai/artifacts/current.json` only
+//! after an immutable generation is durable. We watch that pointer and emit its
+//! `{ publicationId, buildId }`; root model files are JSON-last compatibility
+//! mirrors for old engines and are consulted only when no pointer exists.
 //!
 //! Separately we watch the workspace root (non-recursively) for `workspace.json`
 //! writes (Sol editing the workspace name/description/tags). On change we refresh
@@ -32,6 +32,8 @@ pub struct WatcherState {
 struct ModelUpdated {
     #[serde(rename = "buildId")]
     build_id: u64,
+    #[serde(rename = "publicationId", skip_serializing_if = "Option::is_none")]
+    publication_id: Option<String>,
 }
 
 /// `workspace-meta-updated` event payload. `rename_all` makes `ws_id` serialize as
@@ -55,6 +57,10 @@ fn is_model_json(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()) == Some("model.json")
 }
 
+fn is_current_pointer(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()) == Some("current.json")
+}
+
 /// True when `path` is a workspace's `workspace.json` metadata file.
 fn is_workspace_json(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()) == Some("workspace.json")
@@ -71,13 +77,25 @@ fn parse_build_id(json: &str) -> Option<u64> {
     v.get("buildId").and_then(serde_json::Value::as_u64)
 }
 
-/// Read `model.json` and emit `model-updated { buildId }` if it parses.
-fn emit_model_updated(app: &AppHandle, model_json: &Path) {
-    let Ok(text) = std::fs::read_to_string(model_json) else {
+fn parse_model_updated(json: &str) -> Option<ModelUpdated> {
+    let build_id = parse_build_id(json)?;
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    Some(ModelUpdated {
+        build_id,
+        publication_id: value
+            .get("publicationId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// Read a current pointer or legacy manifest and emit its model-updated payload.
+fn emit_model_updated(app: &AppHandle, pointer_or_model_json: &Path) {
+    let Ok(text) = std::fs::read_to_string(pointer_or_model_json) else {
         return; // file vanished mid-write; the next event will catch up.
     };
-    if let Some(build_id) = parse_build_id(&text) {
-        let _ = app.emit("model-updated", ModelUpdated { build_id });
+    if let Some(event) = parse_model_updated(&text) {
+        let _ = app.emit("model-updated", event);
     }
 }
 
@@ -125,10 +143,18 @@ pub fn start(app: AppHandle, artifacts_dir: &Path, root: &Path) -> Result<Watche
             // If any event touched the finalized model.json, re-read it once and
             // emit. We don't trust the event's own buildId; we read the file so the
             // emitted id always matches what's on disk.
-            let model_touched = events
+            let pointer_touched = events
                 .iter()
-                .any(|ev| ev.paths.iter().any(|p| is_model_json(p)));
-            if model_touched {
+                .any(|ev| ev.paths.iter().any(|p| is_current_pointer(p)));
+            if pointer_touched {
+                emit_model_updated(&app, &artifacts_owned.join("current.json"));
+            } else if !artifacts_owned.join("current.json").exists()
+                && events
+                    .iter()
+                    .any(|ev| ev.paths.iter().any(|p| is_model_json(p)))
+            {
+                // Old engines publish only root mirrors. Once current.json exists,
+                // mirror writes/errors are deliberately ignored.
                 emit_model_updated(&app, &artifacts_owned.join("model.json"));
             }
             // If any event touched workspace.json, recache + notify the frontend.
@@ -212,11 +238,29 @@ mod tests {
         assert_eq!(parse_build_id("not json"), None);
     }
 
+    #[test]
+    fn current_pointer_is_the_authoritative_publication_event() {
+        let event = parse_model_updated(r#"{"publicationId":"pub-2","buildId":2}"#);
+        assert_eq!(
+            event
+                .as_ref()
+                .and_then(|event| event.publication_id.as_deref()),
+            Some("pub-2")
+        );
+        assert_eq!(event.as_ref().map(|event| event.build_id), Some(2));
+        assert!(is_current_pointer(Path::new(
+            "/ws/.solidifai/artifacts/current.json"
+        )));
+        assert!(!is_current_pointer(Path::new(
+            "/ws/.solidifai/artifacts/model.json"
+        )));
+    }
+
     /// End-to-end: a real debouncer watching a temp dir fires our path filter when
-    /// model.json is written, and not for a *.tmp write. We exercise the same
+    /// current.json is atomically published, and not for a *.tmp write. We exercise the same
     /// filtering logic the live handler uses by collecting touched paths.
     #[test]
-    fn debouncer_fires_on_model_json_write() {
+    fn debouncer_fires_on_current_pointer_write() {
         let dir = std::env::temp_dir().join(format!(
             "solidifai-watch-test-{}-{}",
             std::process::id(),
@@ -235,7 +279,7 @@ mod tests {
                 if let Ok(events) = result {
                     if events
                         .iter()
-                        .any(|ev| ev.paths.iter().any(|p| is_model_json(p)))
+                        .any(|ev| ev.paths.iter().any(|p| is_current_pointer(p)))
                     {
                         let _ = tx.send(true);
                     }
@@ -245,13 +289,17 @@ mod tests {
         .unwrap();
         debouncer.watch(&dir, RecursiveMode::Recursive).unwrap();
 
-        // A .tmp write must NOT trigger the model.json filter.
-        std::fs::write(dir.join("model.json.tmp"), b"{}").unwrap();
-        // The finalized write MUST trigger it.
-        std::fs::write(dir.join("model.json"), br#"{"buildId":1}"#).unwrap();
+        // A .tmp write must NOT trigger the current-pointer filter.
+        std::fs::write(dir.join("current.json.tmp"), b"{}").unwrap();
+        // The finalized pointer write MUST trigger it.
+        std::fs::write(
+            dir.join("current.json"),
+            br#"{"publicationId":"pub-1","buildId":1}"#,
+        )
+        .unwrap();
 
         let got = rx.recv_timeout(Duration::from_secs(5)).unwrap_or(false);
-        assert!(got, "expected a model.json change to be observed");
+        assert!(got, "expected a current.json change to be observed");
 
         drop(debouncer);
         let _ = std::fs::remove_dir_all(&dir);

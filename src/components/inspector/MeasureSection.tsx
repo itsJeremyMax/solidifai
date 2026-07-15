@@ -103,10 +103,17 @@ export default function MeasureSection({
   onSelectPart: (id: string | null) => void;
 }) {
   const buildId = model?.buildId ?? -1;
-  const { report, loading, error, refresh } = useMeasure(buildId, active && buildId >= 0);
+  const { report, loading, error, refresh } = useMeasure(
+    buildId,
+    active && buildId >= 0 && (model?.objects.length ?? 0) > 0,
+  );
 
-  if (model === null) {
-    return <div className="px-3.5 pb-3 pt-0.5 text-xs text-ink-3">No model yet</div>;
+  if (model === null || model.objects.length === 0 || model.bbox === null) {
+    return (
+      <div className="px-3.5 pb-3 pt-0.5 text-xs text-ink-3">
+        {model === null ? "No model yet" : "Empty model"}
+      </div>
+    );
   }
 
   const solids = report?.parts.filter(isSolidPart) ?? [];

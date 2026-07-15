@@ -2,11 +2,11 @@
  * Artifact types + parsing for the engine's `model.json` render manifest.
  *
  * The engine writes a `model.json` (this {@link ModelInfo} shape) plus a sibling
- * `model.glb` on every successful build. The Rust side surfaces the JSON via the
- * `read_model_json` command and the GLB bytes via `read_model_glb`; a
- * `model-updated` event fires (with the new `buildId`) whenever a fresh build
- * lands. {@link parseModelInfo} validates the JSON defensively so a malformed or
- * partial manifest degrades to `null` rather than throwing into the render path.
+ * `model.glb` on every successful build. The Rust side surfaces one immutable
+ * generation through `read_model_snapshot`; a `model-updated` event carries its
+ * `publicationId` and `buildId` whenever a fresh build lands. {@link parseModelInfo}
+ * validates the JSON defensively so a malformed manifest degrades to `null` rather
+ * than throwing into the render path.
  */
 
 /** Per-object PBR appearance resolved by the engine (schema 2+). */
@@ -75,9 +75,9 @@ export interface ModelInfo {
   units: "mm";
   build: { ok: boolean; durationMs: number; warnings: string[] };
   objects: ModelObject[];
-  bbox: { size: Vec3; min: Vec3; max: Vec3 };
+  bbox: { size: Vec3; min: Vec3; max: Vec3 } | null;
   volume: number;
-  centerOfMass: Vec3;
+  centerOfMass: Vec3 | null;
   mass: { value: number; material: string; density: number };
   valid: boolean;
   manifold: boolean;
@@ -158,14 +158,21 @@ export function parseModelInfo(json: string | null | undefined): ModelInfo | nul
   }
 
   if (!Array.isArray(raw.objects) || !raw.objects.every(isModelObject)) return null;
+  const isEmpty = raw.objects.length === 0;
 
-  if (!isRecord(raw.bbox)) return null;
-  if (!isVec3(raw.bbox.size) || !isVec3(raw.bbox.min) || !isVec3(raw.bbox.max)) {
-    return null;
-  }
+  const hasBBox =
+    isRecord(raw.bbox) && isVec3(raw.bbox.size) && isVec3(raw.bbox.min) && isVec3(raw.bbox.max);
+  // A final-part deletion has no extents or center. Older empty artifacts may
+  // still carry zero-size extents, so retain that compatible representation.
+  if ((!isEmpty && !hasBBox) || (isEmpty && !(hasBBox || raw.bbox === null))) return null;
 
   if (typeof raw.volume !== "number" || !Number.isFinite(raw.volume)) return null;
-  if (!isVec3(raw.centerOfMass)) return null;
+  if (
+    (!isEmpty && !isVec3(raw.centerOfMass)) ||
+    (isEmpty && !(isVec3(raw.centerOfMass) || raw.centerOfMass === null))
+  ) {
+    return null;
+  }
 
   if (!isRecord(raw.mass)) return null;
   const mass = raw.mass;

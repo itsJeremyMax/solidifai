@@ -7,7 +7,9 @@ import {
   engineExport,
   engineExportWithOverride,
   engineGetConformance,
+  engineGetImportCapabilities,
   engineGetReadiness,
+  pickCadFile,
 } from "./engine";
 
 describe("strict export IPC", () => {
@@ -39,5 +41,15 @@ describe("strict export IPC", () => {
     await expect(engineGetReadiness()).resolves.toBe("readiness");
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "engine_get_conformance", undefined);
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "engine_get_readiness", undefined);
+  });
+
+  it("gets engine import capabilities and passes their extensions to the picker", async () => {
+    mocks.invoke.mockResolvedValueOnce('{"formats":{}}').mockResolvedValueOnce("/tmp/a.svg");
+    await expect(engineGetImportCapabilities()).resolves.toBe('{"formats":{}}');
+    await expect(pickCadFile([".step", ".svg"])).resolves.toBe("/tmp/a.svg");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "engine_get_import_capabilities", undefined);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "pick_cad_file", {
+      extensions: [".step", ".svg"],
+    });
   });
 });

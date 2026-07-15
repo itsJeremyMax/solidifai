@@ -19,6 +19,10 @@ def _status(value: Any, *, applicable: bool = True) -> VerificationStatus:
         return "not_applicable"
     if isinstance(value, Mapping):
         value = value.get("status", value.get("pass"))
+    if value == "loaded":
+        return "pass"
+    if value in {"failed", "unsupported"}:
+        return "fail"
     if value in {"pass", "fail", "unknown", "not_applicable"}:
         return value
     if value is True:
@@ -57,6 +61,50 @@ def _evaluate_section(
                 ),
                 _severity(item, default),
                 f"{message} {item_id}",
+            )
+        )
+
+
+def _reference_required(item: Mapping[str, Any], status: Any) -> bool:
+    """A manifest-required reference remains mandatory even when the brief omits
+    it or labels the matching obligation optional. Brief references default to
+    required to preserve the original conformance contract."""
+    manifest_required = isinstance(status, Mapping) and status.get("required") is True
+    return manifest_required or item.get("required", True) is not False
+
+
+def _evaluate_references(
+    findings: list[dict], brief: Mapping[str, Any], context: Mapping[str, Any]
+) -> None:
+    statuses = context.get("reference_status") or {}
+    declared_ids: set[str] = set()
+    for item in brief.get("references") or []:
+        if not isinstance(item, Mapping):
+            continue
+        item_id = str(item.get("id", "reference"))
+        declared_ids.add(item_id)
+        required = _reference_required(item, statuses.get(item_id))
+        findings.append(
+            _finding(
+                f"reference:{item_id}",
+                _status(
+                    statuses.get(item_id), applicable=item.get("applicable", True) is not False
+                ),
+                "blocking" if required else "warning",
+                f"reference {item_id}",
+            )
+        )
+    for item_id, status in statuses.items():
+        item_id = str(item_id)
+        if item_id in declared_ids:
+            continue
+        required = isinstance(status, Mapping) and status.get("required") is True
+        findings.append(
+            _finding(
+                f"reference:{item_id}",
+                _status(status),
+                "blocking" if required else "warning",
+                f"reference {item_id}",
             )
         )
 
@@ -130,15 +178,7 @@ def evaluate(brief: Mapping[str, Any] | None, context: Mapping[str, Any]) -> dic
         context_key="interface_status",
         message="interface",
     )
-    _evaluate_section(
-        findings,
-        brief,
-        context,
-        section="references",
-        prefix="reference",
-        context_key="reference_status",
-        message="reference",
-    )
+    _evaluate_references(findings, brief, context)
 
     requirement_results = {
         str(item.get("id")): item

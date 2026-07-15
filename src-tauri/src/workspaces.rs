@@ -720,15 +720,41 @@ pub async fn pick_directory(app: AppHandle) -> Option<String> {
     .flatten()
 }
 
-/// Native file picker for a CAD/mesh file to import (STEP/STP/BREP/STL). Returns
-/// the absolute path, or None if the user cancelled. Blocking dialog runs off the
-/// main thread (like `pick_directory`).
+const LEGACY_CAD_EXTENSIONS: &[&str] = &["step", "stp", "brep", "stl"];
+
+fn picker_extensions(extensions: Option<Vec<String>>) -> Vec<String> {
+    let normalized: Vec<String> = extensions
+        .unwrap_or_default()
+        .into_iter()
+        .map(|extension| {
+            extension
+                .trim()
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|extension| !extension.is_empty())
+        .collect();
+    if normalized.is_empty() {
+        LEGACY_CAD_EXTENSIONS
+            .iter()
+            .map(|extension| (*extension).to_string())
+            .collect()
+    } else {
+        normalized
+    }
+}
+
+/// Native file picker for capability-advertised CAD/mesh files. When the engine
+/// is unavailable the frontend sends no extensions and this retains the legacy
+/// STEP/STP/BREP/STL filter.
 #[tauri::command]
-pub async fn pick_cad_file(app: AppHandle) -> Option<String> {
+pub async fn pick_cad_file(app: AppHandle, extensions: Option<Vec<String>>) -> Option<String> {
+    let extensions = picker_extensions(extensions);
     tauri::async_runtime::spawn_blocking(move || {
+        let extension_refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
         app.dialog()
             .file()
-            .add_filter("CAD & mesh", &["step", "stp", "brep", "stl"])
+            .add_filter("CAD & mesh", &extension_refs)
             .blocking_pick_file()
             .and_then(|p| p.into_path().ok())
             .map(|p| p.to_string_lossy().into_owned())

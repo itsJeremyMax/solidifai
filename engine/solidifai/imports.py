@@ -1,31 +1,18 @@
 """Load external CAD/mesh files as build123d objects for ``model.py``.
 
-``import_cad(path)`` is the shared loader behind both workflows: a STEP/STP/BREP
-file comes in as an exact, modifiable solid; an STL comes in as a surface mesh
-(a ``Face``) suitable for a ghosted reference. Relative paths resolve against the
-workspace root the engine sets via ``set_workspace_root`` before each build (the
-engine never chdirs -- that would be a process-global side effect under the
-request lock). build123d is imported lazily so ``import solidifai`` stays light.
-
-3MF import is intentionally not here yet: build123d has no ``import_3mf`` (it is
-export-only), so it needs a separate lib3mf mesh reader. STL covers the mesh
-reference case; the manifest/role/render/export path is format-agnostic, so a 3MF
-loader slots in here later with nothing else to change.
+``import_cad(path)`` resolves only adapters that are executable in the packaged
+build123d dependency set. Relative paths resolve against the workspace root the
+engine sets via ``set_workspace_root`` before each build (the engine never chdirs
+-- that would be a process-global side effect under the request lock).
 """
 
 from __future__ import annotations
 
 import os
 
-_WORKSPACE_ROOT: str | None = None
+from solidifai_engine.import_adapters import get_adapter
 
-# Supported extensions -> the build123d importer name (resolved lazily).
-_LOADER_NAMES = {
-    ".step": "import_step",
-    ".stp": "import_step",
-    ".brep": "import_brep",
-    ".stl": "import_stl",
-}
+_WORKSPACE_ROOT: str | None = None
 
 
 def set_workspace_root(root: str | None) -> None:
@@ -50,16 +37,11 @@ def _resolve(path: str) -> str:
 def import_cad(path: str):
     """Load a CAD/mesh file as a build123d object.
 
-    ``.step``/``.stp``/``.brep`` -> exact solid (modifiable with build123d ops);
-    ``.stl`` -> a surface mesh (``Face``), good for a reference fixture. ``path``
-    may be absolute or relative to the workspace root. Raises ``ValueError`` for
-    an unsupported extension and ``FileNotFoundError`` for a missing file.
+    ``path`` may be absolute or relative to the workspace root. Raises
+    ``ValueError`` for an unavailable extension and ``FileNotFoundError`` for a
+    missing file. See ``import_capabilities`` for the package's current formats.
     """
-    ext = os.path.splitext(path)[1].lower()
-    loader_name = _LOADER_NAMES.get(ext)
-    if loader_name is None:
-        supported = ", ".join(sorted(_LOADER_NAMES))
-        raise ValueError(f"unsupported import format {ext!r}; expected one of {supported}")
+    adapter = get_adapter(path)
     resolved = _resolve(path)
     if not os.path.exists(resolved):
         raise FileNotFoundError(f"CAD file not found: {path!r} (resolved to {resolved!r})")
@@ -67,6 +49,4 @@ def import_cad(path: str):
     from solidifai import _record_asset
 
     _record_asset(resolved)
-    import build123d
-
-    return getattr(build123d, loader_name)(resolved)
+    return adapter.loader(resolved)

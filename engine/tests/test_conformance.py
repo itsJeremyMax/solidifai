@@ -30,6 +30,37 @@ def test_missing_required_reference_blocks_readiness():
     assert report["readiness"]["level"] == "blocked"
 
 
+def test_optional_reference_failure_warns_without_blocking_readiness():
+    report = evaluate(
+        _brief(parts=[], references=[{"id": "board", "required": False}]),
+        {"reference_status": {"board": {"status": "failed", "required": False}}},
+    )
+
+    assert _finding(report, "reference:board")["severity"] == "warning"
+    assert report["readiness"]["level"] == "needs_attention"
+
+
+def test_manifest_required_reference_failure_blocks_without_brief_obligation():
+    report = evaluate(
+        _brief(),
+        {"reference_status": {"board": {"status": "failed", "required": True}}},
+    )
+
+    assert _finding(report, "reference:board")["severity"] == "blocking"
+    assert report["readiness"]["level"] == "blocked"
+
+
+def test_required_manifest_reference_merges_with_brief_without_duplicate_finding():
+    report = evaluate(
+        _brief(references=[{"id": "board", "required": False}]),
+        {"reference_status": {"board": {"status": "failed", "required": True}}},
+    )
+
+    findings = [finding for finding in report["findings"] if finding["id"] == "reference:board"]
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "blocking"
+
+
 def test_empty_countable_requirements_are_unknown_not_ready():
     report = evaluate(
         _brief(requirements=[{"id": "functional", "required": True}]),

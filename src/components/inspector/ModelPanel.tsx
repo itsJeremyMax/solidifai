@@ -183,7 +183,7 @@ export default function ModelPanel({
             unit: entry.unit,
           }))}
           currentValues={model?.params.values ?? {}}
-          currentSize={model ? (model.bbox.size as [number, number, number]) : undefined}
+          currentSize={model?.bbox?.size as [number, number, number] | undefined}
           onApply={commit}
         />
       </CollapsibleSection>

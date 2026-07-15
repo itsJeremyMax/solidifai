@@ -158,8 +158,7 @@ pub fn run() {
             provision::get_export_dir,
             provision::reveal_workspace_dir,
             provision::workspace_has_model,
-            provision::read_model_json,
-            provision::read_model_glb,
+            provision::read_model_snapshot,
             // Workspace launcher / lifecycle.
             workspaces::list_workspaces,
             workspaces::create_workspace,
@@ -253,6 +252,8 @@ pub fn run() {
             rpc::engine_diff_against,
             rpc::engine_build_report,
             rpc::engine_import_reference,
+            rpc::engine_stage_import,
+            rpc::engine_get_import_capabilities,
             rpc::engine_remove_import,
             rpc::engine_create_drawing,
             rpc::engine_fab_detect,
