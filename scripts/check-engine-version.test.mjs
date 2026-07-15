@@ -71,9 +71,19 @@ test("release and watcher configuration covers every tracked metadata location",
   const root = new URL("..", import.meta.url);
   for (const name of ["release-please-config.json", "release-please-config.beta.json"]) {
     const config = JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"));
-    const paths = config.packages["."]["extra-files"].map((entry) => entry.path);
+    const extraFiles = config.packages["."]["extra-files"];
+    const paths = extraFiles.map((entry) => entry.path);
     assert.ok(paths.includes("engine/uv.lock"), `${name} must update engine/uv.lock`);
+    assert.equal(
+      extraFiles.find((entry) => entry.path === "engine/uv.lock")?.type,
+      "generic",
+      `${name} must use release-please's annotated generic updater for uv.lock`,
+    );
   }
+  assert.match(
+    readFileSync(new URL("../engine/uv.lock", import.meta.url), "utf8"),
+    /version = "[^"]+" # x-release-please-version/,
+  );
   assert.match(
     readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8"),
     /\*\*\/\.worktrees\/\*\*/,

@@ -17,9 +17,8 @@
           "jsonpath": "$.project.version"
         },
         {
-          "type": "toml",
-          "path": "engine/uv.lock",
-          "jsonpath": "$.package[?(@.name == 'solidifai-engine')].version"
+          "type": "generic",
+          "path": "engine/uv.lock"
         }
       ]
     }

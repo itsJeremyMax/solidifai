@@ -812,6 +812,7 @@ fn check_protocol(engine: EngineProtocol, expected: u32, required: &[&str]) -> R
 /// startup so the workspace's durable model is live as soon as the engine is ready.
 /// `interpreter`/`engine_dir` come from [`resolve_engine_dir`], so this runs the
 /// bundled `engine-dist` interpreter in release builds and the dev venv otherwise.
+#[allow(clippy::too_many_arguments)]
 fn spawn_engine_server(
     interpreter: &Path,
     engine_dir: &Path,
