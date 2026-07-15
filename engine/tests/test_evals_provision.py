@@ -1,6 +1,7 @@
 """The eval provisioner must replicate what the app writes into a workspace."""
 
 import json
+from pathlib import Path
 
 from evals.provision import (
     MCP_SERVER_NAME,
@@ -36,6 +37,16 @@ def test_provision_replicates_app_workspace(tmp_path):
 
     directive = (ws / ".solidifai/using-solidifai-directive.md").read_text(encoding="utf-8")
     assert directive == USING_SOLIDIFAI_DIRECTIVE
+
+
+def test_provisioned_skills_are_byte_identical_to_canonical_templates(tmp_path):
+    ws = provision_workspace(tmp_path / "ws", "/opt/py")
+    source = TEMPLATES_DIR / "skills"
+
+    for template in source.rglob("*"):
+        if template.is_file():
+            relative = template.relative_to(source)
+            assert (ws / ".claude" / "skills" / relative).read_bytes() == template.read_bytes()
 
 
 def test_hook_command_matches_provision_rs_byte_for_byte(tmp_path):

@@ -37,6 +37,7 @@ import threading
 from typing import Any
 
 from solidifai_engine import ipc, protocol, scratch
+from solidifai_engine.build_brief import SCHEMA_V2
 from solidifai_engine.operations import OperationQueue, OperationRecord
 from solidifai_engine.protocol import (
     CAP_BUILD_BRIEF_V2,
@@ -472,6 +473,10 @@ class Server:
                 dispatch_params["_strict_export"] = (
                     CAP_STRICT_EXPORT in negotiation["enabledCapabilities"]
                 )
+            if method == "get_build_brief":
+                dispatch_params["_build_brief_v2"] = (
+                    CAP_BUILD_BRIEF_V2 in negotiation["enabledCapabilities"]
+                )
             dispatch_params["_include_readiness"] = (
                 CAP_READINESS in negotiation["enabledCapabilities"]
             )
@@ -737,7 +742,9 @@ _HANDLERS: dict[str, Any] = {
     "propose_build": lambda srv, p: srv._session.propose_build(
         srv._require(p, "brief"), expected_revision=p.get("expectedRevision")
     ),
-    "get_build_brief": lambda srv, p: srv._session.get_build_brief(),
+    "get_build_brief": lambda srv, p: srv._session.get_build_brief(
+        target_schema=SCHEMA_V2 if p.get("_build_brief_v2") else None
+    ),
     "get_conformance": lambda srv, p: srv._session.get_conformance(),
     "get_readiness": lambda srv, p: srv._session.get_readiness(),
     "update_build_brief": lambda srv, p: srv._session.update_build_brief(

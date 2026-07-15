@@ -185,6 +185,17 @@ def test_session_propose_build_persists_and_reads_back(tmp_path):
     assert got["brief"]["summary"] == "A lid + base box"
 
 
+def test_session_get_build_brief_preserves_v1_for_legacy_and_migrates_for_v2(tmp_path):
+    session = _sess(tmp_path)
+    assert session.propose_build(_good())["ok"] is True
+
+    legacy = session.get_build_brief()["brief"]
+    capable = session.get_build_brief(target_schema=2)["brief"]
+
+    assert legacy["schema"] == 1
+    assert capable["schema"] == 2
+
+
 def test_session_get_build_brief_none_when_absent(tmp_path):
     s = _sess(tmp_path)
     assert s.get_build_brief()["brief"] is None
@@ -262,12 +273,189 @@ def test_v2_accepts_hierarchy_and_free_form_interface_kind():
             "duplicate id",
         ),
         (_v2(parts=[{"id": "base", "name": "Base", "children": ["lid"]}]), "unknown part"),
-        (_v2(assumptions=[{"id": "a1", "statement": "uncertain", "risk": "high"}]), "disposition"),
     ],
 )
 def test_v2_rejects_invalid_references_and_risk_disposition(brief, match):
     with pytest.raises(ValueError, match=match):
         build_brief.validate_v2(brief)
+
+
+@pytest.mark.parametrize(
+    "assumption",
+    [
+        {
+            "id": "style",
+            "risk": "low",
+            "statement": "Color is a reversible styling choice",
+            "disposition": "implicit",
+        },
+        {
+            "id": "fit",
+            "risk": "functional",
+            "statement": "Fit clearance is delegated to the user",
+            "disposition": "delegated",
+            "source": "user",
+            "rationale": "User delegated fit choices",
+        },
+        {
+            "id": "heat",
+            "risk": "safety",
+            "statement": "Maximum operating temperature is confirmed",
+            "disposition": "confirmed",
+            "source": "user",
+            "rationale": "User confirmed temperature limit",
+        },
+        {
+            "id": "cert",
+            "risk": "compliance",
+            "statement": "Certification target is delegated to the user",
+            "disposition": "delegated",
+            "source": "user",
+            "rationale": "User owns certification target",
+        },
+    ],
+)
+def test_v2_accepts_risk_matrix_assumption_dispositions(assumption):
+    normalized = build_brief.validate_v2(_v2(assumptions=[assumption]))
+
+    assert normalized["assumptions"] == [assumption]
+
+
+@pytest.mark.parametrize(
+    "assumption, match",
+    [
+        (
+            {
+                "id": "fit",
+                "risk": "functional",
+                "statement": "Clearance must fit the mating part",
+                "disposition": "implicit",
+            },
+            "delegated or confirmed",
+        ),
+        (
+            {
+                "id": "heat",
+                "risk": "safety",
+                "statement": "Maximum operating temperature is known",
+                "disposition": "confirmed",
+            },
+            "source",
+        ),
+        (
+            {
+                "id": "cert",
+                "risk": "compliance",
+                "statement": "Certification target is delegated",
+                "disposition": "delegated",
+                "source": "user",
+            },
+            "rationale",
+        ),
+        (
+            {
+                "id": "unknown",
+                "risk": "critical",
+                "statement": "Unknown category",
+                "disposition": "confirmed",
+            },
+            "risk",
+        ),
+    ],
+)
+def test_v2_rejects_assumptions_outside_risk_matrix(assumption, match):
+    with pytest.raises(ValueError, match=match):
+        build_brief.validate_v2(_v2(assumptions=[assumption]))
+
+
+def test_v2_requires_a_non_empty_assumption_statement():
+    with pytest.raises(ValueError, match="statement"):
+        build_brief.validate_v2(
+            _v2(
+                assumptions=[
+                    {
+                        "id": "fit",
+                        "risk": "functional",
+                        "disposition": "confirmed",
+                        "source": "user",
+                        "rationale": "User confirmed the clearance",
+                    }
+                ]
+            )
+        )
+
+
+def test_v2_normalizes_established_legacy_assumption_fields():
+    normalized = build_brief.validate_v2(
+        _v2(
+            assumptions=[
+                {
+                    "id": "use",
+                    "kind": "functional",
+                    "text": "The user validated the intended use",
+                    "disposition": "validated",
+                }
+            ]
+        )
+    )
+
+    assert normalized["assumptions"] == [
+        {
+            "id": "use",
+            "risk": "functional",
+            "statement": "The user validated the intended use",
+            "disposition": "confirmed",
+            "source": "legacy-v2",
+            "rationale": "Migrated legacy disposition: validated",
+        }
+    ]
+
+
+def test_v2_normalizes_legacy_high_assumption_without_dropping_its_disposition():
+    normalized = build_brief.validate_v2(
+        _v2(assumptions=[{"id": "legacy-load", "risk": "high", "disposition": "validated"}])
+    )
+
+    assert normalized["assumptions"] == [
+        {
+            "id": "legacy-load",
+            "risk": "functional",
+            "statement": "legacy-load",
+            "disposition": "confirmed",
+            "source": "legacy-v2",
+            "rationale": "Migrated legacy high-risk disposition: validated",
+            "legacyDisposition": "validated",
+        }
+    ]
+
+
+def test_load_normalizes_persisted_legacy_high_assumption(tmp_path):
+    legacy = _v2(assumptions=[{"id": "legacy-load", "risk": "high", "disposition": "validated"}])
+    (tmp_path / "build_brief.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = build_brief.load_build_brief(str(tmp_path), target_schema=2)
+
+    assert loaded["assumptions"][0]["risk"] == "functional"
+    assert loaded["assumptions"][0]["source"] == "legacy-v2"
+
+
+def test_load_normalizes_persisted_legacy_kind_and_name_assumption(tmp_path):
+    legacy = _v2(
+        assumptions=[
+            {
+                "id": "use",
+                "kind": "safety",
+                "name": "Safe handling",
+                "disposition": "validated",
+            }
+        ]
+    )
+    (tmp_path / "build_brief.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = build_brief.load_build_brief(str(tmp_path), target_schema=2)
+
+    assert loaded["assumptions"][0]["risk"] == "safety"
+    assert loaded["assumptions"][0]["statement"] == "Safe handling"
 
 
 def test_v2_rejects_indirect_part_hierarchy_cycle():

@@ -803,22 +803,34 @@ class Session:
             norm = build_brief.validate(brief)
         return {"ok": True, "brief": norm}
 
-    def get_build_brief(self) -> dict:
+    def get_build_brief(self, target_schema: int | None = None) -> dict:
         """Read the current persisted build brief (or None)."""
-        brief = build_brief.load_build_brief(self.root) if self.root is not None else None
+        brief = (
+            build_brief.load_build_brief(self.root, target_schema=target_schema)
+            if self.root is not None
+            else None
+        )
         return {"ok": True, "brief": brief}
 
     def get_conformance(self) -> dict:
         """Evaluate the durable brief against evidence available to this session."""
         requirements_report = self.check_requirements()
         references = self.get_reference_status()
+        brief = self.get_build_brief(target_schema=build_brief.SCHEMA_V2)["brief"]
         return conformance.evaluate(
-            self.get_build_brief()["brief"],
-            self._conformance_context(requirements_report, references),
+            brief,
+            self._conformance_context(requirements_report, references, brief=brief),
         )
 
-    def _conformance_context(self, requirements_report: dict, references: dict) -> dict:
-        brief = self.get_build_brief()["brief"] or {}
+    def _conformance_context(
+        self, requirements_report: dict, references: dict, *, brief: dict | None = None
+    ) -> dict:
+        brief = (
+            brief
+            if brief is not None
+            else self.get_build_brief(target_schema=build_brief.SCHEMA_V2)["brief"]
+        )
+        brief = brief or {}
         dimensions = brief.get("dimensions") or []
         object_ids = set(_node_ids(self._objects or []))
         parts = {
@@ -846,11 +858,15 @@ class Session:
             for item in brief.get("obligations") or []
             if isinstance(item, dict) and item.get("kind") == "persistence"
         }
-        assumptions = {
-            str(item.get("id")): bool(str(item.get("disposition", "")).strip()) or None
-            for item in brief.get("assumptions") or []
-            if isinstance(item, dict)
-        }
+        assumptions = {}
+        for item in brief.get("assumptions") or []:
+            if not isinstance(item, dict):
+                continue
+            disposition = str(item.get("disposition", "")).strip().lower()
+            accepted = disposition in {"delegated", "confirmed"} or (
+                item.get("risk") == "low" and disposition == "implicit"
+            )
+            assumptions[str(item.get("id"))] = True if accepted else None
         return {
             "requirements_report": requirements_report,
             "part_status": parts,

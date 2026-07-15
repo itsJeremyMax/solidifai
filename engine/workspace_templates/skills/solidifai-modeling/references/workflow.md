@@ -29,8 +29,11 @@ Everything goes through these tools.
      keeps the other values intact.
    - Otherwise → a fresh `execute_script` with the changed code.
 
-When the user asks for a part, build it right away with reasonable engineering assumptions for
-anything they didn't specify (state them in one line), then refine. Don't stall on questions.
+When the user asks for a part, keep low-risk, reversible styling and organization moving with a
+recorded assumption. Before committing a functional, safety, or compliance unknown, follow
+AGENTS.md's risk matrix: ask one focused question unless the user explicitly delegated that
+category, then persist its statement and disposition in the build brief. Functional, safety,
+and compliance records also require their source and rationale.
 
 ## `model.py` is the durable model — don't hand-edit it
 

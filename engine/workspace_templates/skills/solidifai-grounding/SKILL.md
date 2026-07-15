@@ -1,6 +1,6 @@
 ---
 name: solidifai-grounding
-description: Understand a thing before you model it, how its mechanism actually works and what parts the assembly really needs, so your first build has the right structure, not just the right silhouette. Use BEFORE the first build whenever the request involves a mechanism or moving parts (a click pen, hinge, latch, clamp, gear train), a multi-part product, an unfamiliar or named real-world object, or reproducing something from a photo, image, or reference. Grounding is fast and self-directed and never blocks the build waiting on the user; it is not a round of clarifying questions.
+description: Understand a thing before you model it, how its mechanism actually works and what parts the assembly really needs, so your first build has the right structure, not just the right silhouette. Use BEFORE the first build whenever the request involves a mechanism or moving parts (a click pen, hinge, latch, clamp, gear train), a multi-part product, an unfamiliar or named real-world object, or reproducing something from a photo, image, or reference. Ground quickly, then apply AGENTS.md's risk-based clarification policy to unknowns that affect the build.
 license: MIT
 ---
 
@@ -52,10 +52,10 @@ authoritative source, not recalled from memory. Record each as
   `save_reference` with the verified entry and its source so the library knows it
   next time, and tell the user in one line ("saved to your reference library").
 - Library miss, no web tools: use the canonical dims you know, mark each one
-  `(unverified, from memory)` in the brief, and tell the user plainly.
-  Never silently guess a named object's dims. No source opened this
-  session means the number is unverified no matter how sure you are;
-  writing "verified" beside a recalled dim is the exact defect this
+  `(unverified, from memory)` in the brief, record its functional-risk disposition, and ask
+  one focused question unless the user explicitly delegated the dimension. Never silently guess
+  a named object's dims. No source opened this session means the number is unverified no
+  matter how sure you are; writing "verified" beside a recalled dim is the exact defect this
   rule exists to stop.
 - Dims first, geometry second: an `execute_script` or `set_skeleton` for a
   named-object build with no recorded dims is a defect, not a shortcut.
@@ -118,6 +118,9 @@ the skeleton, grounded interfaces the `attach` frames and `inputs`; parallel aut
 **solidifai-orchestration**), **solidifai-product-design** for human-facing judgment, and the
 packaging path (`internal-layout` lens + `integrated-device` playbook) for a containment
 object. Confirm with **solidifai-self-verify**.
+
+When a required reference fails, preserve it as a required, unknown or failed reference in the
+v2 brief. It is a blocking conformance finding, not permission to invent a verified dimension.
 
 ## Anti-patterns
 

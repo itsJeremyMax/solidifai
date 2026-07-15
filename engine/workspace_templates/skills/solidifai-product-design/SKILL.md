@@ -26,14 +26,16 @@ and well-proportioned. Units are millimetres.
    working mechanism or is several parts, ground it first (**solidifai-grounding**) so you
    design around how it works, not how it looks.
 2. **Load** that playbook and only the lenses (`references/`) it names.
-3. **Infer & default.** Fill every unspecified dimension from the playbook's default recipe
-   and the lenses' decision rules, then state the assumptions briefly to the user (e.g. "M3
-   screws, 2 mm walls, 0.2 mm lid clearance"). The dims and the "why" you settle here fill the
-   **build brief**'s `key_dims` and each part's `why` (AGENTS.md "State the build brief");
-   record it with `propose_build` (tier set) and state it before you build.
-4. **Surface the few that matter:** the 1-3 decision-changing unknowns the playbook flags, as
-   stated assumptions the user can correct, not a gate you wait behind. If guessing wrong is
-   cheap, just default. Never quiz, never block.
+3. **Infer & default.** Fill only low-risk, reversible unspecified dimensions from the
+   playbook's default recipe and the lenses' decision rules, then state and persist those
+   assumptions with a statement and their dispositions in the build brief. Functional, safety,
+   and compliance assumptions also record their source and rationale. The dims and the "why" you
+   settle here fill the **build brief**'s `key_dims` and each part's `why` (AGENTS.md "State the
+   build brief"); record it with `propose_build` (tier set) and state it before you build.
+4. **Surface the one that matters:** apply AGENTS.md's matrix to every decision-changing
+   unknown. Ask one focused question for functional, safety, or compliance risk unless the user
+   explicitly delegated that category. Low-risk styling or reversible detail may continue with a
+   recorded assumption; never infer delegation from silence.
 5. **Build** through `solidifai-modeling` (`execute_script`), parametric where it earns it.
 6. **Run the finishing pass, then self-verify** (both below). Walk the finishing checklist
    item by item and say what each got (which face carries the seam, where the draft went,

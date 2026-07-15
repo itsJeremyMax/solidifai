@@ -58,14 +58,17 @@ REQUIRED_H2 = [
 
 WORD_CEILINGS = {
     "using-solidifai": 1100,
-    "solidifai-modeling": 2000,
+    # raised for Task 8's risk-matrix routing; deliberate instruction contract
+    "solidifai-modeling": 2020,
     "solidifai-product-design": 1650,
     # raised for Task 8: save_reference step + anti-pattern row (deliberate, not rebloat)
-    "solidifai-grounding": 1600,
+    # raised for Task 8's required-reference disposition path; deliberate contract
+    "solidifai-grounding": 1620,
     # raised for the Phase 2 perception + Phase 3 critique additions, then again for the spatial
     # + joint-motion verify checks (measure_between/query_faces/thickness_at, check_motion joint
     # mode); deliberate, not rebloat
-    "solidifai-self-verify": 1670,
+    # raised for Task 8's stable-ID conformance repair loop; deliberate contract
+    "solidifai-self-verify": 1800,
     # raised for occurrences (set_occurrences instancing) + joints (s.joint / check_motion joint
     # mode), two new engine subsystems taught here; deliberate, not rebloat
     "solidifai-assemblies": 2140,
@@ -181,8 +184,9 @@ def test_agents_word_ceiling():
     # raised for the new spatial (measure_between/query_faces/thickness_at), instancing
     # (set_occurrences), and joint-motion (check_motion) tool-table rows, again for the
     # solidifai-bug-report routing table row, and for the build-brief structured-format
-    # contract (summary is sentences, detail in fields); deliberate, not rebloat
-    assert len(prose.split()) <= 3600
+    # contract (summary is sentences, detail in fields), and Task 8's risk,
+    # conformance, and strict-export contracts; deliberate, not rebloat
+    assert len(prose.split()) <= 4000
 
 
 def test_template_covers_every_skill():

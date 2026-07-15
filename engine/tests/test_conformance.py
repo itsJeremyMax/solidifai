@@ -169,3 +169,22 @@ def test_missing_evidence_is_unknown_for_every_addressable_obligation():
     ]
     assert {finding["status"] for finding in report["findings"]} == {"unknown"}
     assert report["readiness"]["level"] == "blocked"
+
+
+def test_confirmed_matrix_assumption_is_addressable_by_its_stable_id():
+    report = evaluate(
+        _brief(
+            assumptions=[
+                {
+                    "id": "heat-limit",
+                    "risk": "safety",
+                    "disposition": "confirmed",
+                    "source": "user",
+                    "rationale": "User confirmed the operating temperature",
+                }
+            ]
+        ),
+        {"assumption_status": {"heat-limit": True}},
+    )
+
+    assert _finding(report, "assumption:heat-limit")["status"] == "pass"

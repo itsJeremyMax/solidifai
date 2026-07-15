@@ -1,5 +1,8 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from solidifai_engine import session as session_module
 from solidifai_engine.session import Session
@@ -214,3 +217,101 @@ def test_persisted_v2_brief_without_a_build_reports_blocking_unknowns(tmp_path):
     assert report["readiness"]["level"] == "blocked"
     assert _finding(session, "part:base")["status"] == "unknown"
     assert _finding(session, "persistence:model")["status"] == "unknown"
+
+
+def test_conformance_and_strict_export_normalize_persisted_legacy_v2_assumptions(tmp_path):
+    root = tmp_path / "legacy"
+    root.mkdir()
+    session = Session(str(root / ".solidifai" / "artifacts"), model_path=str(root / "model.py"))
+    assert session.execute_script(MODEL)["ok"] is True
+    (root / "build_brief.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "revision": 0,
+                "summary": "Legacy assumption",
+                "tier": "stream",
+                "parts": [],
+                "features": [],
+                "requirements": [],
+                "dimensions": [],
+                "interfaces": [],
+                "references": [],
+                "assumptions": [{"id": "use", "kind": "functional", "disposition": "validated"}],
+                "manufacturing": [],
+                "obligations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    brief = session.get_build_brief(target_schema=2)["brief"]
+
+    assert brief["assumptions"][0]["risk"] == "functional"
+    assert brief["assumptions"][0]["statement"] == "use"
+    assert session.get_readiness() == {"level": "ready", "findingIds": []}
+    assert session.export("stl", "legacy.stl", strict_export=True)["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("legacy_disposition", "normalized_disposition", "ready"),
+    [
+        ("validated", "confirmed", True),
+        ("confirmed", "confirmed", True),
+        ("delegated", "delegated", True),
+        ("unknown", "unknown", False),
+        ("unverified", "unknown", False),
+        ("rejected", "unknown", False),
+        ("", "unknown", False),
+        ("arbitrary", "unknown", False),
+    ],
+)
+def test_persisted_legacy_high_dispositions_are_allowlisted_for_readiness_and_export(
+    tmp_path, legacy_disposition, normalized_disposition, ready
+):
+    root = tmp_path / "legacy-high"
+    root.mkdir()
+    session = Session(str(root / ".solidifai" / "artifacts"), model_path=str(root / "model.py"))
+    assert session.execute_script(MODEL)["ok"] is True
+    (root / "build_brief.json").write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "revision": 0,
+                "summary": "Legacy high-risk assumption",
+                "tier": "stream",
+                "parts": [],
+                "features": [],
+                "requirements": [],
+                "dimensions": [],
+                "interfaces": [],
+                "references": [],
+                "assumptions": [
+                    {"id": "legacy-load", "risk": "high", "disposition": legacy_disposition}
+                ],
+                "manufacturing": [],
+                "obligations": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assumption = session.get_build_brief(target_schema=2)["brief"]["assumptions"][0]
+    export = session.export("stl", "legacy-high.stl", strict_export=True)
+
+    assert assumption["legacyDisposition"] == legacy_disposition
+    assert assumption["risk"] == "functional"
+    assert assumption["disposition"] == normalized_disposition
+    if ready:
+        assert session.get_readiness() == {"level": "ready", "findingIds": []}
+        assert export["ok"] is True
+    else:
+        assert session.get_readiness() == {
+            "level": "blocked",
+            "findingIds": ["assumption:legacy-load"],
+        }
+        assert export == {
+            "ok": False,
+            "error": "export blocked by readiness",
+            "findingIds": ["assumption:legacy-load"],
+        }

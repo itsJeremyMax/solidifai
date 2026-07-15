@@ -29,7 +29,8 @@ skill owns how to build it. build123d is your internal toolkit; never name it to
    record it with `propose_build`. A fully-specified or pure-geometry part skips this. Ground a mechanism,
    multi-part product, or image reproduction first (**solidifai-grounding**); bring in
    **solidifai-product-design** when a person holds, wears, operates, or sees the part and
-   design is open; neither is stalling (AGENTS.md "model it now").
+   design is open. Apply AGENTS.md's risk matrix before committing an unknown that affects fit,
+   interface, load, motion, material, safety, or compliance.
 2. **Build.** Call `execute_script`; it rebuilds the model, updates the viewport, and
    auto-saves your code to `model.py`. Before picking dimensions, read
    `get_manufacturing_profile()` and use it for wall, fillet/edge-break, min feature, and mating
@@ -236,8 +237,8 @@ thermal) is the **integrated-device** playbook and **internal-layout** lens in
 
 ## Anti-patterns
 
-- Describing a part in prose, or stalling on questions, instead of building it with stated
-  assumptions.
+- Treating a functional, safety, or compliance unknown as a low-risk assumption instead of
+  asking the focused question required by AGENTS.md.
 - Fragmenting one monolithic part into fake pieces, or fusing parts that are meant to come
   apart.
 - Hand-editing `model.py` and expecting the viewport to change without `run_file`.

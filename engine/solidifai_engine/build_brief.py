@@ -25,6 +25,9 @@ SCHEMA = SCHEMA_V1
 BRIEF_NAME = "build_brief.json"
 TIERS = ("skip", "stream", "pause")
 INTERFACE_KINDS = ("pivot", "slide", "snap", "thread", "press", "fixed")
+ASSUMPTION_RISKS = ("low", "functional", "safety", "compliance")
+ASSUMPTION_DISPOSITIONS = ("implicit", "delegated", "confirmed")
+LEGACY_ASSUMPTION_MIGRATION = "legacy-v2"
 # Legacy v1 product caps remain part of the historical propose_build contract.
 MAX_PARTS = 64
 MAX_KEY_DIMS = 256
@@ -229,6 +232,89 @@ def _required_expected_revision(expected_revision: Any) -> int:
     return expected_revision
 
 
+def _required_assumption_text(record: dict, field: str) -> str:
+    text = _capped_text(record.get(field), MAX_PROSE, f"assumption.{field}")
+    if not text:
+        raise ValueError(f"assumption.{field} is required")
+    return text
+
+
+def _normalize_assumption(record: dict) -> dict:
+    """Normalize legacy high-risk records and enforce the current risk matrix."""
+    legacy_shape = "risk" not in record and "kind" in record
+    risk = str(record.get("risk") or record.get("kind") or "").strip().lower()
+    statement = record.get("statement") or record.get("text") or record.get("name")
+    if not statement and (legacy_shape or risk == "high"):
+        statement = record.get("id")
+    record["statement"] = _required_assumption_text({"statement": statement}, "statement")
+    record.pop("kind", None)
+    record.pop("text", None)
+    record.pop("name", None)
+
+    legacy_disposition_value = record.get("disposition")
+    legacy_disposition = str(legacy_disposition_value or "").strip()
+    if risk == "high":
+        record.update(
+            risk="functional",
+            source=LEGACY_ASSUMPTION_MIGRATION,
+            legacyDisposition=legacy_disposition_value,
+        )
+        normalized_legacy_disposition = legacy_disposition.lower()
+        if normalized_legacy_disposition in {"validated", "confirmed"}:
+            record.update(
+                disposition="confirmed",
+                rationale=f"Migrated legacy high-risk disposition: {legacy_disposition}",
+            )
+        elif normalized_legacy_disposition == "delegated":
+            record.update(
+                disposition="delegated",
+                rationale=f"Migrated legacy high-risk disposition: {legacy_disposition}",
+            )
+        else:
+            record.update(
+                disposition="unknown",
+                rationale=(
+                    f"Legacy high-risk disposition requires confirmation: {legacy_disposition}"
+                ),
+                migration=LEGACY_ASSUMPTION_MIGRATION,
+            )
+        risk = "functional"
+    elif legacy_shape and legacy_disposition == "validated":
+        record.update(
+            disposition="confirmed",
+            source=LEGACY_ASSUMPTION_MIGRATION,
+            rationale=f"Migrated legacy disposition: {legacy_disposition}",
+        )
+    elif legacy_shape and not legacy_disposition:
+        record.update(
+            disposition="unknown",
+            source=LEGACY_ASSUMPTION_MIGRATION,
+            rationale="Legacy assumption has no disposition",
+            migration=LEGACY_ASSUMPTION_MIGRATION,
+        )
+    if risk not in ASSUMPTION_RISKS:
+        raise ValueError(f"assumption.risk must be one of {ASSUMPTION_RISKS}")
+
+    disposition = _required_assumption_text(record, "disposition").lower()
+    unresolved_legacy = (
+        disposition == "unknown" and record.get("migration") == LEGACY_ASSUMPTION_MIGRATION
+    )
+    if disposition not in ASSUMPTION_DISPOSITIONS and not unresolved_legacy:
+        raise ValueError(f"assumption.disposition must be one of {ASSUMPTION_DISPOSITIONS}")
+    if risk != "low" and disposition not in ("delegated", "confirmed") and not unresolved_legacy:
+        raise ValueError(
+            "functional, safety, and compliance assumptions require delegated or confirmed "
+            "disposition"
+        )
+
+    record["risk"] = risk
+    record["disposition"] = disposition
+    if risk != "low":
+        record["source"] = _required_assumption_text(record, "source")
+        record["rationale"] = _required_assumption_text(record, "rationale")
+    return record
+
+
 def validate_v2(brief: Any) -> dict:
     """Validate the extensible, stable-ID build brief contract without product caps."""
     if not isinstance(brief, dict):
@@ -317,9 +403,9 @@ def validate_v2(brief: Any) -> dict:
             raise ValueError("interface.unresolved_participants must be a list of names")
         if len(participants) < 2 and not (interface.get("conformance") == "unknown" and unresolved):
             raise ValueError("interface.participants must name at least two parts")
-    for assumption in normalized["assumptions"]:
-        if assumption.get("risk") == "high" and not str(assumption.get("disposition", "")).strip():
-            raise ValueError("high-risk assumption requires a disposition")
+    normalized["assumptions"] = [
+        _normalize_assumption(assumption) for assumption in normalized["assumptions"]
+    ]
     return normalized
 
 
@@ -450,7 +536,10 @@ def load_build_brief(root: str, target_schema: int | None = None) -> dict | None
         return data
     schema = data.get("schema", SCHEMA_V1)
     if target_schema == schema:
-        return data
+        try:
+            return validate_v2(data) if schema == SCHEMA_V2 else data
+        except ValueError:
+            return None
     if target_schema == SCHEMA_V2 and schema == SCHEMA_V1:
         try:
             return migrate_v1_to_v2(data)

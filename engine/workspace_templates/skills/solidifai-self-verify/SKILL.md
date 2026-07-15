@@ -60,7 +60,8 @@ Units are millimetres.
    cosmetic rib can be left; a thin structural wall cannot.
 6. **Re-build and re-check.** Loop steps 3-5 until the visual read is right and the goals
    that matter pass. Run the brief conformance pass and, for a containment object, the
-   containment gate (below).
+   containment gate (below). Unknown is not pass, and unsupported checks stay unsupported;
+   report both plainly rather than translating either into a success claim.
 7. **Then say it's done** and report what you verified ("42 g, fits the 60x40x20 box,
    printable, watertight"), not just "done".
 8. **Critique before you present.** On a stream- or pause-tier build (the brief's tier), once
@@ -112,8 +113,13 @@ dimension or `set_params` over resending the script.
 
 ### Brief conformance pass
 
-If a brief was recorded (`get_build_brief` returns one), run a **conformance** pass after a
-successful build:
+If a brief was recorded (`get_build_brief` returns one), call `get_conformance()` after a
+successful build. Its stable finding IDs are the repair queue: resolve or report each blocking
+finding by its stable ID, persist any assumption disposition with `update_build_brief`, then
+rerun `get_conformance()` after repairs. A required reference that is failed or unknown blocks
+readiness; do not treat a capture or recalled value as replacement evidence.
+
+Then run this **conformance** evidence pass:
 
 - **Key dims**: read `get_params()` (each `key_dims[].drives` names a PARAM) and the
   `get_model_info()` bbox, and confirm the functional dimensions match the brief. Do not use
@@ -131,6 +137,12 @@ successful build:
 
 Run this only after a build succeeded; if `get_model_info()` returns only `{round_active}` or
 `check_interferences` returns `ok:false`, skip it.
+
+Captures are supporting evidence, not a substitute for conformance contract checks. Before a
+delivery export, call `get_readiness()`: an unresolved blocking finding keeps strict export
+blocked and names its `findingIds`. Repair and rerun `get_conformance()` and readiness; only a
+host-authorized, audited override may bypass strict export, and agents cannot request or invent
+one.
 
 ### Containment gate
 

@@ -973,6 +973,33 @@ mod tests {
         dir
     }
 
+    fn assert_skill_tree_matches(source: &include_dir::Dir, dest: &Path) {
+        for file in source.files() {
+            assert_eq!(
+                fs::read(dest.join(file.path())).unwrap(),
+                file.contents(),
+                "provisioned skill differs from canonical template: {}",
+                file.path().display()
+            );
+        }
+        for child in source.dirs() {
+            assert_skill_tree_matches(child, dest);
+        }
+    }
+
+    #[test]
+    fn provisioned_agent_skill_trees_match_canonical_templates_byte_for_byte() {
+        let ws = tmp_ws();
+        let templates = tmp_templates();
+        provision(&ws, PY, SOCK, &templates).expect("provision");
+
+        assert_skill_tree_matches(&SKILLS_DIR, &ws.root.join(".claude/skills"));
+        assert_skill_tree_matches(&SKILLS_DIR, &ws.root.join(".opencode/skills"));
+
+        let _ = fs::remove_dir_all(&ws.root);
+        let _ = fs::remove_dir_all(&templates);
+    }
+
     #[test]
     fn snapshot_resolves_one_immutable_generation_even_when_legacy_mirrors_fail() {
         let ws = tmp_ws();
