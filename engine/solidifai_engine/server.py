@@ -37,7 +37,13 @@ import threading
 from typing import Any
 
 from solidifai_engine import ipc, protocol, scratch
-from solidifai_engine.protocol import CAP_BUILD_BRIEF_V2, CAP_READINESS, CAP_STRICT_EXPORT
+from solidifai_engine.operations import OperationQueue, OperationRecord
+from solidifai_engine.protocol import (
+    CAP_BUILD_BRIEF_V2,
+    CAP_OPERATIONS,
+    CAP_READINESS,
+    CAP_STRICT_EXPORT,
+)
 from solidifai_engine.worker import RemoteSessionError, SessionProxy
 
 # -- parent-death detection ---------------------------------------------------
@@ -219,7 +225,12 @@ class Server:
             model_path=model_path,
             override_verifier=override_verifier,
         )
-        self._lock = threading.Lock()
+        self._operations = OperationQueue(
+            self._execute_operation,
+            begin_cancel=self._begin_operation_cancel,
+            finish_cancel=self._finish_operation_cancel,
+            release_cancel_claim=self._release_operation_cancel_claim,
+        )
         self._stop = threading.Event()
         self._sock: socket.socket | None = None
         self._token: str | None = None  # set by _bind on the TCP transport
@@ -361,6 +372,8 @@ class Server:
         self._close()
         # Tear down the build worker so it doesn't linger.
         with contextlib.suppress(Exception):
+            self._operations.close()
+        with contextlib.suppress(Exception):
             self._session.close()
 
     def _close(self) -> None:
@@ -449,19 +462,20 @@ class Server:
             )
             if v2_request and CAP_BUILD_BRIEF_V2 not in negotiation["enabledCapabilities"]:
                 raise ValueError("client must negotiate build_brief_v2 for v2 build briefs")
+            if (
+                method in _OPERATION_METHODS
+                and CAP_OPERATIONS not in negotiation["enabledCapabilities"]
+            ):
+                raise ValueError("client must negotiate operations for operation scheduling")
             dispatch_params = dict(params)
             if method == "export":
                 dispatch_params["_strict_export"] = (
                     CAP_STRICT_EXPORT in negotiation["enabledCapabilities"]
                 )
-            result = self._dispatch(method, dispatch_params)
-            if (
+            dispatch_params["_include_readiness"] = (
                 CAP_READINESS in negotiation["enabledCapabilities"]
-                and isinstance(result, dict)
-                and result.get("ok") is True
-                and "buildId" in result
-            ):
-                result = {**result, "readiness": self._session.get_readiness()}
+            )
+            result = self._dispatch(method, dispatch_params)
         except RemoteSessionError as exc:
             # The worker already formatted the Session error as "<Type>: message";
             # surface it verbatim so the original exception type isn't buried under
@@ -492,14 +506,77 @@ class Server:
         return params[key]
 
     def _dispatch(self, method: str, params: dict) -> Any:
-        with self._lock:
-            handler = _HANDLERS.get(method)
-            if handler is None:
-                raise ValueError(f"unknown method: {method!r}")
-            # The material resolver is refreshed inside the worker before the
-            # methods that build/render (worker.REFRESH_METHODS), since that is
-            # where geometry now runs; nothing to do here.
+        if method == "submit_operation":
+            target = self._require(params, "method")
+            if target not in _HANDLERS:
+                raise ValueError(f"unknown method: {target!r}")
+            if target in _PARENT_READ_METHODS or target in _OPERATION_METHODS:
+                raise ValueError(f"{target!r} is not a writer operation")
+            if target in _PARENT_WRITER_METHODS:
+                raise ValueError(f"{target!r} is synchronous-only and cannot be cancelled")
+            operation_params = dict(params.get("params") or {})
+            operation_params["_include_readiness"] = bool(params.get("_include_readiness", False))
+            return self._operations.submit(
+                target, operation_params, replace_key=params.get("replaceKey")
+            )
+        if method == "get_operation":
+            return self._operations.get(self._require(params, "operationId"))
+        if method == "cancel_operation":
+            return self._operations.cancel(self._require(params, "operationId"))
+        handler = _HANDLERS.get(method)
+        if handler is None:
+            raise ValueError(f"unknown method: {method!r}")
+        if method in _PARENT_READ_METHODS:
             return handler(self, params)
+        # Legacy calls remain synchronous and never acquire replacement semantics.
+        operation = self._operations.submit(method, params)
+        terminal = self._operations.wait(operation["operationId"])
+        if terminal["state"] == "succeeded":
+            return terminal["result"]
+        if terminal["state"] == "timed_out":
+            raise RemoteSessionError(terminal["error"] or "operation timed out")
+        if terminal["state"] == "cancelled":
+            raise RemoteSessionError(terminal["error"] or "operation cancelled")
+        if terminal["details"]:
+            return {
+                "ok": False,
+                "error": terminal["error"] or "operation failed",
+                **terminal["details"],
+            }
+        raise RemoteSessionError(terminal["error"] or "operation failed")
+
+    def _execute_operation(self, method: str, params: dict, heartbeat) -> dict:
+        handler = _HANDLERS[method]
+        params = dict(params)
+        include_readiness = bool(params.pop("_include_readiness", False))
+        if method in _PARENT_WRITER_METHODS:
+            heartbeat(0.0, "running")
+            result = handler(self, params)
+            return result if isinstance(result, dict) else {"value": result}
+        with self._session.operation(heartbeat.operation_id):
+            self._session._operation_heartbeat = heartbeat
+            heartbeat(0.0, "running")
+            try:
+                result = handler(self, params)
+                if (
+                    include_readiness
+                    and isinstance(result, dict)
+                    and result.get("ok") is True
+                    and "buildId" in result
+                ):
+                    result = {**result, "readiness": self._session.get_readiness()}
+            finally:
+                self._session._operation_heartbeat = None
+        return result if isinstance(result, dict) else {"value": result}
+
+    def _begin_operation_cancel(self, record: OperationRecord) -> object:
+        return self._session.begin_cancel(record.operation_id)
+
+    def _finish_operation_cancel(self, claim: object) -> bool:
+        return self._session.finish_cancel(claim)
+
+    def _release_operation_cancel_claim(self, claim: object) -> bool:
+        return self._session.release_cancel_claim(claim)
 
 
 def _h_list_materials(srv: Server, p: dict) -> Any:
@@ -512,6 +589,30 @@ def _h_list_materials(srv: Server, p: dict) -> Any:
 
 def _h_get_protocol_info(srv: Server, p: dict) -> dict[str, object]:
     return protocol.protocol_info()
+
+
+def _published_snapshot(srv: Server) -> dict:
+    """Read the generation named by the committed pointer, never the live worker."""
+    current = os.path.join(srv.artifacts_dir, "current.json")
+    try:
+        with open(current, encoding="utf-8") as handle:
+            pointer = json.load(handle)
+        publication_id = pointer["publicationId"]
+        with open(
+            os.path.join(srv.artifacts_dir, "generations", publication_id, "model.json"),
+            encoding="utf-8",
+        ) as handle:
+            return json.load(handle)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("no committed model publication is available") from exc
+
+
+def _h_get_model_info(srv: Server, _p: dict) -> dict:
+    return _published_snapshot(srv)
+
+
+def _h_get_params(srv: Server, _p: dict) -> dict:
+    return _published_snapshot(srv).get("params") or {"schema": {}, "values": {}}
 
 
 def _h_get_manufacturing_profile(srv: Server, p: dict) -> Any:
@@ -597,10 +698,13 @@ def _orient_overhang(srv: Server, p: dict) -> float:
 _HANDLERS: dict[str, Any] = {
     "get_protocol_info": _h_get_protocol_info,
     "ping": lambda srv, p: "pong",
+    "submit_operation": lambda srv, p: None,
+    "get_operation": lambda srv, p: None,
+    "cancel_operation": lambda srv, p: None,
     "execute_script": lambda srv, p: srv._session.execute_script(srv._require(p, "code")),
     "run_file": lambda srv, p: srv._session.run_file(srv._require(p, "path")),
     "render": lambda srv, p: srv._session.render(),
-    "get_model_info": lambda srv, p: srv._session.get_model_info(),
+    "get_model_info": _h_get_model_info,
     "list_materials": _h_list_materials,
     "get_manufacturing_profile": _h_get_manufacturing_profile,
     "set_manufacturing_profile": _h_set_manufacturing_profile,
@@ -608,7 +712,7 @@ _HANDLERS: dict[str, Any] = {
     "lookup_reference": _h_lookup_reference,
     "save_reference": _h_save_reference,
     "report_issue": _h_report_issue,
-    "get_params": lambda srv, p: srv._session.get_params(),
+    "get_params": _h_get_params,
     "inspect_features": lambda srv, p: srv._session.inspect_features(),
     "check_interferences": lambda srv, p: srv._session.check_interferences(),
     "analyze_dfm": lambda srv, p: srv._session.analyze_dfm(p.get("process")),
@@ -752,6 +856,24 @@ _HANDLERS: dict[str, Any] = {
     "end_round": lambda srv, p: srv._session.end_round(),
     "abort_round": lambda srv, p: srv._session.abort_round(),
 }
+
+# These parent-owned calls read protocol/configuration or a committed generation
+# from disk.  They deliberately never enter the operation writer or SessionProxy.
+_PARENT_READ_METHODS = frozenset(
+    {
+        "get_protocol_info",
+        "ping",
+        "get_model_info",
+        "get_params",
+        "list_materials",
+        "get_manufacturing_profile",
+        "lookup_standard",
+        "lookup_reference",
+        "report_issue",
+    }
+)
+_PARENT_WRITER_METHODS = frozenset({"set_manufacturing_profile", "save_reference"})
+_OPERATION_METHODS = frozenset({"submit_operation", "get_operation", "cancel_operation"})
 
 # The set of methods that need the material resolver refreshed before they run
 # now lives in worker.py (worker.REFRESH_METHODS): the resolver is configured in

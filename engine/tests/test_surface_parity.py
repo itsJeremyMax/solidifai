@@ -18,6 +18,7 @@ from solidifai_engine.server import _HANDLERS
 # expose it as an MCP tool, or add it to this allowlist.
 RPC_ONLY = {
     "get_protocol_info",
+    "submit_operation",
     "ping",
     "set_part_material",
     "list_destinations",

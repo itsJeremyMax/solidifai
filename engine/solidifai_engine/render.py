@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -153,6 +154,7 @@ def render_to(
     model_path: str | None = None,
     write_set: dict[str, bytes | str] | None = None,
     allow_empty: bool = False,
+    before_publish: Callable[[], None] | None = None,
 ) -> dict:
     """Render the current registry into ``artifacts_dir``.
 
@@ -199,6 +201,8 @@ def render_to(
             model_path=model_path,
             write_set=write_set,
         )
+        if before_publish is not None:
+            before_publish()
         paths.commit_publication(artifacts_dir, staged)
         return {
             "ok": True,
@@ -368,6 +372,8 @@ def render_to(
             model_path=model_path,
             write_set=write_set,
         )
+        if before_publish is not None:
+            before_publish()
         paths.commit_publication(artifacts_dir, staged)
     except BaseException:
         _cleanup(glb_tmp, json_tmp)

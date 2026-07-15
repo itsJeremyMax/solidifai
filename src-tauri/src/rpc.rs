@@ -24,6 +24,9 @@ use crate::instances::Instances;
 /// pipeline on a single connection (each call opens its own stream), but a unique
 /// id keeps responses self-describing and matches the MCP bridge's behaviour.
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
+// Match the MCP bridge's long-run allowance: host transport must never cut off
+// the engine's 180s normal or 1200s aggregate-operation budget.
+const ENGINE_READ_TIMEOUT: Duration = Duration::from_secs(1800);
 const CLIENT_PROTOCOL: u32 = 13;
 const CLIENT_CAPABILITIES: &[&str] = &[
     "build_brief_v2",
@@ -95,7 +98,7 @@ pub fn engine_call(sock: &str, method: &str, params: Value) -> Result<String, St
         )
     })?;
     // Bound the round-trip so a wedged engine can't hang a UI command forever.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_read_timeout(Some(ENGINE_READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
 
     let line = encode_request(next_id(), method, &params);
@@ -852,6 +855,11 @@ mod tests {
     fn parse_response_rejects_empty_and_garbage() {
         assert!(parse_response("   ").is_err());
         assert!(parse_response("not json").is_err());
+    }
+
+    #[test]
+    fn transport_timeout_cannot_preempt_the_engine_build_budget() {
+        assert!(ENGINE_READ_TIMEOUT >= Duration::from_secs(180));
     }
 
     #[cfg(unix)]

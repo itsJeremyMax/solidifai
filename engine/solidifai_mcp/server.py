@@ -164,6 +164,18 @@ def get_model_info() -> Any:
 
 
 @mcp.tool()
+def get_operation(operation_id: str) -> Any:
+    """Read a submitted operation's stable lifecycle status and terminal result."""
+    return _call("get_operation", {"operationId": operation_id})
+
+
+@mcp.tool()
+def cancel_operation(operation_id: str) -> Any:
+    """Cancel a submitted asynchronous operation. Terminal operations are unchanged."""
+    return _call("cancel_operation", {"operationId": operation_id})
+
+
+@mcp.tool()
 def list_materials() -> Any:
     """List the materials available in this workspace, with the default flagged.
 

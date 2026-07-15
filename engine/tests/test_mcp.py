@@ -537,3 +537,18 @@ def test_socket_timeout_sits_above_longrun_ceiling():
     import solidifai_mcp.server as srv
 
     assert srv._SOCKET_TIMEOUT > srv._LONGRUN_CEILING
+
+
+def test_operation_status_and_cancel_tools_only_target_existing_operations(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    calls = []
+    monkeypatch.setattr(srv, "_call", lambda method, params=None: calls.append((method, params)))
+
+    srv.get_operation("op-1")
+    srv.cancel_operation("op-1")
+
+    assert calls == [
+        ("get_operation", {"operationId": "op-1"}),
+        ("cancel_operation", {"operationId": "op-1"}),
+    ]

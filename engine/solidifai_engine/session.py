@@ -19,6 +19,7 @@ import re
 import tempfile
 import time
 import traceback
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeGuard
 
@@ -167,6 +168,7 @@ class Session:
         artifacts_dir: str,
         model_path: str | None = None,
         override_verifier: export_policy.OverrideVerifier | None = None,
+        on_publishing: Callable[[], None] | None = None,
     ):
         self.artifacts_dir = artifacts_dir
         os.makedirs(artifacts_dir, exist_ok=True)
@@ -182,6 +184,7 @@ class Session:
         # Injected by the host integration only. The engine receives no signing key
         # and never treats an RPC/MCP caller's claimed source as authorization.
         self._override_verifier = override_verifier
+        self._on_publishing = on_publishing
         # When True, successful builds skip auto-persisting settings.json (used
         # during the startup replay so reopening a workspace doesn't rewrite
         # settings.json on every load).
@@ -301,6 +304,7 @@ class Session:
         render_kwargs: dict[str, Any] = {
             "params": params,
             "overrides": self._material_overrides,
+            "before_publish": self._on_publishing,
         }
         if self.root is not None:
             write_set: dict[str, bytes | str] = paths.workspace_write_set(self.root)
@@ -1178,6 +1182,7 @@ class Session:
                 params=self._last_params_block,
                 overrides=self._material_overrides,
                 write_set=paths.workspace_write_set(self.root) if self.root else None,
+                before_publish=self._on_publishing,
             )
             self._model = _compound_from_registry(solidifai._registry())
             self._objects = list(solidifai._registry())
@@ -1324,6 +1329,7 @@ class Session:
                 model_source=self.code,
                 model_path=self.model_path if self.code is not None else None,
                 write_set=write_set,
+                before_publish=self._on_publishing,
             )
         except Exception as exc:  # noqa: BLE001
             return self._build_failed(exc)
@@ -1891,6 +1897,7 @@ class Session:
                         overrides=self._material_overrides,
                         write_set=write_set,
                         allow_empty=True,
+                        before_publish=self._on_publishing,
                     )
                     self._model = None
                     self._objects = []
@@ -1920,6 +1927,7 @@ class Session:
                 params=self._params_block(params or self._param_values),
                 overrides=self._material_overrides,
                 write_set=write_set,
+                before_publish=self._on_publishing,
             )
         except Exception as exc:  # noqa: BLE001
             self.last_ok = False

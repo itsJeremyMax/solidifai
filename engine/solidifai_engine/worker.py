@@ -27,10 +27,14 @@ import contextlib
 import logging
 import multiprocessing as mp
 import os
+import threading
 import time
 import traceback
+from dataclasses import dataclass
 from multiprocessing.connection import Connection
-from typing import Any
+from typing import Any, Literal
+
+from solidifai_engine.operations import OperationTimeout
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +90,7 @@ LONG_RUNNING_METHODS = frozenset({"sweep", "optimize", "converge_to_spec", "chec
 # (the old in-process behavior). Generous so heavy-but-legitimate assembly builds
 # and tessellations finish; override with SOLIDIFAI_BUILD_TIMEOUT for testing.
 _DEFAULT_TIMEOUT = float(os.environ.get("SOLIDIFAI_BUILD_TIMEOUT", "180"))
+_DEFAULT_HARD_TIMEOUT = float(os.environ.get("SOLIDIFAI_BUILD_HARD_TIMEOUT", "210"))
 # Larger ceiling for LONG_RUNNING_METHODS, which run many builds per call.
 _LONGRUN_TIMEOUT = float(os.environ.get("SOLIDIFAI_LONGRUN_TIMEOUT", "1200"))
 _SPAWN_READY_TIMEOUT = float(os.environ.get("SOLIDIFAI_WORKER_START_TIMEOUT", "60"))
@@ -95,12 +100,17 @@ _SPAWN_READY_TIMEOUT = float(os.environ.get("SOLIDIFAI_WORKER_START_TIMEOUT", "6
 # "did not start in time" forever. The effective budget is at least the per-build
 # timeout plus this margin, whatever the (possibly smaller) ready override is.
 _START_MARGIN = 30.0
+_HEARTBEAT_INTERVAL = float(os.environ.get("SOLIDIFAI_WORKER_HEARTBEAT_INTERVAL", "1"))
 
 
 class KernelCrash(RuntimeError):
     """A build worker died on a native fault or was killed for exceeding the
     build timeout. Surfaced to the client as a failed build; the engine and the
     previous good model are unaffected."""
+
+
+class WorkerTimeout(OperationTimeout):
+    """The live worker exceeded its progress-sensitive execution budget."""
 
 
 class RemoteSessionError(RuntimeError):
@@ -114,6 +124,23 @@ class RemoteSessionError(RuntimeError):
     def __init__(self, message: str, traceback_str: str | None = None):
         super().__init__(message)
         self.traceback = traceback_str
+
+
+@dataclass
+class _ActiveCall:
+    operation_id: str | None
+    journal: list[tuple[str, bytes | None]] | None
+    cancellable: bool = True
+    cancellation_claim: object | None = None
+    completed: bool = False
+
+
+@dataclass(frozen=True)
+class CancelOutcome:
+    """Result of attempting to claim one operation's active worker call."""
+
+    status: Literal["claimed", "too_late", "not_active"]
+    claim: object | None = None
 
 
 def _worker_main(
@@ -147,12 +174,41 @@ def _worker_main(
     else:
         root = os.path.dirname(os.path.dirname(os.path.abspath(artifacts_dir)))
 
+    send_lock = threading.Lock()
+
+    def send(frame: tuple) -> None:
+        """Frames share one pipe; concurrent heartbeats cannot interleave sends."""
+        with send_lock:
+            conn.send(frame)
+
     def verifier(nonce, **claims):
-        conn.send(("verify_override", nonce, claims))
+        send(("verify_override", nonce, claims))
         response = conn.recv()
         return response[1] if response[0] == "verify_result" else {"ok": False}
 
-    session = Session(artifacts_dir, model_path=model_path, override_verifier=verifier)
+    request_active = threading.Event()
+
+    def publishing() -> None:
+        if request_active.is_set():
+            # Do not let render commit current.json until the parent has made this
+            # active call non-cancellable. This closes the pipe-scheduling window
+            # between a publication heartbeat and the durable pointer write. Keep
+            # heartbeats out of this send/ack handshake as well: Connection does
+            # not make a concurrent send and receive into one protocol transaction.
+            with send_lock:
+                conn.send(("progress", 0.9, "publishing"))
+                acknowledgement = conn.recv()
+            if acknowledgement[0] != "publishing_ack":
+                raise RuntimeError(
+                    f"worker received {acknowledgement[0]!r} instead of publication acknowledgement"
+                )
+
+    session = Session(
+        artifacts_dir,
+        model_path=model_path,
+        override_verifier=verifier,
+        on_publishing=publishing,
+    )
     if root is not None:
         materials.configure_resolver(root)
     # Session.__init__ creates artifacts_dir, so the sentinel path is writable now.
@@ -178,22 +234,51 @@ def _worker_main(
             # and deliberately leaves the marker for the next spawn to see.
             with contextlib.suppress(OSError):
                 os.remove(sentinel)
-    conn.send(("ready", None))
+    send(("ready", None))
 
     while True:
         try:
-            method, args, kwargs, refresh = conn.recv()
+            request = conn.recv()
         except (EOFError, KeyboardInterrupt):
             return
+        # A parent can have acknowledged a publication just as this worker was
+        # torn down for a timeout. That acknowledgement has no meaning outside
+        # its original call and is never a Session request.
+        if request[0] == "publishing_ack":
+            continue
+        method, args, kwargs, refresh = request
         try:
             if refresh and root is not None:
                 materials.configure_resolver(root)
-            result = getattr(session, method)(*args, **kwargs)
-            conn.send(("ok", result))
+            request_active.set()
+            stop_heartbeat = threading.Event()
+
+            def heartbeat_loop(stop: threading.Event) -> None:
+                while not stop.wait(_HEARTBEAT_INTERVAL):
+                    if request_active.is_set():
+                        with contextlib.suppress(OSError, EOFError):
+                            send(("progress", None, "building"))
+
+            heartbeats = threading.Thread(
+                target=heartbeat_loop,
+                args=(stop_heartbeat,),
+                name="solidifai-worker-heartbeat",
+                daemon=True,
+            )
+            heartbeats.start()
+            try:
+                result = getattr(session, method)(*args, **kwargs)
+            finally:
+                request_active.clear()
+                stop_heartbeat.set()
+                heartbeats.join()
+            send(("ok", result))
         except Exception as exc:  # noqa: BLE001 - forward as a clean error, don't die
             # Ship the traceback alongside the message so the server can attach
             # scriptLine + a trimmed traceback for a raised error too.
-            conn.send(("err", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+            send(("err", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+        finally:
+            request_active.clear()
 
 
 class SessionProxy:
@@ -207,13 +292,15 @@ class SessionProxy:
         *,
         timeout: float = _DEFAULT_TIMEOUT,
         longrun_timeout: float = _LONGRUN_TIMEOUT,
+        hard_timeout: float | None = None,
         start_timeout: float = _SPAWN_READY_TIMEOUT,
     ):
         self._artifacts_dir = artifacts_dir
         self._model_path = model_path
         self._override_verifier = override_verifier
         self._timeout = timeout
-        self._longrun_timeout = longrun_timeout
+        self._longrun_timeout = max(longrun_timeout, 1200.0)
+        self._hard_timeout = max(hard_timeout or _DEFAULT_HARD_TIMEOUT, timeout)
         # Startup builds the model before replying "ready", so the ready budget
         # must cover a legal build; otherwise a model that builds in (start, build]
         # seconds bricks every reopen. Never below the per-build timeout + margin.
@@ -221,7 +308,12 @@ class SessionProxy:
         self._ctx = mp.get_context("spawn")  # fresh interpreter: safe cross-platform
         self._proc: mp.process.BaseProcess | None = None
         self._conn: Connection | None = None
+        self._pipe_lock = threading.Lock()
         self._closed = False
+        self._active_lock = threading.Lock()
+        self._active_call: _ActiveCall | None = None
+        self._operation_id: str | None = None
+        self._operation_heartbeat = None
 
     # -- worker lifecycle ---------------------------------------------------
 
@@ -281,15 +373,95 @@ class SessionProxy:
         self._closed = True
         self._teardown()
 
+    @contextlib.contextmanager
+    def operation(self, operation_id: str):
+        """Bind the writer thread's next live call to one scheduler operation."""
+        prior = self._operation_id
+        self._operation_id = operation_id
+        try:
+            yield
+        finally:
+            self._operation_id = prior
+
+    def _begin_active_call(
+        self, operation_id: str | None, journal: list[tuple[str, bytes | None]] | None = None
+    ) -> _ActiveCall:
+        active = _ActiveCall(operation_id, journal)
+        with self._active_lock:
+            self._active_call = active
+        return active
+
+    def _finish_active_call(self, active: _ActiveCall) -> None:
+        with self._active_lock:
+            if self._active_call is active:
+                active.completed = True
+                if active.cancellation_claim is None:
+                    self._active_call = None
+
+    def begin_cancel(self, expected_operation_id: str) -> CancelOutcome:
+        """Claim a cancellable active call without yet touching its worker."""
+        with self._active_lock:
+            active = self._active_call
+            if active is None or active.operation_id != expected_operation_id:
+                return CancelOutcome("not_active")
+            if not active.cancellable:
+                return CancelOutcome("too_late")
+            if active.cancellation_claim is not None:
+                return CancelOutcome("not_active")
+            claim = object()
+            active.cancellation_claim = claim
+            return CancelOutcome("claimed", (active, claim))
+
+    def finish_cancel(self, claim: object) -> bool:
+        """Tear down only the exact call claimed before scheduler intent was set."""
+        active, token = claim  # type: ignore[misc]
+        with self._active_lock:
+            if self._active_call is not active or active.cancellation_claim is not token:
+                return False
+            self._active_call = None
+            proc, journal = self._proc, active.journal
+        if proc is not None:
+            _kill(proc)
+        if journal is not None:
+            self._rollback_journal(journal)
+        return True
+
+    def release_cancel_claim(self, claim: object) -> bool:
+        """Release a claim whose completion won before teardown began."""
+        active, token = claim  # type: ignore[misc]
+        with self._active_lock:
+            if self._active_call is not active or active.cancellation_claim is not token:
+                return False
+            active.cancellation_claim = None
+            if active.completed:
+                self._active_call = None
+            return True
+
+    def cancel_current(self, expected_operation_id: str) -> bool:
+        """Compatibility helper for callers that do not use queue claims."""
+        outcome = self.begin_cancel(expected_operation_id)
+        return outcome.status == "claimed" and self.finish_cancel(outcome.claim)
+
     # -- call forwarding ----------------------------------------------------
 
-    def _recv_result(self, conn: Connection, proc: mp.process.BaseProcess, timeout: float) -> tuple:
+    def _recv_result(
+        self,
+        conn: Connection,
+        proc: mp.process.BaseProcess,
+        timeout: float,
+        progress=None,
+        *,
+        hard_timeout: float | None = None,
+        clock=time.monotonic,
+    ) -> tuple:
         """Wait for the worker's reply, watching for death and the timeout.
 
         Returns the raw reply tuple -- ``("ok", result)`` or ``("err", message,
         traceback)`` -- on a reply, or raises ``KernelCrash`` if the worker died
         (native fault) or overran the build timeout."""
-        deadline = time.monotonic() + timeout
+        started = clock()
+        hard_deadline = started + (hard_timeout if hard_timeout is not None else timeout)
+        deadline = min(started + timeout, hard_deadline)
         while True:
             if conn.poll(0.2):
                 try:
@@ -303,6 +475,19 @@ class SessionProxy:
                     )
                     conn.send(("verify_result", result))
                     continue
+                if reply[0] == "progress":
+                    if reply[2] == "publishing":
+                        # current.json can commit immediately after this frame. Make
+                        # publication the no-cancel boundary before exposing it.
+                        with self._active_lock:
+                            if self._active_call is not None:
+                                self._active_call.cancellable = False
+                        conn.send(("publishing_ack", None))
+                    now = clock()
+                    deadline = min(now + timeout, hard_deadline)
+                    if progress is not None:
+                        progress(reply[1], reply[2])
+                    continue
                 return reply
             if not proc.is_alive():
                 # Died without sending: drain a possible in-flight reply, else crash.
@@ -310,8 +495,16 @@ class SessionProxy:
                     with _suppress():
                         return conn.recv()
                 raise KernelCrash("the modeling kernel crashed on that operation")
-            if time.monotonic() > deadline:
-                raise KernelCrash(f"the build ran past the {int(timeout)}s limit and was stopped")
+            now = clock()
+            if now >= hard_deadline:
+                raise WorkerTimeout(
+                    f"the build ran past the {int(hard_timeout or timeout)}s hard limit "
+                    "and was stopped"
+                )
+            if now >= deadline:
+                raise WorkerTimeout(
+                    f"the build ran past the {int(timeout)}s soft limit and was stopped"
+                )
 
     def _journal(self, method: str, args: tuple) -> list[tuple[str, bytes | None]] | None:
         """Snapshot the on-disk files a structural mutation will overwrite, as
@@ -362,11 +555,21 @@ class SessionProxy:
                 pass
 
     def _call(self, method: str, args: tuple, kwargs: dict) -> Any:
+        # Only the operation writer (and legacy callers routed through it) may
+        # use the live OCC pipe; parent-owned snapshot reads never acquire this.
+        with self._pipe_lock:
+            return self._call_locked(method, args, kwargs)
+
+    def _call_locked(self, method: str, args: tuple, kwargs: dict) -> Any:
         self._ensure()
         assert self._conn is not None and self._proc is not None
         refresh = method in REFRESH_METHODS
         timeout = self._longrun_timeout if method in LONG_RUNNING_METHODS else self._timeout
+        hard_timeout = (
+            self._longrun_timeout if method in LONG_RUNNING_METHODS else self._hard_timeout
+        )
         journal = self._journal(method, args) if method in JOURNALED_METHODS else None
+        active = self._begin_active_call(self._operation_id, journal)
         try:
             self._conn.send((method, args, kwargs, refresh))
         except (OSError, BrokenPipeError, ValueError):
@@ -375,8 +578,14 @@ class SessionProxy:
                 self._rollback_journal(journal)
             raise KernelCrash("the modeling kernel crashed on that operation") from None
         try:
-            reply = self._recv_result(self._conn, self._proc, timeout)
-        except KernelCrash as exc:
+            reply = self._recv_result(
+                self._conn,
+                self._proc,
+                timeout,
+                self._heartbeat,
+                hard_timeout=hard_timeout,
+            )
+        except (KernelCrash, WorkerTimeout) as exc:
             # The worker is dead or wedged: drop it so the next call respawns a
             # fresh one that reloads the last good model. For a journaled mutation,
             # roll the poisoned files back from the parent (the worker's own
@@ -384,8 +593,12 @@ class SessionProxy:
             self._teardown()
             if journal is not None:
                 self._rollback_journal(journal)
+                if isinstance(exc, WorkerTimeout):
+                    raise WorkerTimeout(f"{exc}; the {method} was rolled back") from None
                 raise KernelCrash(f"{exc}; the {method} was rolled back") from None
             raise
+        finally:
+            self._finish_active_call(active)
         if reply[0] == "ok":
             return reply[1]
         # A Session method raised (a normal, caught error path): re-raise so the
@@ -396,6 +609,11 @@ class SessionProxy:
         message = reply[1] if len(reply) > 1 else "the modeling kernel reported an error"
         tb = reply[2] if len(reply) > 2 else None
         raise RemoteSessionError(str(message), tb)
+
+    def _heartbeat(self, progress: float | None, phase: str | None) -> None:
+        callback = getattr(self, "_operation_heartbeat", None)
+        if callback is not None:
+            callback(progress, phase)
 
     def __getattr__(self, name: str) -> Any:
         # Only reached for names not defined on the proxy: every Session method.

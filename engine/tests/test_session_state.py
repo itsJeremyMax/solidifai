@@ -34,6 +34,61 @@ def test_execute_script_writes_settings_json(tmp_path):
     assert settings.load_params(str(root)) == {"size": 20.0}
 
 
+def test_session_notifies_publishing_immediately_before_committing_pointer(tmp_path):
+    _root, model, artifacts = _ws(tmp_path)
+    observed = []
+    sess = Session(
+        str(artifacts),
+        model_path=str(model),
+        on_publishing=lambda: observed.append(paths.read_current_publication(str(artifacts))),
+    )
+
+    result = sess.execute_script(PARAM_SCRIPT)
+
+    assert result["ok"] is True
+    assert observed == [None]
+    assert paths.read_current_publication(str(artifacts)) is not None
+
+
+def test_failed_stage_never_reports_publishing(tmp_path, monkeypatch):
+    _root, model, artifacts = _ws(tmp_path)
+    published = []
+    sess = Session(
+        str(artifacts), model_path=str(model), on_publishing=lambda: published.append(True)
+    )
+
+    monkeypatch.setattr(
+        "solidifai_engine.render.paths.stage_publication",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("stage failed")),
+    )
+
+    result = sess.execute_script(PARAM_SCRIPT)
+
+    assert result["ok"] is False
+    assert published == []
+
+
+def test_failure_after_pointer_commit_keeps_the_publishing_notification(tmp_path, monkeypatch):
+    _root, model, artifacts = _ws(tmp_path)
+    published = []
+    sess = Session(
+        str(artifacts), model_path=str(model), on_publishing=lambda: published.append(True)
+    )
+    commit = paths.commit_publication
+
+    def commit_then_fail(*args, **kwargs):
+        commit(*args, **kwargs)
+        raise OSError("mirror failed after pointer commit")
+
+    monkeypatch.setattr("solidifai_engine.render.paths.commit_publication", commit_then_fail)
+
+    result = sess.execute_script(PARAM_SCRIPT)
+
+    assert result["ok"] is False
+    assert published == [True]
+    assert paths.read_current_publication(str(artifacts)) is not None
+
+
 def test_set_params_writes_settings_json(tmp_path):
     root, model, artifacts = _ws(tmp_path)
     sess = Session(str(artifacts), model_path=str(model))

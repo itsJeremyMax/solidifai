@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from solidifai_engine.worker import KernelCrash, RemoteSessionError, SessionProxy
+from solidifai_engine.operations import OperationQueue
+from solidifai_engine.worker import KernelCrash, RemoteSessionError, SessionProxy, WorkerTimeout
 
 CHANNEL = """
 from solidifai import show
@@ -79,14 +80,19 @@ def test_runaway_build_times_out_and_recovers(tmp_path):
     (tmp_path / ".solidifai").mkdir()
     proxy = SessionProxy(
         str(tmp_path / ".solidifai" / "artifacts"),
-        model_path=str(tmp_path / "model.py"),
         timeout=1.5,
+        hard_timeout=2.5,
     )
     try:
-        with pytest.raises(KernelCrash):
+        with pytest.raises(WorkerTimeout):
             proxy.execute_script(HANG)
         # worker was killed + respawned; a fresh build succeeds
-        assert proxy.execute_script(CHANNEL)["ok"] is True
+        # Startup and the first fresh build may legitimately take longer than the
+        # short timeout used above to exercise the deadline path.
+        proxy._timeout = 30
+        proxy._hard_timeout = 30
+        recovered = proxy.execute_script(CHANNEL)
+        assert recovered["ok"] is True, recovered
     finally:
         proxy.close()
 
@@ -205,8 +211,9 @@ def test_long_running_op_uses_the_larger_budget():
     proxy = SessionProxy("/tmp/unused", timeout=1.5, longrun_timeout=99.0)
     seen = {}
 
-    def fake_recv(conn, procc, timeout):
+    def fake_recv(conn, procc, timeout, progress, **kwargs):
         seen["timeout"] = timeout
+        seen["hard_timeout"] = kwargs["hard_timeout"]
         return ("ok", None)
 
     proxy._ensure = lambda: None
@@ -217,12 +224,179 @@ def test_long_running_op_uses_the_larger_budget():
     proxy.execute_script("x")
     assert seen["timeout"] == 1.5  # normal per-build ceiling
     proxy.converge_to_spec()
-    assert seen["timeout"] == 99.0  # aggregate op gets the larger budget
+    assert seen["timeout"] == 1200.0  # aggregate op keeps the minimum long-run ceiling
     proxy.sweep("w", [1, 2])
-    assert seen["timeout"] == 99.0
+    assert seen["timeout"] == 1200.0
+
+
+def test_recv_result_forwards_progress_frames_before_the_final_reply():
+    proxy = SessionProxy("/tmp/unused")
+    conn = _ProgressConn([("progress", 0.9, "publishing"), ("ok", {"publicationId": "A"})])
+    seen = []
+
+    reply = proxy._recv_result(
+        conn, _AliveProcess(), 1.0, lambda progress, phase: seen.append((progress, phase))
+    )
+
+    assert seen == [(0.9, "publishing")]
+    assert reply == ("ok", {"publicationId": "A"})
+
+
+def test_progress_frames_extend_soft_deadline_without_exceeding_hard_ceiling():
+    proxy = SessionProxy("/tmp/unused", timeout=0.01, hard_timeout=0.04)
+    clock = _Clock()
+    conn = _TimedProgressConn(clock, [(0.009, ("progress", 0.5, "building"))])
+    with pytest.raises(WorkerTimeout, match="hard limit"):
+        proxy._recv_result(conn, _AliveProcess(), 0.01, hard_timeout=0.04, clock=clock)
+    assert clock.value >= 0.04
+
+
+def test_proxy_timeout_has_a_distinct_outcome_from_a_kernel_crash():
+    proxy = SessionProxy("/tmp/unused", timeout=0.2)
+    clock = _Clock()
+    conn = _TimedProgressConn(clock, [])
+
+    with pytest.raises(WorkerTimeout, match="soft limit"):
+        proxy._recv_result(conn, _AliveProcess(), 0.2, hard_timeout=0.4, clock=clock)
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "files"),
+    [
+        (
+            "set_part",
+            ("base", "new part"),
+            {"assembly.json": b"old assembly", "parts/base.py": b"old part"},
+        ),
+        (
+            "set_skeleton",
+            ("new skeleton",),
+            {
+                "assembly.json": b"old assembly",
+                "skeleton.py": b"old skeleton",
+                ".gitignore": b"old ignore",
+            },
+        ),
+    ],
+)
+def test_journalled_worker_timeout_rolls_back_and_preserves_timeout_type(
+    tmp_path, method, args, files
+):
+    artifacts = tmp_path / ".solidifai" / "artifacts"
+    artifacts.mkdir(parents=True)
+    for relative, content in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    proxy = SessionProxy(str(artifacts), model_path=str(tmp_path / "model.py"))
+    proxy._ensure = lambda: None
+    proxy._conn = _FakeConn()
+    proxy._proc = object()
+    proxy._teardown = lambda: None
+
+    def timeout_after_mutation(*_args, **_kwargs):
+        for relative in files:
+            (tmp_path / relative).write_bytes(b"timed out mutation")
+        raise WorkerTimeout("the build exceeded its deadline")
+
+    proxy._recv_result = timeout_after_mutation
+
+    with pytest.raises(WorkerTimeout, match="rolled back"):
+        proxy._call_locked(method, args, {})
+
+    assert {relative: (tmp_path / relative).read_bytes() for relative in files} == files
+    queue = OperationQueue(
+        lambda _method, _params, _heartbeat: proxy._call_locked(method, args, {})
+    )
+    try:
+        operation = queue.submit(method, {})
+        assert queue.wait(operation["operationId"], timeout=1)["state"] == "timed_out"
+    finally:
+        queue.close()
+
+
+def test_publishing_frame_marks_active_call_non_cancellable_before_callback():
+    proxy = SessionProxy("/tmp/unused")
+    active = proxy._begin_active_call("operation")
+    observed = []
+    conn = _ProgressConn([("progress", 0.9, "publishing"), ("ok", {})])
+
+    proxy._recv_result(
+        conn,
+        _AliveProcess(),
+        1.0,
+        lambda _progress, _phase: observed.append(proxy.begin_cancel("operation")),
+    )
+
+    assert [outcome.status for outcome in observed] == ["too_late"]
+    assert conn.sent == [("publishing_ack", None)]
+    proxy._finish_active_call(active)
+
+
+def test_begin_cancel_distinguishes_not_active_claimed_and_too_late():
+    proxy = SessionProxy("/tmp/unused")
+    assert proxy.begin_cancel("operation").status == "not_active"
+
+    active = proxy._begin_active_call("operation")
+    claimed = proxy.begin_cancel("operation")
+    assert claimed.status == "claimed"
+    proxy._finish_active_call(active)  # completion wins while the scheduler holds the claim
+    proxy.release_cancel_claim(claimed.claim)
+    assert active.cancellation_claim is None
+    assert proxy._active_call is None
+
+    active = proxy._begin_active_call("operation")
+    active.cancellable = False
+    assert proxy.begin_cancel("operation").status == "too_late"
+    proxy._finish_active_call(active)
 
 
 class _FakeConn:
+    def send(self, _payload):
+        return None
+
+
+class _ProgressConn:
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.sent = []
+
+    def poll(self, _timeout):
+        return bool(self.replies)
+
+    def recv(self):
+        return self.replies.pop(0)
+
+    def send(self, _payload):
+        self.sent.append(_payload)
+
+
+class _AliveProcess:
+    def is_alive(self):
+        return True
+
+
+class _Clock:
+    def __init__(self):
+        self.value = 0.0
+
+    def __call__(self):
+        return self.value
+
+
+class _TimedProgressConn:
+    def __init__(self, clock, replies):
+        self.clock = clock
+        self.replies = list(replies)
+
+    def poll(self, timeout):
+        self.clock.value += timeout
+        return bool(self.replies and self.clock.value >= self.replies[0][0])
+
+    def recv(self):
+        _at, reply = self.replies.pop(0)
+        return reply
+
     def send(self, _payload):
         return None
 
