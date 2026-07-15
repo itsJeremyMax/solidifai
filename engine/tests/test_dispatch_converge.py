@@ -14,9 +14,8 @@ def _server() -> Server:
 def test_dispatch_converge_to_spec_no_model():
     srv = _server()
     out = srv._dispatch("converge_to_spec", {})
-    # Without a model, the session returns ok=False or raises; either surfaces
-    # as a failed result dict (ok is False) or an ok=True with found=False.
-    assert "ok" in out or out is not None
+    assert out["ok"] is False
+    assert "no parametric model loaded" in out["error"]
 
 
 def test_dispatch_converge_to_spec_defaults():

@@ -54,6 +54,8 @@ fn engine_ping_round_trip_real() {
         .args([
             "-m",
             "solidifai_engine",
+            "--override-bootstrap-mode",
+            "eval-test",
             "--socket",
             sock.to_str().unwrap(),
             "--artifacts",

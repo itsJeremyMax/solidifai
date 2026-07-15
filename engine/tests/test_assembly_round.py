@@ -3,6 +3,7 @@ set_part/build_part validate each part in isolation, end_round composes once and
 reports failed parts, abort_round discards the round. A single set_part OUTSIDE a
 round still composes immediately (byte-compatible with Phase 2A)."""
 
+import json
 import os
 
 from solidifai_engine.session import Session
@@ -78,6 +79,7 @@ def test_begin_round_freezes_skeleton(tmp_path):
 def test_round_defers_compose_then_composes_once(tmp_path):
     s = _mk(tmp_path)
     s.set_skeleton(SKEL_2FRAME)
+    build_before = s.build_id
     s.begin_round()
     b = s.set_part("base", BASE_PART, attach="base_frame", inputs=["body_w", "wall"])
     assert b["ok"] is True and b["deferred"] is True and b["valid"] is True
@@ -85,8 +87,12 @@ def test_round_defers_compose_then_composes_once(tmp_path):
     assert lid_res["deferred"] is True
     end = s.end_round()
     assert end["ok"] is True
+    assert end.get("empty") is not True
+    assert s.build_id == build_before + 1
     names = {o["name"] for o in s.get_model_info()["objects"]}
     assert {"base/Base", "lid/Lid"} <= names
+    disk = json.loads((tmp_path / ".solidifai" / "artifacts" / "model.json").read_text())
+    assert {o["name"] for o in disk["objects"]} >= {"base/Base", "lid/Lid"}
 
 
 def test_failed_part_in_round_is_isolated_not_fatal(tmp_path):
@@ -136,8 +142,8 @@ def test_abort_round_removes_part_added_during_round(tmp_path):
     s.set_skeleton(SKEL_2FRAME)
     s.begin_round()
     s.set_part("base", BASE_PART, attach="base_frame", inputs=["body_w", "wall"])
-    assert os.path.exists(tmp_path / "parts" / "base.py")
-    assert m.child_by_id(m.load_manifest(str(tmp_path)), "base") is not None
+    assert not os.path.exists(tmp_path / "parts" / "base.py")
+    assert m.child_by_id(m.load_manifest(str(tmp_path)), "base") is None
     assert s.abort_round()["ok"] is True
     # the source file and the manifest child are both gone
     assert not os.path.exists(tmp_path / "parts" / "base.py")
@@ -152,9 +158,28 @@ def test_abort_round_restores_edited_part_source(tmp_path):
     original = (tmp_path / "parts" / "base.py").read_text(encoding="utf-8")
     s.begin_round()
     s.set_part("base", LID_PART, attach="base_frame", inputs=["body_w", "wall"])
-    assert (tmp_path / "parts" / "base.py").read_text(encoding="utf-8") != original
+    assert (tmp_path / "parts" / "base.py").read_text(encoding="utf-8") == original
     assert s.abort_round()["ok"] is True
     assert (tmp_path / "parts" / "base.py").read_text(encoding="utf-8") == original
+
+
+def test_end_round_publishes_deferred_parts_without_empty_generation(tmp_path):
+    s = _mk(tmp_path)
+    s.set_skeleton(SKEL_2FRAME)
+    before = json.loads((tmp_path / ".solidifai" / "artifacts" / "current.json").read_text())
+
+    s.begin_round()
+    assert s.set_part("base", BASE_PART, attach="base_frame", inputs=["body_w", "wall"])["ok"]
+    assert s.set_part("lid", LID_PART, attach="lid_frame", inputs=["body_w", "wall"])["ok"]
+
+    end = s.end_round()
+
+    assert end["ok"] is True
+    assert end.get("empty") is not True
+    current = json.loads((tmp_path / ".solidifai" / "artifacts" / "current.json").read_text())
+    assert current["publicationId"] != before["publicationId"]
+    model = json.loads((tmp_path / ".solidifai" / "artifacts" / "model.json").read_text())
+    assert {o["name"] for o in model["objects"]} >= {"base/Base", "lid/Lid"}
 
 
 def test_build_part_defers_in_round(tmp_path):

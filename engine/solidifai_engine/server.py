@@ -42,10 +42,13 @@ from solidifai_engine.operations import OperationQueue, OperationRecord
 from solidifai_engine.protocol import (
     CAP_BUILD_BRIEF_V2,
     CAP_OPERATIONS,
+    CAP_PUBLICATION_METADATA,
     CAP_READINESS,
     CAP_STRICT_EXPORT,
 )
 from solidifai_engine.worker import RemoteSessionError, SessionProxy
+
+_SCALAR_RESULT_KEY = "_legacy_scalar_result"
 
 # -- parent-death detection ---------------------------------------------------
 # On unix a dead parent reparents the engine, so polling getppid() works. On
@@ -500,6 +503,16 @@ class Server:
         if isinstance(result, dict) and result.get("ok") is False:
             return _failure_response(req_id, result)
 
+        if (
+            isinstance(result, dict)
+            and CAP_PUBLICATION_METADATA not in negotiation["enabledCapabilities"]
+        ):
+            result = {
+                key: value
+                for key, value in result.items()
+                if key not in {"publicationId", "sourceHash"}
+            }
+
         return {"id": req_id, "ok": True, "result": result}
 
     @staticmethod
@@ -537,16 +550,20 @@ class Server:
         operation = self._operations.submit(method, params)
         terminal = self._operations.wait(operation["operationId"])
         if terminal["state"] == "succeeded":
+            if isinstance(terminal["result"], dict) and _SCALAR_RESULT_KEY in terminal["result"]:
+                return terminal["result"][_SCALAR_RESULT_KEY]
             return terminal["result"]
         if terminal["state"] == "timed_out":
             raise RemoteSessionError(terminal["error"] or "operation timed out")
         if terminal["state"] == "cancelled":
             raise RemoteSessionError(terminal["error"] or "operation cancelled")
         if terminal["details"]:
+            details = dict(terminal["details"])
+            details.pop("_error_envelope", None)
             return {
                 "ok": False,
                 "error": terminal["error"] or "operation failed",
-                **terminal["details"],
+                **details,
             }
         raise RemoteSessionError(terminal["error"] or "operation failed")
 
@@ -557,12 +574,19 @@ class Server:
         if method in _PARENT_WRITER_METHODS:
             heartbeat(0.0, "running")
             result = handler(self, params)
-            return result if isinstance(result, dict) else {"value": result}
+            if isinstance(result, dict) and result.get("ok") is False:
+                result = {"_error_envelope": True, **result}
+            return result if isinstance(result, dict) else {_SCALAR_RESULT_KEY: result}
         with self._session.operation(heartbeat.operation_id):
             self._session._operation_heartbeat = heartbeat
             heartbeat(0.0, "running")
             try:
                 result = handler(self, params)
+            except RemoteSessionError as exc:
+                result = {"ok": False, "error": str(exc), "_error_envelope": True}
+                if exc.traceback:
+                    result["traceback"] = exc.traceback
+            try:
                 if (
                     include_readiness
                     and isinstance(result, dict)
@@ -570,9 +594,11 @@ class Server:
                     and "buildId" in result
                 ):
                     result = {**result, "readiness": self._session.get_readiness()}
+                if isinstance(result, dict) and result.get("ok") is False:
+                    result = {"_error_envelope": True, **result}
             finally:
                 self._session._operation_heartbeat = None
-        return result if isinstance(result, dict) else {"value": result}
+        return result if isinstance(result, dict) else {_SCALAR_RESULT_KEY: result}
 
     def _begin_operation_cancel(self, record: OperationRecord) -> object:
         return self._session.begin_cancel(record.operation_id)

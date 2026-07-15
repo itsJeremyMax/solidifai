@@ -17,6 +17,7 @@ MIN_COMPATIBLE_PROTOCOL = 12
 CAP_BUILD_BRIEF_V2 = "build_brief_v2"
 CAP_CONFORMANCE = "conformance"
 CAP_READINESS = "readiness"
+CAP_PUBLICATION_METADATA = "publication_metadata"
 CAP_STRICT_EXPORT = "strict_export"
 CAP_OPERATIONS = "operations"
 
@@ -25,6 +26,7 @@ CAPABILITIES = frozenset(
         CAP_BUILD_BRIEF_V2,
         CAP_CONFORMANCE,
         CAP_READINESS,
+        CAP_PUBLICATION_METADATA,
         CAP_STRICT_EXPORT,
         CAP_OPERATIONS,
     }

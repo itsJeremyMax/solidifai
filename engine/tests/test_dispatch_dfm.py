@@ -3,12 +3,10 @@
 import os
 import tempfile
 
-import pytest
 from build123d import Box
 
 from solidifai_engine.dfm import analyze_part
 from solidifai_engine.server import Server
-from solidifai_engine.worker import RemoteSessionError
 
 
 def _server() -> Server:
@@ -18,8 +16,9 @@ def _server() -> Server:
 
 def test_dispatch_analyze_dfm_no_model():
     srv = _server()
-    with pytest.raises(RemoteSessionError, match="no model"):
-        srv._dispatch("analyze_dfm", {})
+    out = srv._dispatch("analyze_dfm", {})
+    assert out["ok"] is False
+    assert "no model" in out["error"]
 
 
 def test_dispatch_analyze_dfm_with_process():

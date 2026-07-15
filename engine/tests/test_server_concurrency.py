@@ -6,6 +6,7 @@ from contextlib import nullcontext
 import pytest
 
 from solidifai_engine.server import Server
+from solidifai_engine.worker import RemoteSessionError
 
 
 def test_protocol_metadata_bypasses_the_writer_lane(tmp_path):
@@ -226,5 +227,51 @@ def test_sync_failed_handler_envelope_remains_an_rpc_failure(tmp_path):
     try:
         response = server._handle_line(b'{"id":1,"method":"set_params","params":{"values":{}}}')
         assert response == {"id": 1, "ok": False, "error": "invalid parameter", "field": "size"}
+    finally:
+        server.shutdown()
+
+
+def test_sync_remote_session_business_error_remains_a_failed_result(tmp_path):
+    server = Server(str(tmp_path / "engine.sock"), str(tmp_path / "artifacts"))
+
+    class FailingSession:
+        def operation(self, _operation_id):
+            return nullcontext()
+
+        def set_requirements(self, _requirements):
+            raise RemoteSessionError("ValueError: bad param")
+
+        def close(self):
+            return None
+
+    server._session = FailingSession()
+    try:
+        assert server._dispatch("set_requirements", {"requirements": []}) == {
+            "ok": False,
+            "error": "ValueError: bad param",
+        }
+    finally:
+        server.shutdown()
+
+
+def test_sync_scalar_handler_value_is_returned_exactly(tmp_path):
+    server = Server(str(tmp_path / "engine.sock"), str(tmp_path / "artifacts"))
+
+    class ScalarSession:
+        def operation(self, _operation_id):
+            return nullcontext()
+
+        def execute_script(self, _code):
+            return "ok"
+
+        def cancel_current(self, _operation_id):
+            return True
+
+        def close(self):
+            return None
+
+    server._session = ScalarSession()
+    try:
+        assert server._dispatch("execute_script", {"code": "x"}) == "ok"
     finally:
         server.shutdown()

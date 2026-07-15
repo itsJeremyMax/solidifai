@@ -151,6 +151,7 @@ def test_get_protocol_info_over_socket(tmp_path):
                     "build_brief_v2",
                     "conformance",
                     "operations",
+                    "publication_metadata",
                     "readiness",
                     "strict_export",
                 ],
@@ -187,9 +188,31 @@ def test_capable_build_response_includes_readiness_without_changing_legacy_shape
                 "client": {"protocol": 13, "capabilities": ["readiness"]},
             },
         )
+        published = _send(
+            sock_path,
+            {
+                "id": 3,
+                "method": "execute_script",
+                "params": {"code": GOOD_SCRIPT},
+                "client": {"protocol": 13, "capabilities": ["publication_metadata"]},
+            },
+        )
         assert legacy == {"id": 1, "ok": True, "result": {"ok": True, "buildId": 1}}
         assert capable["result"]["buildId"] == 2
         assert capable["result"]["readiness"] == {"level": "blocked", "findingIds": ["brief"]}
+        assert "publicationId" not in capable["result"]
+        assert set(published["result"]) == {"ok", "buildId", "publicationId", "sourceHash"}
+    finally:
+        server.shutdown()
+
+
+def test_protocol_12_execute_script_keeps_exact_legacy_shape(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(
+            sock_path, {"id": 1, "method": "execute_script", "params": {"code": GOOD_SCRIPT}}
+        )
+        assert resp == {"id": 1, "ok": True, "result": {"ok": True, "buildId": 1}}
     finally:
         server.shutdown()
 

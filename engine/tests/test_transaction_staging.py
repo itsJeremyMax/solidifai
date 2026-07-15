@@ -137,6 +137,26 @@ def test_removed_part_is_a_generation_tombstone(tmp_path):
     assert model["objects"] == []
 
 
+def test_empty_subassembly_scaffold_is_materialized_after_staged_publish(tmp_path):
+    session, root, artifacts = _assembly_session(tmp_path)
+    prior = _pointer(artifacts)
+
+    result = session.add_subassembly("latch", attach="base_frame", inputs=["body_w"])
+
+    assert result["ok"] is True
+    assert (root / "latch" / "assembly.json").exists()
+    manifest = json.loads((root / "assembly.json").read_text())
+    assert any(
+        child["id"] == "latch" and child["kind"] == "assembly" for child in manifest["children"]
+    )
+    current = _pointer(artifacts)
+    assert current["publicationId"] != prior["publicationId"]
+    published = json.loads(
+        (artifacts / "generations" / current["publicationId"] / "manifest.json").read_text()
+    )
+    assert {"assembly.json", "latch/assembly.json"} <= set(published["inputs"])
+
+
 def test_nested_assembly_sources_and_manifests_are_published_and_tombstoned(tmp_path):
     root = tmp_path / "workspace"
     artifacts = root / ".solidifai" / "artifacts"

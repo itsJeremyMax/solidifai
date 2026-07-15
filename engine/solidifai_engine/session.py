@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import time
 import traceback
@@ -82,6 +83,34 @@ def _staged_mutation(method):
     def wrapped(self, *args, **kwargs):
         if self.root is None or self._staging_root is not None:
             return method(self, *args, **kwargs)
+        round_staged = self._round.get("staging_root") if self._round.get("active") else None
+        if isinstance(round_staged, str):
+            original_root, original_path = self.root, self.model_path
+            state = {
+                "build_id": self.build_id,
+                "last_ok": self.last_ok,
+                "code": self.code,
+                "_model_hash": self._model_hash,
+                "_model": self._model,
+                "_objects": self._objects,
+                "_last_params_block": self._last_params_block,
+                "_features": self._features,
+                "_params_schema": self._params_schema,
+                "_param_values": self._param_values,
+                "_material_overrides": self._material_overrides,
+                "_reference_status": self._reference_status,
+            }
+            self.root = round_staged
+            self._staging_root = round_staged
+            try:
+                result = method(self, *args, **kwargs)
+                if isinstance(result, dict) and not result.get("ok"):
+                    for name, value in state.items():
+                        setattr(self, name, value)
+            finally:
+                self._staging_root = None
+                self.root, self.model_path = original_root, original_path
+            return result
         original_root, original_path = self.root, self.model_path
         state = {
             "build_id": self.build_id,
@@ -2369,6 +2398,7 @@ class Session:
             "skeleton_result": skel_result,
             "built": set(),
             "failed": {},
+            "staging_root": self._create_round_staging_root(),
             # Snapshot the manifest + part sources so abort_round rolls back the
             # structural writes a set_part makes during the round (new parts get
             # removed, edited parts reverted). Without this, aborted parts persist
@@ -2394,6 +2424,22 @@ class Session:
                     with contextlib.suppress(OSError), open(path, encoding="utf-8") as f:
                         sources[path] = f.read()
         return {"manifest": manifest_text, "sources": sources}
+
+    def _create_round_staging_root(self) -> str:
+        """Clone the live workspace for deferred round mutations."""
+        assert self.root is not None
+        parent = os.path.dirname(os.path.abspath(self.root))
+        staged = tempfile.mkdtemp(prefix=".solidifai-round-", dir=parent)
+        shutil.rmtree(staged)
+        shutil.copytree(
+            self.root, staged, ignore=shutil.ignore_patterns(".solidifai", ".git", "exports")
+        )
+        return staged
+
+    @staticmethod
+    def _cleanup_round_staging_root(staged_root: str | None) -> None:
+        if staged_root:
+            shutil.rmtree(staged_root, ignore_errors=True)
 
     def _restore_round_sources(self, snap: dict) -> None:
         """Restore assembly.json + parts/*.py to the begin_round snapshot: revert
@@ -2438,12 +2484,25 @@ class Session:
         skeletonChanged=True."""
         if not self._round.get("active"):
             return {"ok": False, "error": "no active round"}
-        failed = dict(self._round.get("failed", {}))
-        built = sorted(self._round.get("built", set()))
+        round_state = self._round
+        failed = dict(round_state.get("failed", {}))
+        built = sorted(round_state.get("built", set()))
         skel_path = self._assembly_root_paths()["skeleton"]
-        skeleton_changed = self._file_hash(skel_path) != self._round.get("skeleton_hash")
+        skeleton_changed = self._file_hash(skel_path) != round_state.get("skeleton_hash")
+        staged_root = round_state.get("staging_root")
         self._round = {"active": False}
-        res = self._rebuild_after_structure_edit("author round")
+        original_root = self.root
+        try:
+            if isinstance(staged_root, str):
+                self.root = staged_root
+            res = self._build_assembly(params=self._param_values)
+            if not res.get("ok") and res.get("composeEmpty"):
+                res = self._publish_empty_assembly_state()
+        finally:
+            self.root = original_root
+            if isinstance(staged_root, str):
+                self._cleanup_round_staging_root(staged_root)
+        res = self._after_assembly_edit(res, "author round")
         if isinstance(res, dict):
             res = {**res, "failed": failed, "built": built}
             if skeleton_changed:
@@ -2460,10 +2519,10 @@ class Session:
         needed."""
         if not self._round.get("active"):
             return {"ok": False, "error": "no active round"}
-        snap = self._round.get("sources_snapshot")
+        staged_root = self._round.get("staging_root")
         self._round = {"active": False}
-        if snap is not None:
-            self._restore_round_sources(snap)
+        if isinstance(staged_root, str):
+            self._cleanup_round_staging_root(staged_root)
         return {"ok": True}
 
     @staticmethod
@@ -2731,9 +2790,45 @@ class Session:
         history commit taken on success so undo/redo and the diff are meaningful."""
         res = self._build_assembly(params=self._param_values)
         if not res.get("ok") and res.get("composeEmpty"):
-            self.last_ok = True
-            res = {"ok": True, "buildId": self.build_id, "empty": True}
+            res = self._publish_empty_assembly_state()
         return self._after_assembly_edit(res, message)
+
+    def _publish_empty_assembly_state(self) -> dict:
+        """Publish an empty assembly generation while preserving staged structure.
+
+        Structural edits like adding an empty sub-assembly legitimately compose to no
+        geometry yet, but their manifest/fileset still has to publish so the real
+        workspace reflects the staged metadata before any follow-up mutation."""
+        assert self.root is not None
+        next_build = self.build_id + 1
+        params_block = self._params_block(self._param_values)
+        write_set = paths.workspace_write_set(self.root)
+        if not self._suppress_persist:
+            write_set[settings.SETTINGS_NAME] = json.dumps(
+                {"schema": settings.SCHEMA, "params": self._param_values}, indent=2
+            )
+        publication = render_to(
+            self.artifacts_dir,
+            next_build,
+            objects=[],
+            params=params_block,
+            overrides=self._material_overrides,
+            write_set=write_set,
+            allow_empty=True,
+            before_publish=self._on_publishing,
+        )
+        self._model = None
+        self._objects = []
+        self._last_params_block = params_block
+        self._features = []
+        self.build_id = next_build
+        self.last_ok = True
+        return {
+            "ok": True,
+            "buildId": self.build_id,
+            "empty": True,
+            **_publication_result(publication),
+        }
 
     def get_assembly_tree(self) -> dict:
         """Nested structure of the assembly (skeleton params/scalars/frames +

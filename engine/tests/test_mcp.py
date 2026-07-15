@@ -108,6 +108,7 @@ def test_forward_sends_rpc_and_returns_result(tmp_path, monkeypatch):
             "build_brief_v2",
             "conformance",
             "operations",
+            "publication_metadata",
             "readiness",
             "strict_export",
         ],
