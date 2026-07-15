@@ -9,7 +9,7 @@ dependencies = [
     "dulwich>=1.2.6",
     "fpdf2>=2.7",
     "mcp",
-    "pillow",
+    "pillow>=12.3.0",
     # Imported directly (views.py renders through vtkmodules); do not rely on
     # cadquery-ocp's metadata to pull it in, newer releases dropped the pin.
     "vtk>=9.3",
