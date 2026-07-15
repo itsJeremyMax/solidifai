@@ -24,6 +24,17 @@ describe("InspectorTabs", () => {
     expect(onSelect).toHaveBeenCalledWith("checks");
   });
 
+  it("identifies each tab and the panel it controls", () => {
+    render(<InspectorTabs active="model" onSelect={() => {}} />);
+    for (const t of INSPECTOR_TABS) {
+      const tab = screen.getByRole("tab", { name: new RegExp(t.label) });
+      expect(tab.id).toBe(`inspector-tab-${t.id}`);
+      expect(tab.getAttribute("aria-controls")).toBe(
+        t.id === "model" ? "inspector-panel-model" : null,
+      );
+    }
+  });
+
   it("moves the selection with arrow keys, wrapping at the ends", () => {
     const onSelect = vi.fn();
     render(<InspectorTabs active="model" onSelect={onSelect} />);

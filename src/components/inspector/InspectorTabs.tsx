@@ -67,6 +67,8 @@ export default function InspectorTabs({
             type="button"
             role="tab"
             data-tab={id}
+            id={`inspector-tab-${id}`}
+            aria-controls={on ? `inspector-panel-${id}` : undefined}
             aria-selected={on}
             tabIndex={on ? 0 : -1}
             onClick={() => onSelect(id)}

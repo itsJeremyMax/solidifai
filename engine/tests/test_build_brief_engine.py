@@ -93,6 +93,34 @@ def test_validate_rejects_prose_blobs():
     assert build_brief.validate(ok)["summary"] == ok["summary"]
 
 
+@pytest.mark.parametrize(
+    ("field", "mutate"),
+    [
+        ("part.name", lambda b: b["parts"][0].update(name="x" * (build_brief.MAX_PART_NAME + 1))),
+        (
+            "key_dim.name",
+            lambda b: b["key_dims"][0].update(name="x" * (build_brief.MAX_DIM_NAME + 1)),
+        ),
+        ("key_dim.unit", lambda b: b["key_dims"][0].update(unit="x" * (build_brief.MAX_UNIT + 1))),
+        (
+            "key_dim.drives",
+            lambda b: b["key_dims"][0].update(drives="x" * (build_brief.MAX_DIM_DRIVES + 1)),
+        ),
+        (
+            "interface.between",
+            lambda b: b["interfaces"][0].update(
+                between=["x" * (build_brief.MAX_PART_NAME + 1), "base"]
+            ),
+        ),
+    ],
+)
+def test_validate_rejects_oversized_structured_labels(field, mutate):
+    b = _good()
+    mutate(b)
+    with pytest.raises(ValueError, match=field):
+        build_brief.validate(b)
+
+
 def test_validate_normalizes_interface_aliases():
     b = _good()
     b["interfaces"][0]["kind"] = "press-fit"

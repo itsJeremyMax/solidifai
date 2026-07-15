@@ -49,6 +49,7 @@ export default function FitCheckSection() {
   const [hole, setHole] = useState("H7");
   const [shaft, setShaft] = useState("g6");
   const [result, setResult] = useState<ToleranceResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const chain = useMemo(
     () => [
@@ -62,11 +63,19 @@ export default function FitCheckSection() {
     let live = true;
     if (!Number.isFinite(nominal) || nominal <= 0) {
       setResult(null);
+      setError(null);
       return;
     }
-    void engineToleranceStack(chain).then((raw) => {
-      if (live) setResult(raw ? parseToleranceResult(raw) : null);
-    });
+    setResult(null);
+    setError(null);
+    void engineToleranceStack(chain).then(
+      (raw) => {
+        if (live) setResult(raw ? parseToleranceResult(raw) : null);
+      },
+      () => {
+        if (live) setError("Couldn't calculate this fit just now.");
+      },
+    );
     return () => {
       live = false;
     };
@@ -100,6 +109,8 @@ export default function FitCheckSection() {
             gap {fmt(fit.minGap, 3)} … {fmt(fit.maxGap, 3)} mm
           </span>
         </div>
+      ) : error ? (
+        <p className="mt-2.5 text-caption text-danger">{error}</p>
       ) : (
         <p className="mt-2.5 text-caption text-ink-3">
           Pick a hole and shaft fit to check clearance.

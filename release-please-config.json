@@ -14,6 +14,11 @@
           "type": "toml",
           "path": "engine/pyproject.toml",
           "jsonpath": "$.project.version"
+        },
+        {
+          "type": "toml",
+          "path": "engine/uv.lock",
+          "jsonpath": "$.package[?(@.name == 'solidifai-engine')].version"
         }
       ]
     }

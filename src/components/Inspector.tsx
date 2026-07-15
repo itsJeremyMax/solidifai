@@ -77,9 +77,9 @@ export default function Inspector({
   useEffect(() => {
     if (briefRev > seenRev.current) {
       seenRev.current = briefRev;
-      if (tab !== "activity" && brief !== null) setBriefUnseen(true);
+      if ((tab !== "activity" || collapsed) && brief !== null) setBriefUnseen(true);
     }
-  }, [briefRev, tab, brief]);
+  }, [briefRev, tab, brief, collapsed]);
   useEffect(() => {
     if (tab === "activity" && !collapsed) setBriefUnseen(false);
   }, [tab, collapsed]);
@@ -122,7 +122,13 @@ export default function Inspector({
           }}
         />
       ) : (
-        <div className="flex-1 overflow-auto">
+        <div
+          id={`inspector-panel-${visible}`}
+          role="tabpanel"
+          aria-labelledby={`inspector-tab-${visible}`}
+          tabIndex={0}
+          className="flex-1 overflow-auto"
+        >
           {visible === "model" && (
             <ModelPanel
               model={model}

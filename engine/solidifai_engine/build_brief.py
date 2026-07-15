@@ -31,6 +31,10 @@ MAX_INTERFACES = 256
 MAX_SUMMARY = 500
 MAX_PROSE = 500
 MAX_PART_TEXT = 300
+MAX_PART_NAME = 120
+MAX_DIM_NAME = 120
+MAX_UNIT = 32
+MAX_DIM_DRIVES = 200
 # Sol reads the readable names in the skill copy ("press-fit", "snap-fit"); normalize
 # those to the canonical enum so a brief is not rejected for a synonym.
 _KIND_ALIASES = {
@@ -101,7 +105,7 @@ def validate(brief: Any) -> dict:
             raise ValueError("each part needs a name")
         norm_parts.append(
             {
-                "name": str(p["name"]).strip(),
+                "name": _capped_text(p["name"], MAX_PART_NAME, "part.name"),
                 "role": _capped_text(p.get("role", ""), MAX_PART_TEXT, "part.role"),
                 "why": _capped_text(p.get("why", ""), MAX_PART_TEXT, "part.why"),
             }
@@ -116,12 +120,12 @@ def validate(brief: Any) -> dict:
         if not isinstance(d, dict) or not str(d.get("name", "")).strip():
             raise ValueError("each key_dim needs a name")
         dim = {
-            "name": str(d["name"]).strip(),
+            "name": _capped_text(d["name"], MAX_DIM_NAME, "key_dim.name"),
             "value": _finite_or_none(d.get("value"), "key_dim.value"),
-            "unit": str(d.get("unit", "mm")).strip() or "mm",
+            "unit": _capped_text(d.get("unit", "mm"), MAX_UNIT, "key_dim.unit") or "mm",
         }
         if d.get("drives"):
-            dim["drives"] = str(d["drives"]).strip()
+            dim["drives"] = _capped_text(d["drives"], MAX_DIM_DRIVES, "key_dim.drives")
         norm_dims.append(dim)
     interfaces = brief.get("interfaces") or []
     if not isinstance(interfaces, list):
@@ -144,7 +148,10 @@ def validate(brief: Any) -> dict:
             raise ValueError("interface.between members must be non-empty part names")
         norm_ifaces.append(
             {
-                "between": [between[0].strip(), between[1].strip()],
+                "between": [
+                    _capped_text(between[0], MAX_PART_NAME, "interface.between"),
+                    _capped_text(between[1], MAX_PART_NAME, "interface.between"),
+                ],
                 "kind": kind,
                 "clearance": _finite_or_none(it.get("clearance"), "interface.clearance"),
             }

@@ -53,3 +53,6 @@ src-tauri/engine-pack/target/
 # internal design history (plans, specs, mockups) stays local
 docs/superpowers/
 docs/previews/
+
+# Local git worktrees used for isolated agent development.
+.worktrees/

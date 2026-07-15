@@ -85,7 +85,8 @@ export default function ChecksPanel({
   const anyLoading = req.loading || dfm.loading || stress.loading;
   const allLoaded = dfm.report !== null && stress.report !== null;
   const goalsPass = !hasGoals || goals?.allMet === true;
-  const allClean = allLoaded && goalsPass && dfmEvaluated && dfmTotal === 0 && stressTotal === 0;
+  const allClean =
+    !anyLoading && allLoaded && goalsPass && dfmEvaluated && dfmTotal === 0 && stressTotal === 0;
 
   return (
     <div className="pb-2">
@@ -93,6 +94,8 @@ export default function ChecksPanel({
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-3.5 py-2.5">
         {allClean ? (
           <Chip dot="bg-engine" label="All checks pass" tone="text-engine" />
+        ) : anyLoading ? (
+          <span className="text-caption text-ink-3">Checking…</span>
         ) : (
           <>
             {hasGoals && goals && (
@@ -125,7 +128,6 @@ export default function ChecksPanel({
             {!!goals?.regressed && goals.regressed > 0 && (
               <span className="text-caption text-amber">{goals.regressed} regressed</span>
             )}
-            {anyLoading && !allLoaded && <span className="text-caption text-ink-3">Checking…</span>}
           </>
         )}
       </div>

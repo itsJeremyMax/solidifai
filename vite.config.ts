@@ -29,7 +29,7 @@ export default defineConfig(async () => ({
       // 3. don't watch `src-tauri`, or the worktree dirs (full repo copies with
       //    their own node_modules — watching them storms chokidar and the
       //    Tailwind scan reaches into them, which wedges the dev server).
-      ignored: ["**/src-tauri/**", "**/.claude/**", "**/.worktree/**"],
+      ignored: ["**/src-tauri/**", "**/.claude/**", "**/.worktree/**", "**/.worktrees/**"],
     },
   },
 }));
