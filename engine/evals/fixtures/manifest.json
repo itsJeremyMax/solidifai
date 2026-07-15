@@ -1,0 +1,14 @@
+{
+  "battery-box": {"one-cavity": "four-cell-slots"},
+  "box-lid-fit": {"missing-lid": "slip-fit-interface"},
+  "bracket-load": {"one-hole": "wall-mount-holes", "flat-plate": "two-leg-load-geometry"},
+  "desk-organizer": {"missing-phone-slot": "three-usable-regions"},
+  "gear-pair": {"blank-20": "twenty-tooth-gear", "blank-30": "thirty-tooth-gear", "wrong-20": "twenty-tooth-gear"},
+  "handle-grip": {"solid-grip": "tang-bore", "wrong-tang-bore": "tang-bore"},
+  "hinge": {"pinless": "two-leaves-and-pin", "noninterleaved": "two-leaves-and-pin"},
+  "hook-wall": {"one-hole": "two-wall-holes", "flat-plate": "hook-load-geometry"},
+  "match-object": {"no-prongs": "two-prong-interface", "hole-only": "two-prong-interface"},
+  "phone-stand": {"no-cradle": "phone-cradle"},
+  "pi-case": {"solid-case": "pi-board-clearance", "blocked-ports": "connector-openings", "insufficient-vents": "ventilation"},
+  "washer-spec": {"solid-disc": "m8-bore"}
+}

@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1500,
-  "graders": ["requirements", "dfm", "watertight", "dim_match"],
+  "graders": ["requirements", "dfm", "watertight", "dim_match", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
@@ -9,6 +9,9 @@
   "expected_dims": [
     {"kind": "hole", "expected": 12.2, "tol": 0.4},
     {"kind": "bbox_sorted", "axis": "max", "expected": 110.0, "tol": 15.0}
+  ],
+  "semantic_requirements": [
+    {"id": "tang-bore", "kind": "hole_pattern", "count": 1, "diameter_mm": 12.2, "tolerance_mm": 0.4}
   ],
   "views": ["iso", "front-top-right", "front"]
 }

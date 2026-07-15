@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1800,
-  "graders": ["requirements", "dfm", "watertight", "interference", "containment"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "containment", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
@@ -15,5 +15,9 @@
       {"name": "cell-4", "size_mm": [19, 19, 66]}
     ]
   },
+  "semantic_requirements": [
+    {"id": "box-and-lid", "kind": "part_count", "count": 2},
+    {"id": "four-cell-slots", "kind": "cavity_pattern", "size_mm": [19, 19, 60], "centers_mm": [[-30, 0, 0], [-10, 0, 0], [10, 0, 0], [30, 0, 0]], "tolerance_mm": 0.2}
+  ],
   "views": ["iso", "front-top-right", "top"]
 }

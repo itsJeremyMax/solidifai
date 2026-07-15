@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1800,
-  "graders": ["requirements", "dfm", "watertight", "interference", "containment"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "containment", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
@@ -10,5 +10,10 @@
   "containment": {
     "volumes": [{"name": "pi5-board", "size_mm": [85, 56, 18]}]
   },
+  "semantic_requirements": [
+    {"id": "pi-board-clearance", "kind": "cavity", "size_mm": [85, 56, 18], "tolerance_mm": 0.2},
+    {"id": "connector-openings", "kind": "reference_port_pattern", "reference": "pi5-board", "axis": "x", "side": "max", "openings": [{"offset_mm": [-12, 0], "size_mm": [20, 18, 10]}, {"offset_mm": [12, 0], "size_mm": [20, 18, 10]}], "tolerance_mm": 0.2},
+    {"id": "ventilation", "kind": "vent_open_area", "axis": "z", "min_count": 4, "min_open_area_mm2": 45, "tolerance_mm": 0.3}
+  ],
   "views": ["iso", "front-top-right", "back-top-left", "back"]
 }

@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1800,
-  "graders": ["requirements", "dfm", "watertight", "interference", "dim_match", "motion"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "dim_match", "motion", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
@@ -26,5 +26,10 @@
     "expect": "collides_within",
     "threshold_deg": 18
   },
+  "semantic_requirements": [
+    {"id": "two-gears-on-base", "kind": "part_count", "count": 3},
+    {"id": "twenty-tooth-gear", "kind": "radial_gear", "name": "gear_20", "tooth_count": 20, "module_mm": 2, "module_tolerance_mm": 0.3},
+    {"id": "thirty-tooth-gear", "kind": "radial_gear", "name": "gear_30", "tooth_count": 30, "module_mm": 2, "module_tolerance_mm": 0.3}
+  ],
   "views": ["iso", "top", "front-top-right"]
 }

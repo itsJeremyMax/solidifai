@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 600,
-  "graders": ["requirements", "dfm", "watertight", "dim_match"],
+  "graders": ["requirements", "dfm", "watertight", "dim_match", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
@@ -11,6 +11,9 @@
     {"kind": "bbox_sorted", "axis": "mid", "expected": 16.0, "tol": 0.3},
     {"kind": "bbox_sorted", "axis": "max", "expected": 16.0, "tol": 0.3},
     {"kind": "hole", "expected": 8.4, "tol": 0.25}
+  ],
+  "semantic_requirements": [
+    {"id": "m8-bore", "kind": "hole_pattern", "count": 1, "diameter_mm": 8.4, "tolerance_mm": 0.25}
   ],
   "views": ["iso", "top", "front"]
 }

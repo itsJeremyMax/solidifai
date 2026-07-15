@@ -33,14 +33,68 @@ def composite(programmatic: float, vlm: float | None) -> float:
     return round(PROGRAMMATIC_WEIGHT * programmatic + VLM_WEIGHT * vlm, 4)
 
 
-def summarize_task(runs: list[dict]) -> dict:
-    # error runs (run_task_once crashed) carry composite 0.0; tolerate a
-    # missing key anyway so a malformed error dict can't sink the scorecard
-    comps = [r.get("composite", 0.0) for r in runs]
+def grade_result(
+    *, programmatic: dict | float, vlm: dict | None, vlm_required: bool, agent: dict | None = None
+) -> dict:
+    """Turn grading evidence into an honest terminal state.
+
+    Numeric scores describe only complete attempts. Agent and grader failures are
+    operationally incomplete, while a required-but-missing visual judgment is
+    inconclusive rather than silently converted into a programmatic-only score.
+    """
+    if isinstance(programmatic, dict):
+        pscore = float(programmatic.get("programmatic_score", 0.0))
+        graders = programmatic.get("graders", [])
+        grader_error = bool(programmatic.get("error")) or any(
+            str(g.get("detail", "")).startswith("grader crashed:") for g in graders
+        )
+        programmatic_failed = any(g.get("passed") is False for g in graders)
+    else:
+        pscore = float(programmatic)
+        grader_error = False
+        programmatic_failed = pscore < 1.0
+
+    if agent is not None and (
+        agent.get("timed_out") is True
+        or agent.get("exit_code") != 0
+        or agent.get("envelope_valid") is False
+    ):
+        return {"terminal_status": "infra_error", "gate_passed": False, "composite": None}
+    if grader_error:
+        return {"terminal_status": "inconclusive", "gate_passed": False, "composite": None}
+
+    explicit_skip = bool(vlm and vlm.get("status") == "skipped" and vlm.get("reason") == "--no-vlm")
+    vscore = vlm_score(vlm)
+    if explicit_skip and vlm_required:
+        return {"terminal_status": "inconclusive", "gate_passed": False, "composite": None}
+    # A programmatic-only score is valid solely when the caller explicitly
+    # selected --no-vlm. Any requested judge failure is incomplete evidence.
+    if not explicit_skip and vscore is None:
+        return {"terminal_status": "inconclusive", "gate_passed": False, "composite": None}
+    terminal_status = "failed" if programmatic_failed else "passed"
     return {
-        "composite_mean": round(sum(comps) / len(comps), 4) if comps else 0.0,
-        "composite_min": min(comps) if comps else 0.0,
-        "composite_max": max(comps) if comps else 0.0,
+        "terminal_status": terminal_status,
+        "gate_passed": terminal_status == "passed",
+        "composite": composite(pscore, None if explicit_skip else vscore),
+    }
+
+
+def summarize_task(runs: list[dict]) -> dict:
+    # Only completed pass/fail runs are quality measurements. Inconclusive and
+    # infra-error attempts remain visible below, but must not poison a trend.
+    comps = [
+        r["composite"]
+        for r in runs
+        if r.get("terminal_status", "passed") in {"passed", "failed"}
+        and isinstance(r.get("composite"), (int, float))
+    ]
+    incomplete = len(runs) - len(comps)
+    return {
+        "composite_mean": round(sum(comps) / len(comps), 4) if comps else None,
+        "composite_min": min(comps) if comps else None,
+        "composite_max": max(comps) if comps else None,
+        "quality_runs": len(comps),
+        "incomplete_runs": incomplete,
     }
 
 
@@ -67,9 +121,11 @@ def build_scorecard(
             "runs": runs,
             **summary,
             "baseline": base,
-            "delta": None if base is None else round(summary["composite_mean"] - base, 4),
+            "delta": None
+            if base is None or summary["composite_mean"] is None
+            else round(summary["composite_mean"] - base, 4),
         }
-    comps = [t["composite_mean"] for t in tasks.values()]
+    comps = [t["composite_mean"] for t in tasks.values() if t["composite_mean"] is not None]
     return {
         "schema": 1,
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -112,11 +168,15 @@ def render_report(card: dict) -> str:
             f"| {_md_escape(name)} | {t['composite_mean']} | {rng} "
             f"| {t['baseline']} | {t['delta']} |"
         )
+        if t["incomplete_runs"]:
+            lines.append(f"|  | incomplete runs: {t['incomplete_runs']} |  |  |  |")
     for name, t in sorted(card["tasks"].items()):
         lines += ["", f"## {_md_escape(name)}"]
         for i, run in enumerate(t["runs"], 1):
+            status = run.get("terminal_status", "passed")
+            gate = run.get("gate_passed", True)
             lines.append(
-                f"- run {i}: composite {run['composite']} "
+                f"- run {i}: {status} (gate {gate}), composite {run['composite']} "
                 f"(programmatic {run['programmatic']['programmatic_score']}, "
                 f"vlm {run['vlm_score']})"
             )
@@ -149,7 +209,11 @@ def baseline_from_scorecard(card: dict) -> dict:
         "schema": 1,
         "recorded": card["created"],
         "rubric_version": card["rubric_version"],
-        "tasks": {n: t["composite_mean"] for n, t in card["tasks"].items()},
+        "tasks": {
+            n: t["composite_mean"]
+            for n, t in card["tasks"].items()
+            if t["composite_mean"] is not None
+        },
     }
 
 

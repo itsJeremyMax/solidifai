@@ -1,10 +1,22 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 600,
-  "graders": ["requirements", "dfm", "watertight", "interference"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
+  ],
+  "semantic_requirements": [
+    {"id": "two-wall-holes", "kind": "hole_pattern", "count": 2, "diameter_mm": 5, "tolerance_mm": 0.4},
+    {
+      "id": "hook-load-geometry",
+      "kind": "wall_hook",
+      "name": "hook",
+      "wall_thickness_mm": 6.0,
+      "min_projection_mm": 28.0,
+      "min_retaining_rise_mm": 18.0,
+      "tolerance_mm": 0.5
+    }
   ],
   "views": ["iso", "front-top-right", "right"]
 }

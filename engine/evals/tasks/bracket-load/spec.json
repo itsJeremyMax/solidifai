@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1500,
-  "graders": ["requirements", "dfm", "watertight", "dim_match", "stress"],
+  "graders": ["requirements", "dfm", "watertight", "dim_match", "stress", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
@@ -15,6 +15,22 @@
       "diameter_tol": 0.3,
       "expected": 40.0,
       "tol": 0.5
+    }
+  ],
+  "semantic_requirements": [
+    {"id": "wall-mount-holes", "kind": "hole_pattern", "count": 2, "diameter_mm": 5.5, "tolerance_mm": 0.3},
+    {
+      "id": "two-leg-load-geometry",
+      "kind": "l_bracket",
+      "name": "bracket",
+      "mount_axis": "x",
+      "span_axis": "y",
+      "rise_axis": "z",
+      "min_mount_thickness_mm": 5.0,
+      "min_span_mm": 40.0,
+      "min_rise_mm": 45.0,
+      "min_projection_mm": 20.0,
+      "tolerance_mm": 0.5
     }
   ],
   "views": ["iso", "front-top-right", "front", "right"]

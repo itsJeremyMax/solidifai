@@ -6,6 +6,7 @@ import io
 
 import pytest
 
+from solidifai_engine.__main__ import build_override_verifier
 from solidifai_engine.control import OverrideBootstrapError, read_override_bootstrap
 
 
@@ -41,3 +42,29 @@ def test_missing_or_truncated_bootstrap_frame_fails_without_waiting(stream):
 def test_malformed_bootstrap_frame_is_rejected(payload):
     with pytest.raises(OverrideBootstrapError):
         read_override_bootstrap(frame(payload))
+
+
+def test_eval_test_mode_skips_bootstrap_and_rejects_overrides():
+    verifier, close = build_override_verifier(
+        "eval-test",
+        bootstrap_factory=lambda: (_ for _ in ()).throw(AssertionError("bootstrap used")),
+    )
+    try:
+        assert verifier("opaque", workspace_id="/ws", build_id=1, format="stl") == {"ok": False}
+    finally:
+        close()
+
+
+def test_host_mode_requires_bootstrap_factory():
+    class _Channel:
+        def consume(self, nonce, **claims):
+            return {"ok": True, "nonce": nonce, **claims}
+
+        def close(self):
+            return None
+
+    verifier, close = build_override_verifier("host", bootstrap_factory=_Channel)
+    try:
+        assert verifier("opaque", workspace_id="/ws", build_id=1, format="stl")["ok"] is True
+    finally:
+        close()

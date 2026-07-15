@@ -33,8 +33,7 @@ def test_grade_only_requires_exactly_one_task(tmp_path):
 def test_grade_only_scores_a_real_workspace_without_claude(tmp_path, capsys):
     ws = tmp_path / "ws"
     ws.mkdir()
-    s = Session(str(tmp_path / "art"), model_path=str(ws / "model.py"))
-    assert s.execute_script(WASHER)["ok"]
+    (ws / "model.py").write_text(WASHER, encoding="utf-8")
 
     rc = main(
         [
@@ -98,11 +97,117 @@ def test_one_failing_task_does_not_abort_the_run(tmp_path, monkeypatch, capsys):
             str(tmp_path / "ws"),
         ]
     )
-    assert rc == 0
+    assert rc == 1
     run_dir = next((tmp_path / "runs").iterdir())
     card = json.loads((run_dir / "scorecard.json").read_text(encoding="utf-8"))
     failed = card["tasks"]["washer-spec"]["runs"][0]
     assert failed["error"] == "boom"
-    assert failed["composite"] == 0.0
+    assert failed["terminal_status"] == "infra_error"
+    assert failed["composite"] is None
     assert card["tasks"]["phone-stand"]["composite_mean"] == 1.0
     assert "run failed: boom" in (run_dir / "report.md").read_text(encoding="utf-8")
+
+
+def test_agent_failure_cannot_pass_with_partial_geometry(tmp_path, monkeypatch):
+    import evals.agent_runner as agent_runner
+    import evals.provision as provision
+    import evals.run as run_mod
+
+    task = load_task("washer-spec")
+    monkeypatch.setattr(provision, "provision_workspace", lambda *args: None)
+
+    class Engine:
+        def __init__(self, *args):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(agent_runner, "EngineProcess", Engine)
+    monkeypatch.setattr(
+        agent_runner, "run_agent", lambda *args, **kwargs: {"exit_code": -1, "timed_out": True}
+    )
+    monkeypatch.setattr(
+        run_mod,
+        "grade_workspace_dir",
+        lambda *args, **kwargs: {"programmatic": {"programmatic_score": 1.0, "graders": []}},
+    )
+    result = run_mod.run_task_once(task, tmp_path / "ws", tmp_path / "out", no_vlm=False)
+    assert result["terminal_status"] == "infra_error"
+    assert result["gate_passed"] is False
+
+
+def test_grade_only_retains_open_or_grade_failure_as_infra_error(tmp_path, monkeypatch):
+    import evals.run as run_mod
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad workspace")
+
+    monkeypatch.setattr(run_mod, "grade_workspace_dir", boom)
+    rc = main(
+        [
+            "--grade-only",
+            str(tmp_path / "missing"),
+            "--tasks",
+            "washer-spec",
+            "--no-vlm",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+        ]
+    )
+    assert rc == 1
+    card = json.loads(next((tmp_path / "runs").iterdir()).joinpath("scorecard.json").read_text())
+    run = card["tasks"]["washer-spec"]["runs"][0]
+    assert run["terminal_status"] == "infra_error"
+    assert run["error"] == "bad workspace"
+
+
+def test_no_vlm_cli_is_nongate_for_required_vlm_tasks(tmp_path, monkeypatch):
+    import evals.run as run_mod
+    from evals import scorecard as sc
+
+    real_task = load_task("washer-spec")
+    required_task = type(real_task)(
+        name=real_task.name,
+        brief=real_task.brief,
+        spec={**real_task.spec, "vlm_required": True},
+        timeout_s=real_task.timeout_s,
+    )
+
+    monkeypatch.setattr(run_mod, "load_task", lambda name: required_task)
+    monkeypatch.setattr(
+        run_mod,
+        "grade_workspace_dir",
+        lambda *args, **kwargs: {
+            "workspace": str(tmp_path / "ws"),
+            "agent": None,
+            "programmatic": {"programmatic_score": 1.0, "graders": []},
+            "vlm": {"status": "skipped", "reason": "--no-vlm"},
+            "vlm_score": None,
+            **sc.grade_result(
+                programmatic=1.0,
+                vlm={"status": "skipped", "reason": "--no-vlm"},
+                vlm_required=True,
+            ),
+        },
+    )
+
+    rc = main(
+        [
+            "--grade-only",
+            str(tmp_path / "ws"),
+            "--tasks",
+            "washer-spec",
+            "--no-vlm",
+            "--runs-dir",
+            str(tmp_path / "runs"),
+        ]
+    )
+    assert rc == 1
+    card = json.loads(next((tmp_path / "runs").iterdir()).joinpath("scorecard.json").read_text())
+    run = card["tasks"]["washer-spec"]["runs"][0]
+    assert run["terminal_status"] == "inconclusive"
+    assert run["gate_passed"] is False

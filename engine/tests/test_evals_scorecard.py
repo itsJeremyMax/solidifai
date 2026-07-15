@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from evals import scorecard as sc
 from evals.vlm_judge import RUBRIC_AXES
 
@@ -32,6 +34,80 @@ def test_vlm_score_normalizes_one_to_five():
 def test_composite_weights_and_no_vlm_fallback():
     assert sc.composite(0.8, 0.5) == 0.68  # 0.6*0.8 + 0.4*0.5
     assert sc.composite(0.8, None) == 0.8
+
+
+def test_required_vlm_failure_is_inconclusive_not_perfect():
+    result = sc.grade_result(programmatic=1.0, vlm={"error": "timeout"}, vlm_required=True)
+    assert result["terminal_status"] == "inconclusive"
+    assert result["gate_passed"] is False
+    assert result["composite"] is None
+
+
+def test_no_vlm_is_explicit_and_only_valid_when_not_required():
+    allowed = sc.grade_result(
+        programmatic=1.0,
+        vlm={"status": "skipped", "reason": "--no-vlm"},
+        vlm_required=False,
+    )
+    required = sc.grade_result(programmatic=1.0, vlm={"status": "skipped"}, vlm_required=True)
+    assert allowed["terminal_status"] == "passed"
+    assert allowed["gate_passed"] is True
+    assert required["terminal_status"] == "inconclusive"
+
+
+def test_explicit_no_vlm_skip_is_inconclusive_for_required_tasks():
+    result = sc.grade_result(
+        programmatic=1.0,
+        vlm={"status": "skipped", "reason": "--no-vlm"},
+        vlm_required=True,
+    )
+    assert result == {"terminal_status": "inconclusive", "gate_passed": False, "composite": None}
+
+
+@pytest.mark.parametrize(
+    "vlm",
+    [None, {}, {"error": "timeout"}, {"scores": {RUBRIC_AXES[0]: 5}}],
+)
+def test_requested_vlm_failure_is_inconclusive_for_every_task(vlm):
+    result = sc.grade_result(programmatic=1.0, vlm=vlm, vlm_required=False)
+    assert result == {"terminal_status": "inconclusive", "gate_passed": False, "composite": None}
+
+
+def test_only_explicit_no_vlm_skip_can_bypass_the_judge():
+    result = sc.grade_result(
+        programmatic=1.0,
+        vlm={"status": "skipped", "reason": "--no-vlm"},
+        vlm_required=False,
+    )
+    assert result["terminal_status"] == "passed"
+
+
+def test_agent_and_grader_failures_cannot_be_quality_results():
+    for agent in (
+        {"exit_code": 3, "timed_out": False},
+        {"exit_code": 0, "timed_out": False, "envelope_valid": False},
+    ):
+        result = sc.grade_result(
+            programmatic=1.0, vlm={"status": "skipped"}, vlm_required=False, agent=agent
+        )
+        assert result["terminal_status"] == "infra_error"
+        assert result["composite"] is None
+    result = sc.grade_result(
+        programmatic={"programmatic_score": 1.0, "graders": [{"detail": "grader crashed: boom"}]},
+        vlm={"status": "skipped"},
+        vlm_required=False,
+    )
+    assert result["terminal_status"] == "inconclusive"
+
+
+def test_incomplete_runs_are_not_quality_aggregates():
+    complete = _run(1.0)
+    complete.update({"terminal_status": "passed", "gate_passed": True})
+    incomplete = _run(1.0)
+    incomplete.update({"terminal_status": "infra_error", "gate_passed": False, "composite": None})
+    summary = sc.summarize_task([complete, incomplete])
+    assert summary["composite_mean"] == 1.0
+    assert summary["incomplete_runs"] == 1
 
 
 def test_scorecard_with_baseline_deltas():
@@ -101,9 +177,11 @@ def test_write_run_outputs(tmp_path):
 
 def test_summarize_task_zero_runs():
     assert sc.summarize_task([]) == {
-        "composite_mean": 0.0,
-        "composite_min": 0.0,
-        "composite_max": 0.0,
+        "composite_mean": None,
+        "composite_min": None,
+        "composite_max": None,
+        "quality_runs": 0,
+        "incomplete_runs": 0,
     }
     card = sc.build_scorecard(
         tier="smoke",
@@ -113,7 +191,7 @@ def test_summarize_task_zero_runs():
         vlm_enabled=False,
         baseline=None,
     )
-    assert card["tasks"]["hook-wall"]["composite_mean"] == 0.0
+    assert card["tasks"]["hook-wall"]["composite_mean"] is None
 
 
 def test_stale_baseline_suppresses_deltas():

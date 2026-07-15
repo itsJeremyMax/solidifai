@@ -1,10 +1,19 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1800,
-  "graders": ["requirements", "dfm", "watertight", "interference"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0}
+  ],
+  "semantic_requirements": [
+    {
+      "id": "three-usable-regions",
+      "kind": "cavity_pattern",
+      "size_mm": [[18, 18, 28], [12, 30, 24], [26, 26, 6]],
+      "centers_mm": [[-32, 0, 5], [0, 0, 0], [30, 0, 11]],
+      "tolerance_mm": 0.2
+    }
   ],
   "views": ["iso", "front-top-right", "back-top-left", "top"]
 }

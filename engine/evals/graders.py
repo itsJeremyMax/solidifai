@@ -38,7 +38,12 @@ class GradingSession:
         from solidifai_engine.session import Session
 
         self.workspace = os.path.abspath(workspace)
-        self._artifacts = tempfile.mkdtemp(prefix="sf-grade-")
+        # The engine derives a workspace root from ``artifacts_dir``. Keep this
+        # throwaway publication store under the evaluated workspace so model.py
+        # stays a safe workspace-relative input, then remove it on close.
+        grade_root = os.path.join(self.workspace, ".solidifai")
+        os.makedirs(grade_root, exist_ok=True)
+        self._artifacts = tempfile.mkdtemp(prefix="sf-grade-", dir=grade_root)
         try:
             self.session = Session(
                 self._artifacts, model_path=os.path.join(self.workspace, "model.py")
@@ -169,6 +174,64 @@ def _holes(gs: GradingSession) -> list[dict]:
             if f["kind"] == "hole":
                 out.append({**f, "part": o.name})
     return out
+
+
+def _named_part(gs: GradingSession, name: str):
+    return next((part for part in gs.designed() if part.name.lower() == name.lower()), None)
+
+
+def _cylindrical_faces(shape) -> list:
+    from build123d import GeomType
+
+    return [face for face in shape.faces() if face.geom_type == GeomType.CYLINDER]
+
+
+def _axis_components(face) -> list[float]:
+    if face.axis_of_rotation is not None:
+        direction = face.axis_of_rotation.direction
+        return [float(direction.X), float(direction.Y), float(direction.Z)]
+    size = face.bounding_box().size
+    values = [float(size.X), float(size.Y), float(size.Z)]
+    axis = max(range(3), key=lambda index: values[index])
+    return [1.0 if index == axis else 0.0 for index in range(3)]
+
+
+def _face_axis_center(face) -> list[float]:
+    """Center of a cylindrical face's bounding axis, not a point on its wall."""
+    box = face.bounding_box()
+    return [
+        (box.min.X + box.max.X) / 2,
+        (box.min.Y + box.max.Y) / 2,
+        (box.min.Z + box.max.Z) / 2,
+    ]
+
+
+def _box_center_and_size(lo: list[float], hi: list[float]) -> tuple[list[float], list[float]]:
+    size = [hi[i] - lo[i] for i in range(3)]
+    center = [(lo[i] + hi[i]) / 2 for i in range(3)]
+    return center, size
+
+
+def _radial_tooth_count(shape, pitch_radius: float) -> int:
+    """Count separated radial excursions in the XY silhouette.
+
+    The root cylinder establishes the pitch geometry; a tooth must protrude at
+    least a quarter module beyond it.  Sampling the actual tessellation avoids
+    accepting a high face count from fillets or arbitrary decorative cuts.
+    """
+    vertices, _ = shape.tessellate(0.4)
+    bins = [0.0] * 720
+    for point in vertices:
+        angle = (math.atan2(point.Y, point.X) + 2 * math.pi) % (2 * math.pi)
+        index = min(len(bins) - 1, int(angle / (2 * math.pi) * len(bins)))
+        bins[index] = max(bins[index], math.hypot(point.X, point.Y))
+    raised = [radius > pitch_radius for radius in bins]
+    # Join the circular endpoint before counting contiguous radial regions.
+    if raised and raised[0] and raised[-1]:
+        first_false = next((i for i, value in enumerate(raised) if not value), None)
+        if first_false is not None:
+            raised = raised[first_false:] + raised[:first_false]
+    return sum(value and not raised[index - 1] for index, value in enumerate(raised))
 
 
 def _axis_line_distance(p1, u1, p2, u2) -> float:
@@ -385,7 +448,7 @@ def grade_containment(gs: GradingSession, spec: dict) -> GraderResult:
             )
         else:
             ok = any(
-                _probe_clear(Pos(*center) * Box(*perm), designed, lo, hi)
+                _probe_clear(Pos(*center) * Box(perm[0], perm[1], perm[2]), designed, lo, hi)
                 for perm in set(itertools.permutations(size))
             )
             checks.append(
@@ -544,6 +607,448 @@ def grade_motion(gs: GradingSession, spec: dict) -> GraderResult:
     )
 
 
+# -- typed semantic requirements ----------------------------------------------
+
+
+def _semantic_check(gs: GradingSession, req: dict) -> dict:
+    """Measure a semantic criterion from rebuilt geometry. Names select targets;
+    they never substitute for a geometric observation."""
+    kind = req["kind"]
+    parts = gs.designed()
+    if kind == "part_count":
+        count = len(parts)
+        ok = (
+            count == req["count"]
+            if "count" in req
+            else req.get("min", 0) <= count <= req.get("max", float("inf"))
+        )
+        return {"id": req["id"], "kind": kind, "pass": ok, "measured": count}
+    if kind == "part_name":
+        count = sum(o.name.lower() == req["name"].lower() for o in parts)
+        ok = count >= req.get("count", 1)
+        return {"id": req["id"], "kind": kind, "pass": ok, "measured": count}
+    if kind == "part_faces":
+        part = next((o for o in parts if o.name.lower() == req["name"].lower()), None)
+        faces = len(part.shape.faces()) if part is not None else 0
+        return {"id": req["id"], "kind": kind, "pass": faces >= req["min"], "measured": faces}
+    if kind == "feature":
+        features = gs.session.inspect_features().get("features", [])
+        matches = [f for f in features if f.get("name", "").lower() == req["name"].lower()]
+        value = None
+        if matches and req.get("metric"):
+            value = (matches[0].get("metrics") or {}).get(req["metric"])
+        ok = bool(matches) and (
+            not req.get("metric")
+            or isinstance(value, (int, float))
+            and req["range"][0] <= value <= req["range"][1]
+        )
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": ok,
+            "measured": value if req.get("metric") else len(matches),
+        }
+    if kind == "hole_pattern":
+        holes = [
+            h for h in _holes(gs) if abs(h["diameter"] - req["diameter_mm"]) <= req["tolerance_mm"]
+        ]
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": len(holes) >= req["count"],
+            "measured": len(holes),
+        }
+    if kind == "radial_gear":
+        part = _named_part(gs, req["name"])
+        if part is None:
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing part"}
+        pitch_radius = req["tooth_count"] * req["module_mm"] / 2
+        tolerance = req["module_tolerance_mm"]
+        roots = [
+            face
+            for face in _cylindrical_faces(part.shape)
+            if abs(face.radius - pitch_radius) <= tolerance
+            and abs(_axis_components(face)[2]) >= 0.99
+        ]
+        # Boolean-unioned tooth flanks split the pitch cylinder into one exposed
+        # cylindrical arc per tooth. Unlike total face count, this is the radial
+        # contact topology and cannot be supplied by a smooth blank disc.
+        teeth = len(roots)
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": teeth == req["tooth_count"],
+            "measured": {"pitch_radius_mm": pitch_radius, "teeth": teeth, "root_faces": len(roots)},
+        }
+    if kind == "gopro_two_prong":
+        part = _named_part(gs, req["name"])
+        if part is None:
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing part"}
+        expected_radius = req["pin_hole_diameter_mm"] / 2
+        prong_holes = [
+            face
+            for face in _cylindrical_faces(part.shape)
+            if abs(face.radius - expected_radius) <= req["tolerance_mm"] / 2
+            and abs(_axis_components(face)[1]) >= 0.99
+        ]
+        centers = sorted(face.center().Y for face in prong_holes)
+        thicknesses = [face.bounding_box().size.Y for face in prong_holes]
+        spacing = centers[1] - centers[0] if len(centers) == 2 else None
+        thickness = sum(thicknesses) / len(thicknesses) if thicknesses else None
+        gap = spacing - thickness if spacing is not None and thickness is not None else None
+        tol = req["tolerance_mm"]
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": (
+                len(prong_holes) == 2
+                and thickness is not None
+                and gap is not None
+                and abs(thickness - req["prong_thickness_mm"]) <= tol
+                and abs(gap - req["prong_gap_mm"]) <= tol
+            ),
+            "measured": {
+                "hole_faces": len(prong_holes),
+                "thickness_mm": thickness,
+                "gap_mm": gap,
+            },
+        }
+    if kind == "hinge_topology":
+        leaf_a, leaf_b = (_named_part(gs, name) for name in req["leaves"])
+        pin = _named_part(gs, req["pin"])
+        if leaf_a is None or leaf_b is None or pin is None:
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing hinge part"}
+        pin_faces = _cylindrical_faces(pin.shape)
+        if not pin_faces:
+            return {
+                "id": req["id"],
+                "kind": kind,
+                "pass": False,
+                "measured": "pin is not cylindrical",
+            }
+        pin_face = max(pin_faces, key=lambda face: face.area)
+        pin_axis = _axis_components(pin_face)
+        axis = max(range(3), key=lambda index: abs(pin_axis[index]))
+        tolerance = req["tolerance_mm"]
+
+        def knuckles(part, label):
+            out = []
+            for face in _cylindrical_faces(part.shape):
+                direction = _axis_components(face)
+                if abs(direction[axis]) < 0.99:
+                    continue
+                if (
+                    _axis_line_distance(
+                        _face_axis_center(face), direction, _face_axis_center(pin_face), pin_axis
+                    )
+                    <= tolerance
+                ):
+                    out.append((_face_axis_center(face)[axis], label))
+            return out
+
+        ordered = sorted(knuckles(leaf_a, "a") + knuckles(leaf_b, "b"))
+        labels = [label for _, label in ordered]
+        interleaved = bool(labels) and all(
+            left != right for left, right in zip(labels, labels[1:], strict=False)
+        )
+        expected = req["knuckles_per_leaf"]
+        counts = {label: labels.count(label) for label in ("a", "b")}
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": counts == {"a": expected, "b": expected} and interleaved,
+            "measured": {"knuckles": counts, "order": labels, "axis": axis},
+        }
+    if kind == "wall_hook":
+        part = _named_part(gs, req["name"])
+        if part is None:
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing part"}
+        tol = req["tolerance_mm"]
+        mounting = []
+        wall_thickness = req.get("wall_thickness_mm")
+        if "mount_hole_diameter_mm" in req and "mount_hole_count" in req:
+            radius = req["mount_hole_diameter_mm"] / 2
+            mounting = [
+                face
+                for face in _cylindrical_faces(part.shape)
+                if abs(face.radius - radius) <= tol / 2 and abs(_axis_components(face)[0]) >= 0.99
+            ]
+            wall_thickness = max((face.bounding_box().size.X for face in mounting), default=0.0)
+        box = part.shape.bounding_box()
+        projection = box.size.X - wall_thickness
+        vertices, _ = part.shape.tessellate(0.5)
+        terminal = [
+            point.Z for point in vertices if box.max.X - req["min_projection_mm"] / 2 <= point.X
+        ]
+        rise = max(terminal) - min(terminal) if terminal else 0.0
+        mounting_ok = True
+        if "mount_hole_count" in req:
+            mounting_ok = len(mounting) >= req["mount_hole_count"]
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": (
+                mounting_ok
+                and projection >= req["min_projection_mm"]
+                and rise >= req["min_retaining_rise_mm"]
+            ),
+            "measured": {
+                "mount_holes": len(mounting),
+                "wall_thickness_mm": wall_thickness,
+                "projection_mm": projection,
+                "retaining_rise_mm": rise,
+            },
+        }
+    if kind == "l_bracket":
+        from build123d import Box, Pos
+
+        from solidifai_engine import interference as itf
+
+        part = _named_part(gs, req["name"])
+        if part is None:
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing part"}
+        axis_index = {"x": 0, "y": 1, "z": 2}
+        mount_axis = axis_index[req["mount_axis"]]
+        span_axis = axis_index[req["span_axis"]]
+        rise_axis = axis_index[req["rise_axis"]]
+        box = part.shape.bounding_box()
+        lo = [box.min.X, box.min.Y, box.min.Z]
+        hi = [box.max.X, box.max.Y, box.max.Z]
+        span = hi[span_axis] - lo[span_axis]
+        rise = hi[rise_axis] - lo[rise_axis]
+        projection = hi[mount_axis] - lo[mount_axis] - req["min_mount_thickness_mm"]
+
+        holes = [h for h in _holes(gs) if abs(h["axis"][mount_axis]) >= 0.99]
+        hole_center = (
+            sum(h["location"][mount_axis] for h in holes) / len(holes)
+            if holes
+            else (lo[mount_axis] + hi[mount_axis]) / 2
+        )
+        mount_side = (
+            "min"
+            if abs(hole_center - lo[mount_axis]) <= abs(hole_center - hi[mount_axis])
+            else "max"
+        )
+        mount_sign = 1.0 if mount_side == "min" else -1.0
+        mount_anchor = lo[mount_axis] if mount_side == "min" else hi[mount_axis]
+        mount_lo = lo.copy()
+        mount_hi = hi.copy()
+        mount_hi[mount_axis] = mount_anchor + mount_sign * req["min_mount_thickness_mm"]
+        if mount_side == "max":
+            mount_lo[mount_axis] = mount_hi[mount_axis]
+            mount_hi[mount_axis] = mount_anchor
+        mount_center, mount_size = _box_center_and_size(mount_lo, mount_hi)
+        mount_probe = Pos(*mount_center) * Box(
+            *[max(0.5, value - req["tolerance_mm"]) for value in mount_size]
+        )
+        has_mount_leg = itf.classify_pair(mount_probe, part.shape).get("relation") != "disjoint"
+
+        def shelf_probe_at(rise_side: str):
+            shelf_lo = lo.copy()
+            shelf_hi = hi.copy()
+            if mount_side == "min":
+                shelf_lo[mount_axis] = lo[mount_axis] + req["min_mount_thickness_mm"]
+                shelf_hi[mount_axis] = shelf_lo[mount_axis] + req["min_projection_mm"]
+            else:
+                shelf_hi[mount_axis] = hi[mount_axis] - req["min_mount_thickness_mm"]
+                shelf_lo[mount_axis] = shelf_hi[mount_axis] - req["min_projection_mm"]
+            if rise_side == "max":
+                shelf_lo[rise_axis] = hi[rise_axis] - req["min_mount_thickness_mm"]
+            else:
+                shelf_hi[rise_axis] = lo[rise_axis] + req["min_mount_thickness_mm"]
+            center, size = _box_center_and_size(shelf_lo, shelf_hi)
+            probe = Pos(*center) * Box(*[max(0.5, value - req["tolerance_mm"]) for value in size])
+            return itf.classify_pair(probe, part.shape).get("relation") != "disjoint"
+
+        has_shelf_leg = shelf_probe_at("min") or shelf_probe_at("max")
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": (
+                has_mount_leg
+                and has_shelf_leg
+                and span >= req["min_span_mm"]
+                and rise >= req["min_rise_mm"]
+                and projection >= req["min_projection_mm"]
+            ),
+            "measured": {
+                "mount_side": mount_side,
+                "span_mm": span,
+                "rise_mm": rise,
+                "projection_mm": projection,
+                "mount_leg": has_mount_leg,
+                "shelf_leg": has_shelf_leg,
+            },
+        }
+    if kind == "reference_port_pattern":
+        from build123d import Box, Pos
+
+        from solidifai_engine import interference as itf
+
+        reference = next(
+            (part for part in gs.references() if part.name.lower() == req["reference"].lower()),
+            None,
+        )
+        if reference is None:
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing reference"}
+        axis = {"x": 0, "y": 1, "z": 2}[req["axis"]]
+        other = [index for index in range(3) if index != axis]
+        ref_box = reference.shape.bounding_box()
+        ref_center = [
+            (ref_box.min.X + ref_box.max.X) / 2,
+            (ref_box.min.Y + ref_box.max.Y) / 2,
+            (ref_box.min.Z + ref_box.max.Z) / 2,
+        ]
+        ref_edge = [ref_box.min.X, ref_box.min.Y, ref_box.min.Z][axis]
+        if req["side"] == "max":
+            ref_edge = [ref_box.max.X, ref_box.max.Y, ref_box.max.Z][axis]
+        designed = gs.designed()
+        lo, hi = _union_bbox(designed)
+        checks = []
+        for opening in req["openings"]:
+            center = ref_center.copy()
+            center[axis] = ref_edge
+            center[other[0]] += opening["offset_mm"][0]
+            center[other[1]] += opening["offset_mm"][1]
+            size = [0.0, 0.0, 0.0]
+            size[axis] = opening["size_mm"][0]
+            size[other[0]] = opening["size_mm"][1]
+            size[other[1]] = opening["size_mm"][2]
+            probe = Pos(*center) * Box(size[0], size[1], size[2])
+            clear = all(
+                itf.classify_pair(probe, part.shape).get("relation") != "overlap"
+                for part in designed
+            )
+            probe_box = probe.bounding_box()
+            outer = [probe_box.min.X, probe_box.min.Y, probe_box.min.Z][axis]
+            if req["side"] == "max":
+                outer = [probe_box.max.X, probe_box.max.Y, probe_box.max.Z][axis]
+            checks.append(
+                clear
+                and (
+                    outer >= hi[axis] - req["tolerance_mm"]
+                    if req["side"] == "max"
+                    else outer <= lo[axis] + req["tolerance_mm"]
+                )
+            )
+        return {"id": req["id"], "kind": kind, "pass": all(checks), "measured": checks}
+    if kind == "vent_open_area":
+        axis = {"x": 0, "y": 1, "z": 2}[req["axis"]]
+        vents = [
+            face
+            for part in gs.designed()
+            for face in _cylindrical_faces(part.shape)
+            if face.radius is not None and abs(_axis_components(face)[axis]) >= 0.99
+        ]
+        area = sum(math.pi * face.radius**2 for face in vents)
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": len(vents) >= req["min_count"] and area >= req["min_open_area_mm2"],
+            "measured": {"count": len(vents), "open_area_mm2": area},
+        }
+    if kind == "cavity":
+        from build123d import Box, Pos
+
+        lo, hi = _union_bbox(parts)
+        center = [(lo[i] + hi[i]) / 2 for i in range(3)]
+        size = [v - 2 * req["tolerance_mm"] for v in req["size_mm"]]
+        ok = min(size) > 0 and _probe_clear(
+            Pos(*center) * Box(size[0], size[1], size[2]), parts, lo, hi
+        )
+        return {"id": req["id"], "kind": kind, "pass": ok, "measured": size}
+    if kind == "cavity_pattern":
+        from build123d import Box, Pos
+
+        from solidifai_engine import interference as itf
+
+        centers = req["centers_mm"]
+        raw_sizes = req["size_mm"]
+        if raw_sizes and isinstance(raw_sizes[0], list):
+            sizes = [[v - 2 * req["tolerance_mm"] for v in size] for size in raw_sizes]
+        else:
+            shared = [v - 2 * req["tolerance_mm"] for v in raw_sizes]
+            sizes = [shared for _ in centers]
+        slots = [
+            _probe_clear(Pos(*center) * Box(size[0], size[1], size[2]), parts, *_union_bbox(parts))
+            for center, size in zip(centers, sizes, strict=True)
+        ]
+        # A single oversize void must not satisfy a multi-cell compartment
+        # claim. Each adjacent requested slot needs a real solid divider at its
+        # midpoint, measured with a thin probe rather than object names/bboxes.
+        separators = []
+        for index, (left, right) in enumerate(zip(centers[:-1], centers[1:], strict=True)):
+            delta = [right[i] - left[i] for i in range(3)]
+            axis = max(range(3), key=lambda i: abs(delta[i]))
+            local = [min(sizes[index][i], sizes[index + 1][i]) for i in range(3)]
+            cross = [max(1.0, local[i] / 3) for i in range(3)]
+            cross[axis] = max(0.5, abs(delta[axis]) / 5)
+            midpoint = [(left[i] + right[i]) / 2 for i in range(3)]
+            separator = Pos(*midpoint) * Box(cross[0], cross[1], cross[2])
+            separators.append(
+                any(
+                    itf.classify_pair(separator, part.shape).get("relation") == "overlap"
+                    for part in parts
+                )
+            )
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": all(min(size) > 0 for size in sizes) and all(slots) and all(separators),
+            "measured": {"slots": sum(slots), "separators": sum(separators)},
+        }
+    if kind == "interface":
+        selected = [
+            next((o for o in parts if o.name.lower() == name.lower()), None)
+            for name in req["parts"]
+        ]
+        if any(p is None for p in selected):
+            return {"id": req["id"], "kind": kind, "pass": False, "measured": "missing part"}
+        a, b = selected
+        assert a is not None and b is not None
+        from solidifai_engine import interference as itf
+
+        relation = itf.classify_pair(a.shape, b.shape)["relation"]
+        # Use OCC's closest-point distance, not bbox proximity: unrelated
+        # geometry can overlap in a bounding box without forming an interface.
+        gap = float(a.shape.distance_to(b.shape))
+        return {
+            "id": req["id"],
+            "kind": kind,
+            "pass": relation != "overlap" and gap <= req.get("tolerance_mm", 0.1),
+            "measured": {"gap": gap, "relation": relation},
+        }
+    # Motion reuses the engine-backed motion grader; the named component and
+    # requested angular span are still the source of truth.
+    start, stop = req["range_deg"]
+    result = grade_motion(
+        gs,
+        {
+            "motion": {
+                "part": {"name_contains": req["part"]},
+                "start": start,
+                "stop": stop,
+                "threshold_deg": stop,
+                "expect": "clear_to",
+            }
+        },
+    )
+    return {"id": req["id"], "kind": kind, "pass": result.passed is True, "measured": result.detail}
+
+
+def grade_semantic(gs: GradingSession, spec: dict) -> GraderResult:
+    checks = [_semantic_check(gs, req) for req in spec.get("semantic_requirements", [])]
+    passed = bool(checks) and all(c["pass"] for c in checks)
+    misses = [c["id"] for c in checks if not c["pass"]]
+    return GraderResult(
+        "semantic",
+        passed,
+        1.0 if passed else (sum(c["pass"] for c in checks) / len(checks) if checks else 0.0),
+        "all semantic requirements met" if passed else "failed: " + ", ".join(misses),
+        data={"checks": checks},
+    )
+
+
 GRADERS: dict[str, Callable[[GradingSession, dict], GraderResult]] = {
     "requirements": grade_requirements,
     "dfm": grade_dfm,
@@ -554,6 +1059,7 @@ GRADERS: dict[str, Callable[[GradingSession, dict], GraderResult]] = {
     "containment": grade_containment,
     "stability": grade_stability,
     "motion": grade_motion,
+    "semantic": grade_semantic,
 }
 
 

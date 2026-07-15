@@ -1,12 +1,16 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1500,
-  "graders": ["requirements", "dfm", "watertight", "interference"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
     {"id": "no-overlap", "quantity": "overlaps", "op": "<=", "bound": 0},
     {"id": "lid-fit", "quantity": "min_clearance", "op": "within", "bound": [0.08, 0.35]}
+  ],
+  "semantic_requirements": [
+    {"id": "box-and-lid", "kind": "part_count", "count": 2},
+    {"id": "slip-fit-interface", "kind": "interface", "parts": ["box", "lid"], "tolerance_mm": 0.35}
   ],
   "views": ["iso", "front-top-right", "front"]
 }

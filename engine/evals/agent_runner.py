@@ -97,6 +97,25 @@ def invoke_claude(
     return (runner or _default_runner)(cmd, cwd, timeout_s, os.environ.copy())
 
 
+def valid_agent_envelope(stdout: str) -> bool:
+    """Validate the successful ``claude --output-format json`` result contract."""
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(envelope, dict)
+        and envelope.get("type") == "result"
+        and envelope.get("subtype") == "success"
+        and envelope.get("is_error") is False
+        and isinstance(envelope.get("result"), str)
+        and bool(envelope["result"].strip())
+        and isinstance(envelope.get("num_turns"), int)
+        and not isinstance(envelope["num_turns"], bool)
+        and envelope["num_turns"] > 0
+    )
+
+
 def run_agent(
     brief: str,
     workspace: str,
@@ -126,10 +145,12 @@ def run_agent(
     p.write_text(res.stdout, encoding="utf-8")
     if res.stderr:
         p.with_name(p.stem + ".stderr.log").write_text(res.stderr, encoding="utf-8")
+    envelope_valid = valid_agent_envelope(res.stdout)
     return {
         "exit_code": res.exit_code,
         "duration_s": res.duration_s,
         "timed_out": res.timed_out,
+        "envelope_valid": envelope_valid,
         "transcript": str(p),
     }
 
@@ -192,6 +213,8 @@ class EngineProcess:
                     self.python,
                     "-m",
                     "solidifai_engine",
+                    "--override-bootstrap-mode",
+                    "eval-test",
                     "--socket",
                     self.sock_path,
                     "--artifacts",
@@ -201,6 +224,7 @@ class EngineProcess:
                 ],
                 stdout=log,
                 stderr=log,
+                stdin=None,
                 env=env,
                 start_new_session=True,
             )
@@ -211,11 +235,15 @@ class EngineProcess:
                     f"engine exited early (code {self.proc.returncode}); see {self.log_path}"
                 )
             if os.path.exists(self.sock_path):
+                probe_timeout = min(0.25, max(0.05, deadline - time.monotonic()))
                 try:
-                    engine_rpc(self.sock_path, "get_model_info", timeout_s=5.0)
+                    engine_rpc(self.sock_path, "get_model_info", timeout_s=probe_timeout)
                     return
-                except (OSError, RuntimeError):
+                except OSError:
                     pass
+                except RuntimeError as exc:
+                    if "no committed model publication is available" in str(exc):
+                        return
             time.sleep(0.25)
         self.stop()
         raise RuntimeError(f"engine not ready within {timeout_s}s; see {self.log_path}")

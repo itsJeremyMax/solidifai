@@ -1,7 +1,7 @@
 {
-  "schema": 1,
+  "schema": 2,
   "timeout_s": 1800,
-  "graders": ["requirements", "dfm", "watertight", "interference", "motion"],
+  "graders": ["requirements", "dfm", "watertight", "interference", "motion", "semantic"],
   "requirements": [
     {"id": "watertight", "quantity": "watertight", "op": "==", "bound": true},
     {"id": "printable", "quantity": "dfm_critical", "op": "<=", "bound": 0},
@@ -17,5 +17,8 @@
     "expect": "clear_to",
     "threshold_deg": 85
   },
+  "semantic_requirements": [
+    {"id": "two-leaves-and-pin", "kind": "hinge_topology", "leaves": ["leaf_a", "leaf_b"], "pin": "pin", "knuckles_per_leaf": 2, "tolerance_mm": 0.5}
+  ],
   "views": ["iso", "front-top-right", "top", "front"]
 }
