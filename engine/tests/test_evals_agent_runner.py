@@ -127,7 +127,7 @@ def test_engine_process_round_trip():
     try:
         eng = EngineProcess(ws, python=sys.executable)
         try:
-            eng.start(timeout_s=15)
+            eng.start()
         except RuntimeError:
             print(Path(eng.log_path).read_text(encoding="utf-8"))
             raise
