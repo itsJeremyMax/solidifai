@@ -56,3 +56,6 @@ docs/previews/
 
 # Local git worktrees used for isolated agent development.
 .worktrees/
+
+# Local pnpm content-addressable store.
+.pnpm-store/
