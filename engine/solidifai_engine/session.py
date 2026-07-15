@@ -678,10 +678,22 @@ class Session:
     def tolerance_stack(self, chain) -> dict:
         return self._analysis.tolerance_stack(chain)
 
-    def propose_build(self, brief) -> dict:
+    def propose_build(self, brief, expected_revision: int | None = None) -> dict:
         """Persist the build brief Sol is committing to. Validates regardless of root;
         writes the file only when this session has a workspace root (bare sessions skip)."""
-        if self.root is not None:
+        schema = brief.get("schema", build_brief.SCHEMA_V1) if isinstance(brief, dict) else None
+        if schema == build_brief.SCHEMA_V2:
+            try:
+                if self.root is not None:
+                    norm = build_brief.write_build_brief(
+                        self.root, brief, expected_revision=expected_revision
+                    )
+                else:
+                    build_brief._required_expected_revision(expected_revision)
+                    norm = build_brief.validate_v2(brief)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+        elif self.root is not None:
             norm = build_brief.write_build_brief(self.root, brief)
         else:
             norm = build_brief.validate(brief)
@@ -691,6 +703,24 @@ class Session:
         """Read the current persisted build brief (or None)."""
         brief = build_brief.load_build_brief(self.root) if self.root is not None else None
         return {"ok": True, "brief": brief}
+
+    def update_build_brief(
+        self,
+        section: str,
+        upserts: list[dict],
+        remove_ids: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> dict:
+        """Patch a stable v2 section through the engine's serialized writer."""
+        if self.root is None:
+            return {"ok": False, "error": "no workspace root"}
+        try:
+            updated = build_brief.update_build_brief(
+                self.root, section, upserts, remove_ids or [], expected_revision=expected_revision
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "brief": updated}
 
     def set_requirements(self, reqs) -> dict:
         return self._analysis.set_requirements(reqs)

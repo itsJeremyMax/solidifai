@@ -102,7 +102,35 @@ def test_forward_sends_rpc_and_returns_result(tmp_path, monkeypatch):
     req = captured[0]
     assert req["method"] == "execute_script"
     assert req["params"] == {"code": "show('x')"}
+    assert req["client"] == {
+        "protocol": 13,
+        "capabilities": [
+            "build_brief_v2",
+            "conformance",
+            "operations",
+            "readiness",
+            "strict_export",
+        ],
+    }
     assert result == {"echo": "execute_script", "params": {"code": "show('x')"}}
+
+
+def test_build_brief_tools_forward_expected_revision(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    calls = []
+    monkeypatch.setattr(srv, "_call", lambda method, params=None: calls.append((method, params)))
+
+    srv.propose_build({"schema": 2}, expected_revision=4)
+    srv.update_build_brief("parts", [], expected_revision=5)
+
+    assert calls == [
+        ("propose_build", {"brief": {"schema": 2}, "expectedRevision": 4}),
+        (
+            "update_build_brief",
+            {"section": "parts", "upserts": [], "remove_ids": [], "expectedRevision": 5},
+        ),
+    ]
 
 
 def test_bridge_does_not_import_build123d():

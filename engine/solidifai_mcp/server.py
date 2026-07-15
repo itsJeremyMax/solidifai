@@ -19,6 +19,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP, Image
 
 from solidifai_engine import ipc
+from solidifai_engine.protocol import CAPABILITIES, PROTOCOL_VERSION
 
 ENV_SOCK = "SOLIDIFAI_ENGINE_SOCK"
 
@@ -61,7 +62,12 @@ def forward(method: str, params: dict | None = None) -> Any:
     its ``payload`` (scriptLine, traceback, a per-part ``failed`` map, ...).
     """
     sock_path = _engine_sock_path()
-    request = {"id": next(_id_counter), "method": method, "params": params or {}}
+    request = {
+        "id": next(_id_counter),
+        "method": method,
+        "params": params or {},
+        "client": {"protocol": PROTOCOL_VERSION, "capabilities": sorted(CAPABILITIES)},
+    }
 
     try:
         conn = ipc.connect(sock_path)
@@ -498,7 +504,7 @@ def check_requirements() -> Any:
 
 
 @mcp.tool()
-def propose_build(brief: dict) -> Any:
+def propose_build(brief: dict, expected_revision: int | None = None) -> Any:
     """State the build brief: the short plan you commit to before building (parts and why,
     key dims, interfaces, make-it-real, and the tier). Record it here so the checks and the
     app's brief panel can see it. `brief` is `{summary, parts, key_dims, interfaces, make_real,
@@ -507,13 +513,34 @@ def propose_build(brief: dict) -> Any:
     `key_dims` (with the PARAM it drives), every part's reason in its `why`, every meeting of
     parts in `interfaces`, and `make_real` is one line (process + material). A prose blob in
     `summary`/`make_real` is rejected."""
-    return _call("propose_build", {"brief": brief})
+    return _call("propose_build", {"brief": brief, "expectedRevision": expected_revision})
 
 
 @mcp.tool()
 def get_build_brief() -> Any:
     """Read the build brief currently recorded for this workspace (or null if none)."""
     return _call("get_build_brief")
+
+
+@mcp.tool()
+def update_build_brief(
+    section: str,
+    upserts: list[dict],
+    remove_ids: list[str] | None = None,
+    expected_revision: int | None = None,
+) -> Any:
+    """Patch one v2 build-brief section by stable id. Use the revision returned by
+    get_build_brief/update_build_brief as expected_revision to avoid overwriting a
+    concurrent editor; a mismatch returns a revision conflict without writing."""
+    return _call(
+        "update_build_brief",
+        {
+            "section": section,
+            "upserts": upserts,
+            "remove_ids": remove_ids or [],
+            "expectedRevision": expected_revision,
+        },
+    )
 
 
 @mcp.tool()

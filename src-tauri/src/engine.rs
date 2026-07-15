@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::engine_cache::EngineCache;
@@ -657,21 +657,29 @@ fn engine_version(interpreter: &Path) -> Result<String, String> {
     Ok(format!("py{py} \u{00b7} build123d {b123d}"))
 }
 
-/// The RPC contract revision this host shell was built against. The engine reports
-/// its own value from `solidifai_engine/protocol.py`; a mismatch means the engine
-/// the app loaded is out of step with this shell (typically a stale `engine-dist`
-/// bundle that predates a feature). Bump this AND `PROTOCOL_VERSION` on the engine
-/// side together whenever the RPC method set changes.
-const EXPECTED_ENGINE_PROTOCOL: u32 = 12;
+/// The newest engine protocol this host supports. Startup accepts any engine range
+/// that overlaps 12-13, then checks only the capabilities the host requires.
+const EXPECTED_ENGINE_PROTOCOL: u32 = 13;
+const MIN_COMPATIBLE_ENGINE_PROTOCOL: u32 = 12;
+const REQUIRED_ENGINE_CAPABILITIES: &[&str] = &[];
 
-/// Read the engine's reported protocol version. A bundle that predates the
-/// constant (or can't import the engine) prints `0`, which `check_protocol` then
-/// surfaces as "stale" rather than letting the probe itself fail obscurely.
-fn engine_protocol(interpreter: &Path) -> Result<u32, String> {
+#[derive(Deserialize)]
+struct EngineProtocol {
+    #[serde(rename = "minProtocol")]
+    min_protocol: u32,
+    #[serde(rename = "maxProtocol")]
+    max_protocol: u32,
+    capabilities: Vec<String>,
+}
+
+/// Read the engine's reported compatibility metadata. A bundle that predates
+/// `protocol_info()` falls back to its legacy `PROTOCOL_VERSION`; an engine that
+/// cannot import the protocol module reports zero and is surfaced as stale.
+fn engine_protocol(interpreter: &Path) -> Result<EngineProtocol, String> {
     let output = quiet_command(interpreter)
         .args([
             "-c",
-            "try:\n from solidifai_engine.protocol import PROTOCOL_VERSION as P\nexcept Exception:\n P = 0\nprint(P)",
+            "import json\ntry:\n from solidifai_engine.protocol import protocol_info\n print(json.dumps(protocol_info()))\nexcept Exception:\n try:\n  from solidifai_engine.protocol import PROTOCOL_VERSION as P\n except Exception:\n  P = 0\n print(json.dumps({'minProtocol': P, 'maxProtocol': P, 'capabilities': []}))",
         ])
         .output()
         .map_err(|e| format!("failed to run interpreter for protocol probe: {e}"))?;
@@ -680,9 +688,9 @@ fn engine_protocol(interpreter: &Path) -> Result<u32, String> {
         return Err(format!("engine protocol probe failed: {}", stderr.trim()));
     }
     let out = String::from_utf8_lossy(&output.stdout);
-    out.trim().parse::<u32>().map_err(|_| {
+    serde_json::from_str(out.trim()).map_err(|_| {
         format!(
-            "engine protocol probe returned non-integer: {:?}",
+            "engine protocol probe returned invalid JSON: {:?}",
             out.trim()
         )
     })
@@ -690,19 +698,44 @@ fn engine_protocol(interpreter: &Path) -> Result<u32, String> {
 
 /// Compare the engine's protocol against what this shell expects, returning a
 /// loud, actionable error on mismatch. Pure so the message logic is unit-tested.
-fn check_protocol(engine: u32, expected: u32) -> Result<(), String> {
-    if engine == expected {
+fn check_protocol(engine: EngineProtocol, expected: u32, required: &[&str]) -> Result<(), String> {
+    if engine.min_protocol > engine.max_protocol {
+        return Err(format!(
+            "engine/app protocol mismatch: engine reports invalid protocol range {}-{}. Rebuild the bundle \
+             (scripts/build-engine-dist.sh) or restart `tauri dev` against the live engine.",
+            engine.min_protocol, engine.max_protocol,
+        ));
+    }
+    if engine.min_protocol <= expected
+        && MIN_COMPATIBLE_ENGINE_PROTOCOL <= engine.max_protocol
+        && required.iter().all(|capability| {
+            engine
+                .capabilities
+                .iter()
+                .any(|present| present == capability)
+        })
+    {
         return Ok(());
     }
-    let why = if engine < expected {
+    let why = if engine.max_protocol < MIN_COMPATIBLE_ENGINE_PROTOCOL {
         "the engine is older than this app build (a stale engine-dist bundle?)"
-    } else {
+    } else if engine.min_protocol > expected {
         "the engine is newer than this app build"
+    } else {
+        return Err(format!(
+            "engine/app protocol mismatch: engine lacks required capabilities {:?}. Rebuild the bundle \
+             (scripts/build-engine-dist.sh) or restart `tauri dev` against the live engine.",
+            required
+                .iter()
+                .filter(|capability| !engine.capabilities.iter().any(|present| present == **capability))
+                .collect::<Vec<_>>()
+        ));
     };
     Err(format!(
-        "engine/app protocol mismatch: engine reports {engine}, app expects \
-         {expected}; {why}. Rebuild the bundle (scripts/build-engine-dist.sh) \
-         or restart `tauri dev` against the live engine."
+        "engine/app protocol mismatch: engine supports {}-{}, app expects \
+          {expected}; {why}. Rebuild the bundle (scripts/build-engine-dist.sh) \
+          or restart `tauri dev` against the live engine.",
+        engine.min_protocol, engine.max_protocol,
     ))
 }
 
@@ -799,7 +832,11 @@ fn resolve_env(state: &Arc<EngineState>, app: &AppHandle) -> Result<ResolvedEnv,
     // Reject an engine whose RPC contract doesn't match this shell before we
     // spawn it, so a stale bundle fails loudly here instead of 404-ing methods
     // at call time. Skipped only via the cached fast path above (same engine).
-    check_protocol(engine_protocol(&interpreter)?, EXPECTED_ENGINE_PROTOCOL)?;
+    check_protocol(
+        engine_protocol(&interpreter)?,
+        EXPECTED_ENGINE_PROTOCOL,
+        REQUIRED_ENGINE_CAPABILITIES,
+    )?;
 
     let interpreter_str = interpreter.to_string_lossy().into_owned();
 
@@ -1089,20 +1126,84 @@ mod tests {
     }
 
     #[test]
-    fn check_protocol_matches_and_flags_drift() {
-        // Exact match is the only OK case.
-        assert!(check_protocol(EXPECTED_ENGINE_PROTOCOL, EXPECTED_ENGINE_PROTOCOL).is_ok());
+    fn check_protocol_accepts_overlapping_range_and_required_capabilities() {
+        assert!(check_protocol(
+            EngineProtocol {
+                min_protocol: 12,
+                max_protocol: 12,
+                capabilities: vec![],
+            },
+            13,
+            &[],
+        )
+        .is_ok());
+
+        assert!(check_protocol(
+            EngineProtocol {
+                min_protocol: 12,
+                max_protocol: 13,
+                capabilities: vec!["readiness".into()],
+            },
+            13,
+            &["readiness"],
+        )
+        .is_ok());
 
         // A stale (older) engine names the bundle as the likely culprit.
-        let stale = check_protocol(0, 1).unwrap_err();
+        let stale = check_protocol(
+            EngineProtocol {
+                min_protocol: 0,
+                max_protocol: 0,
+                capabilities: vec![],
+            },
+            13,
+            &[],
+        )
+        .unwrap_err();
         assert!(stale.contains("older"), "got: {stale}");
         assert!(
             stale.contains("engine-dist"),
             "should suggest a rebuild: {stale}"
         );
 
-        // A newer engine than the shell is also a mismatch (shell out of date).
-        assert!(check_protocol(2, 1).is_err());
+        let missing = check_protocol(
+            EngineProtocol {
+                min_protocol: 12,
+                max_protocol: 12,
+                capabilities: vec![],
+            },
+            13,
+            &["readiness"],
+        )
+        .unwrap_err();
+        assert!(missing.contains("readiness"), "got: {missing}");
+
+        // A newer engine with no shared protocol is still rejected.
+        assert!(check_protocol(
+            EngineProtocol {
+                min_protocol: 14,
+                max_protocol: 14,
+                capabilities: vec![],
+            },
+            13,
+            &[],
+        )
+        .is_err());
+
+        let invalid_range = check_protocol(
+            EngineProtocol {
+                min_protocol: 13,
+                max_protocol: 12,
+                capabilities: vec![],
+            },
+            13,
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            invalid_range.contains("invalid protocol range"),
+            "got: {invalid_range}"
+        );
     }
 
     #[test]

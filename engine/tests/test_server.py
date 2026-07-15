@@ -5,6 +5,7 @@ import stat
 import threading
 import time
 
+import pytest
 from sockpath import short_socket_path
 
 from solidifai_engine.server import Server
@@ -107,20 +108,23 @@ def _start(tmp_path):
     server = Server(sock_path, artifacts)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
-    # Wait until the server is actually ACCEPTING connections — not merely until the
-    # socket file exists. bind() creates the file before the accept loop is ready, so
-    # a file-exists check races (intermittent ConnectionRefused) once the suite is
-    # heavy enough to slow the server thread's startup.
-    deadline = time.time() + 5.0
+    # A successful connect only proves listen() has created a backlog. Startup still
+    # reloads the model before entering accept(), so require a complete ping round trip.
+    deadline = time.time() + 30.0
     while time.time() < deadline:
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(1.0)
         try:
             probe.connect(sock_path)
+            response = _request(probe, {"id": 0, "method": "ping"})
             probe.close()
-            break
-        except OSError:
+            if response == {"id": 0, "ok": True, "result": "pong"}:
+                break
+        except (OSError, TimeoutError):
             probe.close()
             time.sleep(0.02)
+    else:
+        raise TimeoutError("engine server did not complete startup within 30 seconds")
     return server, sock_path, artifacts
 
 
@@ -129,6 +133,110 @@ def test_ping(tmp_path):
     try:
         resp = _send(sock_path, {"id": 1, "method": "ping"})
         assert resp == {"id": 1, "ok": True, "result": "pong"}
+    finally:
+        server.shutdown()
+
+
+def test_get_protocol_info_over_socket(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(sock_path, {"id": 1, "method": "get_protocol_info"})
+        assert resp == {
+            "id": 1,
+            "ok": True,
+            "result": {
+                "minProtocol": 12,
+                "maxProtocol": 13,
+                "capabilities": [
+                    "build_brief_v2",
+                    "conformance",
+                    "operations",
+                    "readiness",
+                    "strict_export",
+                ],
+            },
+        }
+    finally:
+        server.shutdown()
+
+
+def test_protocol_12_client_metadata_is_accepted_over_socket(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(
+            sock_path,
+            {"id": 1, "method": "ping", "client": {"protocol": 12, "capabilities": []}},
+        )
+        assert resp == {"id": 1, "ok": True, "result": "pong"}
+    finally:
+        server.shutdown()
+
+
+def test_v2_build_brief_updates_require_the_negotiated_capability(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(
+            sock_path,
+            {
+                "id": 1,
+                "method": "update_build_brief",
+                "params": {"section": "parts", "upserts": []},
+                "client": {"protocol": 13, "capabilities": []},
+            },
+        )
+        assert resp["ok"] is False
+        assert "build_brief_v2" in resp["error"]
+    finally:
+        server.shutdown()
+
+
+def test_incompatible_client_protocol_returns_clean_error(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(
+            sock_path,
+            {"id": 1, "method": "ping", "client": {"protocol": 11, "capabilities": []}},
+        )
+        assert resp["id"] == 1
+        assert resp["ok"] is False
+        assert resp["error"] == "ValueError: client protocol is incompatible with this engine"
+    finally:
+        server.shutdown()
+
+
+def test_malformed_client_metadata_returns_clean_error(tmp_path):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(sock_path, {"id": 1, "method": "ping", "client": []})
+        assert resp["id"] == 1
+        assert resp["ok"] is False
+        assert resp["error"] == "ValueError: client metadata must be an object"
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("client", "message"),
+    [
+        (None, "client metadata must be an object"),
+        ("protocol-13", "client metadata must be an object"),
+        ({"protocol": True, "capabilities": []}, "client.protocol must be an integer"),
+        ({"protocol": "13", "capabilities": []}, "client.protocol must be an integer"),
+        (
+            {"protocol": 13, "capabilities": "readiness"},
+            "client.capabilities must be a list of strings",
+        ),
+        (
+            {"protocol": 13, "capabilities": ["readiness", 1]},
+            "client.capabilities must be a list of strings",
+        ),
+    ],
+)
+def test_nested_malformed_client_metadata_returns_stable_value_error(tmp_path, client, message):
+    server, sock_path, _ = _start(tmp_path)
+    try:
+        resp = _send(sock_path, {"id": 1, "method": "ping", "client": client})
+        assert resp == {"id": 1, "ok": False, "error": f"ValueError: {message}"}
     finally:
         server.shutdown()
 

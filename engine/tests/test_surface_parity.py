@@ -17,6 +17,7 @@ from solidifai_engine.server import _HANDLERS
 # as agent-facing MCP tools. Adding a new engine method forces a conscious choice:
 # expose it as an MCP tool, or add it to this allowlist.
 RPC_ONLY = {
+    "get_protocol_info",
     "ping",
     "set_part_material",
     "list_destinations",

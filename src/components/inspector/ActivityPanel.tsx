@@ -140,7 +140,7 @@ function BriefSection({ brief }: { brief: BuildBrief | null }) {
       <Block title={`Parts · ${parts.length}`}>
         <ul className="flex flex-col gap-2">
           {parts.map((p, i) => (
-            <li key={`${p.name}-${i}`} className="flex items-start gap-2.5">
+            <li key={p.id || `${p.name}-${i}`} className="flex items-start gap-2.5">
               <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-ink-3" />
               <span className="min-w-0">
                 <span className="block text-body text-ink">{p.name}</span>

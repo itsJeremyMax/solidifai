@@ -145,10 +145,10 @@ def test_registered_in_engine_dispatch():
     assert "report_issue" in _HANDLERS
 
 
-def test_protocol_bumped_to_12():
+def test_protocol_bumped_to_13():
     from solidifai_engine.protocol import PROTOCOL_VERSION
 
-    assert PROTOCOL_VERSION == 12
+    assert PROTOCOL_VERSION == 13
 
 
 def test_redacts_pem_private_key_block():

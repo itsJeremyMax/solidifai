@@ -129,6 +129,13 @@ def test_validate_normalizes_interface_aliases():
     assert build_brief.validate(b)["interfaces"][0]["kind"] == "pivot"
 
 
+def test_validate_v1_keeps_legacy_category_caps():
+    brief = _good()
+    brief["parts"] *= build_brief.MAX_PARTS + 1
+    with pytest.raises(ValueError, match="too many parts"):
+        build_brief.validate_v1(brief)
+
+
 def test_write_then_load_roundtrips(tmp_path):
     root = str(tmp_path)
     norm = build_brief.write_build_brief(root, _good())
@@ -194,3 +201,163 @@ def test_protocol_bumped_for_new_handlers():
     from solidifai_engine.protocol import PROTOCOL_VERSION
 
     assert PROTOCOL_VERSION >= 8
+
+
+def _v2(parts=None, interfaces=None, **overrides):
+    brief = {
+        "schema": 2,
+        "revision": 0,
+        "summary": "A modular enclosure",
+        "tier": "stream",
+        "parts": parts or [{"id": "base", "name": "Base", "children": []}],
+        "requirements": [],
+        "dimensions": [],
+        "interfaces": interfaces or [],
+        "references": [],
+        "assumptions": [],
+        "manufacturing": [],
+        "obligations": [],
+    }
+    brief.update(overrides)
+    return brief
+
+
+def test_v1_read_as_v2_does_not_rewrite_disk(tmp_path):
+    original = {
+        "schema": 1,
+        "summary": "box",
+        "parts": [{"name": "base"}],
+        "key_dims": [],
+        "interfaces": [],
+        "make_real": "FDM",
+        "tier": "stream",
+    }
+    path = tmp_path / "build_brief.json"
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    migrated = build_brief.load_build_brief(str(tmp_path), target_schema=2)
+
+    assert migrated["schema"] == 2
+    assert migrated["parts"][0]["id"] == "base"
+    assert json.loads(path.read_text(encoding="utf-8")) == original
+
+
+def test_v2_accepts_hierarchy_and_free_form_interface_kind():
+    brief = _v2(
+        parts=[
+            {"id": "assembly", "name": "Assembly", "children": ["magnet"]},
+            {"id": "magnet", "name": "Magnet", "children": []},
+        ],
+        interfaces=[{"id": "i1", "kind": "magnetic", "participants": ["assembly", "magnet"]}],
+    )
+
+    assert build_brief.validate_v2(brief)["interfaces"][0]["kind"] == "magnetic"
+
+
+@pytest.mark.parametrize(
+    "brief, match",
+    [
+        (
+            _v2(parts=[{"id": "base", "name": "Base"}, {"id": "base", "name": "Lid"}]),
+            "duplicate id",
+        ),
+        (_v2(parts=[{"id": "base", "name": "Base", "children": ["lid"]}]), "unknown part"),
+        (_v2(assumptions=[{"id": "a1", "statement": "uncertain", "risk": "high"}]), "disposition"),
+    ],
+)
+def test_v2_rejects_invalid_references_and_risk_disposition(brief, match):
+    with pytest.raises(ValueError, match=match):
+        build_brief.validate_v2(brief)
+
+
+def test_v2_rejects_indirect_part_hierarchy_cycle():
+    brief = _v2(
+        parts=[
+            {"id": "base", "name": "Base", "children": ["lid"]},
+            {"id": "lid", "name": "Lid", "children": ["base"]},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cycle"):
+        build_brief.validate_v2(brief)
+
+
+def test_v2_rejects_transport_safety_limits():
+    too_deep = {"id": "base", "name": "Base", "metadata": {}}
+    cursor = too_deep["metadata"]
+    for _ in range(build_brief.MAX_NESTING_DEPTH):
+        cursor["next"] = {}
+        cursor = cursor["next"]
+    with pytest.raises(ValueError, match="nesting"):
+        build_brief.validate_v2(_v2(parts=[too_deep]))
+
+    payload = _v2(summary="x" * build_brief.MAX_PAYLOAD_BYTES)
+    with pytest.raises(ValueError, match="payload"):
+        build_brief.validate_v2(payload)
+
+
+def test_update_migrates_v1_persists_v2_and_increments_revision(tmp_path):
+    build_brief.write_build_brief(str(tmp_path), _good())
+
+    updated = build_brief.update_build_brief(
+        str(tmp_path),
+        "parts",
+        [{"id": "lid", "name": "Lid", "children": []}],
+        [],
+        expected_revision=0,
+    )
+
+    assert updated["schema"] == 2
+    assert updated["revision"] == 1
+    assert {part["id"] for part in updated["parts"]} == {"base", "lid"}
+    assert json.loads((tmp_path / "build_brief.json").read_text(encoding="utf-8"))["schema"] == 2
+    with pytest.raises(ValueError, match="revision conflict"):
+        build_brief.update_build_brief(str(tmp_path), "parts", [], [], expected_revision=0)
+
+
+def test_v2_mutations_require_expected_revision(tmp_path):
+    with pytest.raises(ValueError, match="expectedRevision is required"):
+        build_brief.write_build_brief(str(tmp_path), _v2())
+
+    build_brief.write_build_brief(str(tmp_path), _good())
+    with pytest.raises(ValueError, match="expectedRevision is required"):
+        build_brief.update_build_brief(str(tmp_path), "parts", [], [])
+
+
+def test_v2_replacement_checks_expected_revision_and_increments_it(tmp_path):
+    build_brief.write_build_brief(str(tmp_path), _good())
+
+    replacement = build_brief.write_build_brief(str(tmp_path), _v2(), expected_revision=0)
+
+    assert replacement["revision"] == 1
+    with pytest.raises(ValueError, match="revision conflict"):
+        build_brief.write_build_brief(str(tmp_path), _v2(), expected_revision=0)
+
+
+def test_v1_unresolved_interface_migrates_and_allows_first_v2_mutation(tmp_path):
+    legacy = _good()
+    legacy["interfaces"] = [
+        {"between": ["base", "external-latch"], "kind": "fixed", "clearance": None}
+    ]
+    build_brief.write_build_brief(str(tmp_path), legacy)
+
+    migrated = build_brief.load_build_brief(str(tmp_path), target_schema=2)
+    interface = migrated["interfaces"][0]
+    assert interface["participants"] == ["base"]
+    assert interface["unresolved_participants"] == ["external-latch"]
+    assert interface["conformance"] == "unknown"
+
+    updated = build_brief.update_build_brief(
+        str(tmp_path),
+        "obligations",
+        [{"id": "verify-latch", "label": "Verify latch fit"}],
+        [],
+        expected_revision=0,
+    )
+    assert updated["revision"] == 1
+
+
+def test_update_limits_items_and_handlers_are_registered():
+    with pytest.raises(ValueError, match="too many update items"):
+        build_brief.validate_update("parts", [{}] * (build_brief.MAX_UPDATE_ITEMS + 1), [])
+    assert "update_build_brief" in _HANDLERS

@@ -36,7 +36,8 @@ import sys
 import threading
 from typing import Any
 
-from solidifai_engine import ipc, scratch
+from solidifai_engine import ipc, protocol, scratch
+from solidifai_engine.protocol import CAP_BUILD_BRIEF_V2
 from solidifai_engine.worker import RemoteSessionError, SessionProxy
 
 # -- parent-death detection ---------------------------------------------------
@@ -412,8 +413,32 @@ class Server:
         req_id = request.get("id")
         method = request.get("method")
         params = request.get("params") or {}
+        client = request.get("client", {"protocol": 12, "capabilities": []})
 
         try:
+            if not isinstance(client, dict):
+                raise ValueError("client metadata must be an object")
+            client_protocol = client.get("protocol", 12)
+            if not isinstance(client_protocol, int) or isinstance(client_protocol, bool):
+                raise ValueError("client.protocol must be an integer")
+            client_capabilities = client.get("capabilities", [])
+            if not isinstance(client_capabilities, list) or not all(
+                isinstance(capability, str) for capability in client_capabilities
+            ):
+                raise ValueError("client.capabilities must be a list of strings")
+            negotiation = protocol.negotiate(client_protocol, client_capabilities)
+            if not negotiation["compatible"]:
+                raise ValueError("client protocol is incompatible with this engine")
+            # Keep legacy propose_build available, but require the explicitly
+            # negotiated capability before accepting any v2 mutation contract.
+            v2_request = method == "update_build_brief" or (
+                method == "propose_build"
+                and isinstance(params, dict)
+                and isinstance(params.get("brief"), dict)
+                and params["brief"].get("schema") == 2
+            )
+            if v2_request and CAP_BUILD_BRIEF_V2 not in negotiation["enabledCapabilities"]:
+                raise ValueError("client must negotiate build_brief_v2 for v2 build briefs")
             result = self._dispatch(method, params)
         except RemoteSessionError as exc:
             # The worker already formatted the Session error as "<Type>: message";
@@ -461,6 +486,10 @@ def _h_list_materials(srv: Server, p: dict) -> Any:
     from solidifai_engine import materials
 
     return materials.list_effective(srv._workspace_root())
+
+
+def _h_get_protocol_info(srv: Server, p: dict) -> dict[str, object]:
+    return protocol.protocol_info()
 
 
 def _h_get_manufacturing_profile(srv: Server, p: dict) -> Any:
@@ -541,9 +570,10 @@ def _orient_overhang(srv: Server, p: dict) -> float:
 # The handle() wrapper adds the {ok, ...} envelope and maps exceptions. A table
 # keeps the surface O(1) and introspectable (tests/test_surface_parity.py locks
 # it against the MCP tool set) instead of an ever-growing if/elif.
-# When this contract changes (add/remove/rename a method), bump PROTOCOL_VERSION
-# in solidifai_engine/protocol.py so the Rust host rejects a stale engine loudly.
+# Contract changes may require a PROTOCOL_VERSION bump or a capability update in
+# protocol.py; the Rust host negotiates compatible ranges and required features.
 _HANDLERS: dict[str, Any] = {
+    "get_protocol_info": _h_get_protocol_info,
     "ping": lambda srv, p: "pong",
     "execute_script": lambda srv, p: srv._session.execute_script(srv._require(p, "code")),
     "run_file": lambda srv, p: srv._session.run_file(srv._require(p, "path")),
@@ -578,8 +608,16 @@ _HANDLERS: dict[str, Any] = {
     "dismiss_proposed_name": lambda srv, p: srv._session.dismiss_proposed_name(),
     "set_requirements": lambda srv, p: srv._session.set_requirements(p.get("requirements")),
     "check_requirements": lambda srv, p: srv._session.check_requirements(),
-    "propose_build": lambda srv, p: srv._session.propose_build(srv._require(p, "brief")),
+    "propose_build": lambda srv, p: srv._session.propose_build(
+        srv._require(p, "brief"), expected_revision=p.get("expectedRevision")
+    ),
     "get_build_brief": lambda srv, p: srv._session.get_build_brief(),
+    "update_build_brief": lambda srv, p: srv._session.update_build_brief(
+        srv._require(p, "section"),
+        p.get("upserts") or [],
+        p.get("remove_ids") or [],
+        expected_revision=p.get("expectedRevision"),
+    ),
     "sweep": lambda srv, p: srv._session.sweep(
         srv._require(p, "param"), p.get("values") or [], bool(p.get("checks", False))
     ),

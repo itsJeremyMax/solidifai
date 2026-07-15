@@ -24,6 +24,14 @@ use crate::instances::Instances;
 /// pipeline on a single connection (each call opens its own stream), but a unique
 /// id keeps responses self-describing and matches the MCP bridge's behaviour.
 static NEXT_ID: AtomicI64 = AtomicI64::new(1);
+const CLIENT_PROTOCOL: u32 = 13;
+const CLIENT_CAPABILITIES: &[&str] = &[
+    "build_brief_v2",
+    "conformance",
+    "operations",
+    "readiness",
+    "strict_export",
+];
 
 fn next_id() -> i64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
@@ -37,6 +45,10 @@ pub fn encode_request(id: i64, method: &str, params: &Value) -> String {
         "id": id,
         "method": method,
         "params": params,
+        "client": {
+            "protocol": CLIENT_PROTOCOL,
+            "capabilities": CLIENT_CAPABILITIES,
+        },
     });
     // `serde_json::to_string` never fails for a Value built from owned data.
     format!("{}\n", serde_json::to_string(&req).unwrap_or_default())
@@ -677,6 +689,19 @@ mod tests {
         assert_eq!(parsed["id"], 7);
         assert_eq!(parsed["method"], "execute_script");
         assert_eq!(parsed["params"]["code"], "show(x)");
+        assert_eq!(
+            parsed["client"],
+            json!({
+                "protocol": 13,
+                "capabilities": [
+                    "build_brief_v2",
+                    "conformance",
+                    "operations",
+                    "readiness",
+                    "strict_export",
+                ],
+            })
+        );
     }
 
     #[test]
