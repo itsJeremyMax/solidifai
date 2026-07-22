@@ -120,6 +120,7 @@ test("a rejected build surfaces the error and re-queues the value; retry() re-se
   const sends: Array<Record<string, number>> = [];
   const gates: Array<ReturnType<typeof deferred>> = [];
   const errors: unknown[] = [];
+  const commitErrors: unknown[] = [];
   let successes = 0;
   const s = createParamCommitScheduler({
     send: (values) => {
@@ -134,13 +135,14 @@ test("a rejected build surfaces the error and re-queues the value; retry() re-se
     },
   });
 
-  s.commit("explode", 70); // build #1 — engine "not ready"
+  s.commit("explode", 70, (error) => commitErrors.push(error)); // build #1 — not ready
   await tick();
   expect(sends.length).toBe(1);
 
   gates[0].reject(new Error("engine not ready")); // build #1 fails
   await tick();
   expect(errors.length, "the failure is surfaced, not swallowed").toBe(1);
+  expect(commitErrors.length, "the originating control is notified once").toBe(1);
   expect(sends.length, "a failed send does NOT auto-hammer the engine").toBe(1);
   expect(s.isInFlight(), "gate released after failure").toBe(false);
 
@@ -179,6 +181,28 @@ test("a newer commit during an in-flight build supersedes a failed older value",
   await tick();
   expect(sends.length).toBe(2);
   expect(sends[1], "the newer value wins, the stale failed one is dropped").toEqual({ a: 2 });
+});
+
+test("a prototype-named parameter survives failure requeue and retry", async () => {
+  const sends: Array<Record<string, number>> = [];
+  const gates: Array<ReturnType<typeof deferred>> = [];
+  const s = createParamCommitScheduler({
+    send: (values) => {
+      sends.push({ ...values });
+      const d = deferred();
+      gates.push(d);
+      return d.promise;
+    },
+  });
+
+  s.commit("toString", 7);
+  await tick();
+  gates[0].reject(new Error("engine not ready"));
+  await tick();
+
+  s.retry();
+  await tick();
+  expect(sends).toEqual([{ toString: 7 }, { toString: 7 }]);
 });
 
 test("a quiet commit after the build settles still goes out (no lost trailing value)", async () => {

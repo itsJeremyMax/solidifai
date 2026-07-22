@@ -207,6 +207,22 @@ def _session_with_two_colors(tmp_path):
     return sess
 
 
+def _session_with_highlightable_feature(tmp_path):
+    artifacts = str(tmp_path / ".solidifai" / "artifacts")
+    os.makedirs(artifacts, exist_ok=True)
+    sess = Session(artifacts)
+    sess.execute_script(
+        "from build123d import Align, BuildPart, Box, Pos\n"
+        "from solidifai import feature, show\n"
+        "with BuildPart() as p:\n"
+        "    Box(40, 40, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "    with feature('boss'):\n"
+        "        Pos(0, 0, 8) * Box(12, 12, 6, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
+        "show(p.part, name='Plate')\n"
+    )
+    return sess
+
+
 def test_capture_views_defaults_to_color(tmp_path):
     _offscreen_or_skip()
     sess = _session_with_two_colors(tmp_path)
@@ -223,6 +239,16 @@ def test_capture_views_color_false_is_clay(tmp_path):
     assert res["ok"] is True
     red, blue = _count_colors(res["views"][0]["path"])
     assert red == 0 and blue == 0, "color=False should render uniform clay gray"
+
+
+def test_capture_views_feature_highlight_request_renders_successfully(tmp_path):
+    _offscreen_or_skip()
+    sess = _session_with_highlightable_feature(tmp_path)
+
+    highlighted = sess.capture_views(["top"], color=False, resolution=1024, highlight=["boss"])
+
+    assert highlighted["ok"] is True
+    assert os.path.exists(highlighted["views"][0]["path"])
 
 
 def test_capture_views_color_survives_registry_reset(tmp_path):

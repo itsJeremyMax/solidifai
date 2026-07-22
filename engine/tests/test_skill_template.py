@@ -17,6 +17,14 @@ import pytest
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ENGINE_ROOT / "workspace_templates" / "skills"
 AGENTS = ENGINE_ROOT / "workspace_templates" / "AGENTS.md"
+README = ENGINE_ROOT.parent / "README.md"
+SPEC = (
+    ENGINE_ROOT.parent
+    / "docs"
+    / "superpowers"
+    / "specs"
+    / "2026-07-15-cad-capability-contract-design.md"
+)
 
 # Grown one rewrite task at a time; the final task asserts full coverage.
 TEMPLATE_SKILLS: list[str] = [
@@ -58,8 +66,9 @@ REQUIRED_H2 = [
 
 WORD_CEILINGS = {
     "using-solidifai": 1100,
-    # raised for Task 8's risk-matrix routing; deliberate instruction contract
-    "solidifai-modeling": 2020,
+    # raised for Task 8's risk-matrix routing, then Task 6's typed-param + triage contract;
+    # deliberate instruction contract
+    "solidifai-modeling": 2080,
     "solidifai-product-design": 1650,
     # raised for Task 8: save_reference step + anti-pattern row (deliberate, not rebloat)
     # raised for Task 8's required-reference disposition path; deliberate contract
@@ -68,10 +77,14 @@ WORD_CEILINGS = {
     # + joint-motion verify checks (measure_between/query_faces/thickness_at, check_motion joint
     # mode); deliberate, not rebloat
     # raised for Task 8's stable-ID conformance repair loop; deliberate contract
-    "solidifai-self-verify": 1800,
+    # raised again for Task 6's capability re-check instruction on risky verification claims;
+    # deliberate contract
+    "solidifai-self-verify": 1830,
     # raised for occurrences (set_occurrences instancing) + joints (s.joint / check_motion joint
     # mode), two new engine subsystems taught here; deliberate, not rebloat
-    "solidifai-assemblies": 2140,
+    # raised again for Task 6's declared-vs-verified joint compatibility contract;
+    # deliberate, not rebloat
+    "solidifai-assemblies": 2210,
     "solidifai-orchestration": 1350,
     "solidifai-delegation": 1000,
     "solidifai-converge": 1000,
@@ -185,8 +198,9 @@ def test_agents_word_ceiling():
     # (set_occurrences), and joint-motion (check_motion) tool-table rows, again for the
     # solidifai-bug-report routing table row, and for the build-brief structured-format
     # contract (summary is sentences, detail in fields), and Task 8's risk,
-    # conformance, and strict-export contracts; deliberate, not rebloat
-    assert len(prose.split()) <= 4000
+    # conformance, and strict-export contracts, then Task 6's capability-triage,
+    # typed-parameter, and honest-capability wording; deliberate, not rebloat
+    assert len(prose.split()) <= 4300
 
 
 def test_template_covers_every_skill():
@@ -239,3 +253,124 @@ def test_modeling_documents_std_namespace():
 def test_delegation_marks_lookups_scout_safe():
     text = (SKILLS / "solidifai-delegation" / "SKILL.md").read_text(encoding="utf-8")
     assert "lookup_standard" in text and "lookup_reference" in text
+
+
+def test_entry_points_state_parametric_brep_scope_and_key_non_capabilities():
+    texts = {
+        "agents": AGENTS.read_text(encoding="utf-8").lower(),
+        "using": (SKILLS / "using-solidifai" / "SKILL.md").read_text(encoding="utf-8").lower(),
+    }
+
+    for name, text in texts.items():
+        assert "parametric" in text and "b-rep" in text, (
+            f"{name} must state the core representation"
+        )
+        assert "sculpt" in text and "subd" in text, f"{name} must reject sculpt/subd overclaims"
+        assert "mesh push-pull" in text, f"{name} must reject mesh push-pull editing"
+        assert "direct nurbs" in text, f"{name} must reject direct NURBS editing"
+        assert "constraint solver" in text, f"{name} must disclose no true constraint solver"
+        assert "continuous collision proof" in text, f"{name} must disclose sampled-only motion"
+        assert "fea" in text, f"{name} must disclose no structural FEA"
+        assert "non-fdm" in text and "dfm" in text, f"{name} must disclose non-FDM DFM limits"
+
+
+def test_capability_triage_is_mandatory_for_risky_work_but_not_prismatic_parts():
+    agents = AGENTS.read_text(encoding="utf-8").lower()
+    using = (SKILLS / "using-solidifai" / "SKILL.md").read_text(encoding="utf-8").lower()
+    modeling = (SKILLS / "solidifai-modeling" / "SKILL.md").read_text(encoding="utf-8").lower()
+    assemblies = (SKILLS / "solidifai-assemblies" / "SKILL.md").read_text(encoding="utf-8").lower()
+    verify = (SKILLS / "solidifai-self-verify" / "SKILL.md").read_text(encoding="utf-8").lower()
+
+    assert "get_engine_capabilities" in agents
+    assert "assess_design_plan" in agents
+    for token in (
+        "freeform",
+        "mechanism",
+        "multi-axis",
+        "imported",
+        "safety-critical",
+        "non-fdm",
+    ):
+        assert token in agents, f"AGENTS.md triage trigger missing: {token}"
+
+    assert "simple prismatic" in agents and "build now" in agents
+    assert "get_engine_capabilities" in using and "assess_design_plan" in using
+    assert "get_engine_capabilities" in modeling and "assess_design_plan" in modeling
+    assert "get_engine_capabilities" in assemblies and "assess_design_plan" in assemblies
+    assert "get_engine_capabilities" in verify
+
+
+def test_parameter_and_joint_contracts_are_taught_honestly():
+    agents = AGENTS.read_text(encoding="utf-8").lower()
+    modeling = (SKILLS / "solidifai-modeling" / "SKILL.md").read_text(encoding="utf-8").lower()
+    assemblies = (SKILLS / "solidifai-assemblies" / "SKILL.md").read_text(encoding="utf-8").lower()
+
+    for text in (agents, modeling):
+        assert "numeric" in text and "boolean" in text and "enum" in text
+        assert 'type: "boolean"' in text or '`type:"boolean"`' in text
+        assert "choices" in text, "enum controls must document their choices list"
+
+    assert "declared" in assemblies and "verified" in assemblies
+    assert "rigid" in assemblies and "revolute" in assemblies and "slider" in assemblies
+    assert "ball" in assemblies and "cylindrical" in assemblies and "planar" in assemblies
+
+
+def test_using_skill_fact_count_matches_the_list():
+    text = (SKILLS / "using-solidifai" / "SKILL.md").read_text(encoding="utf-8").lower()
+    assert "orient yourself on these eight facts" in text
+    for i in range(1, 9):
+        assert f"{i}. **" in text
+
+
+def test_toolerror_and_domain_failures_are_documented_separately():
+    text = AGENTS.read_text(encoding="utf-8")
+    assert "ToolError" in text
+    assert "{`ok`: false}" in text or "{ok: false}" in text
+    assert "transport" in text.lower()
+    assert "domain" in text.lower()
+
+
+def test_capture_views_highlight_contract_is_documented_as_best_effort():
+    agents = AGENTS.read_text(encoding="utf-8").lower()
+    mcp = (ENGINE_ROOT / "solidifai_mcp" / "server.py").read_text(encoding="utf-8").lower()
+
+    for text in (agents, mcp):
+        assert "best-effort" in text
+        assert "locator aid" in text or "guaranteed mask" in text
+        assert "segmentation mask" not in text or "not a guaranteed segmentation mask" in text
+
+
+def test_agents_tool_table_includes_capability_and_operation_lifecycle_tools():
+    text = AGENTS.read_text(encoding="utf-8")
+    for token in (
+        "`get_engine_capabilities()`",
+        "`assess_design_plan(intents)`",
+        "`submit_operation(method, params?, replace_key?)`",
+        "`get_operation(operation_id)`",
+        "`cancel_operation(operation_id)`",
+    ):
+        assert token in text
+
+
+def test_readme_summarizes_capability_triage_and_async_operations():
+    text = README.read_text(encoding="utf-8").lower()
+    assert "get_engine_capabilities" in text
+    assert "assess_design_plan" in text
+    assert "submit_operation" in text
+    assert "get_operation" in text
+
+
+def test_capability_contract_spec_uses_tagged_boolean_and_enum_params():
+    text = SPEC.read_text(encoding="utf-8")
+    assert '{type: "boolean", value: bool}' in text
+    assert '{type: "enum", value: str, choices: [str, ...]}' in text
+
+
+def test_readme_avoids_byte_for_byte_geometry_claim_and_uses_honest_wording():
+    text = README.read_text(encoding="utf-8")
+    lower = text.lower()
+
+    assert "byte-for-byte the same geometry" not in lower
+    assert "what the agent builds" in lower
+    assert "artifacts" in lower or "artifact" in lower
+    assert "consisten" in lower or "same committed" in lower

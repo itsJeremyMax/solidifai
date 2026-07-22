@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from solidifai_engine.operations import OperationQueue, OperationTimeout
 
 
@@ -87,6 +89,29 @@ def test_submit_runs_one_writer_and_retains_terminal_result():
             "params": {"code": "show(x)"},
         }
     finally:
+        queue.close()
+
+
+def test_submit_rejects_when_the_pending_queue_is_full():
+    started = threading.Event()
+    release = threading.Event()
+
+    def execute(_method, _params, _heartbeat):
+        started.set()
+        release.wait(1)
+        return {"ok": True}
+
+    queue = OperationQueue(execute, max_queued=2)
+    try:
+        queue.submit("running", {})
+        assert started.wait(1)
+        queue.submit("queued-one", {})
+        queue.submit("queued-two", {})
+
+        with pytest.raises(RuntimeError, match="operation queue is full"):
+            queue.submit("rejected", {})
+    finally:
+        release.set()
         queue.close()
 
 

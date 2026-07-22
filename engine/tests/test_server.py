@@ -137,6 +137,38 @@ def test_ping(tmp_path):
         server.shutdown()
 
 
+def test_connection_rejects_an_oversized_unterminated_request_frame(tmp_path):
+    server = Server(str(tmp_path / "engine.sock"), str(tmp_path / "artifacts"))
+
+    class StreamingConnection:
+        def __init__(self):
+            self.chunks = [b"x" * 65_536 for _ in range(20)]
+            self.recv_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def recv(self, _size):
+            self.recv_calls += 1
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def sendall(self, _payload):
+            raise AssertionError("oversized frame must be dropped without a response")
+
+    connection = StreamingConnection()
+    try:
+        server._handle_connection(connection)  # type: ignore[arg-type]
+        assert connection.recv_calls < 20
+    finally:
+        server.shutdown()
+
+
 def test_get_protocol_info_over_socket(tmp_path):
     server, sock_path, _ = _start(tmp_path)
     try:
@@ -234,6 +266,7 @@ def test_strict_export_rejects_forged_source_metadata_over_raw_rpc(tmp_path):
             "id": 2,
             "ok": False,
             "error": "export blocked by readiness",
+            "failureKind": "domain",
             "findingIds": ["brief"],
         }
     finally:
@@ -693,7 +726,7 @@ def test_trim_traceback_drops_internal_frames_keeps_user():
     assert trimmed.startswith("Traceback (most recent call last):")
 
 
-def test_trim_traceback_falls_back_when_all_internal():
+def test_trim_traceback_omits_trace_when_all_frames_are_internal():
     from solidifai_engine.server import _trim_traceback
 
     tb = (
@@ -702,8 +735,7 @@ def test_trim_traceback_falls_back_when_all_internal():
         "    boom()\n"
         "RuntimeError: internal"
     )
-    # No user frame present: keep the full traceback so a location is not lost.
-    assert _trim_traceback(tb) == tb
+    assert _trim_traceback(tb) is None
 
 
 def test_failure_response_passes_structured_extras_through():

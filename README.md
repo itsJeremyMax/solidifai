@@ -68,7 +68,8 @@ solidifai inverts that:
   knows the modeling conventions, the available tools, and how to recover from a failed
   build. You don't have to teach it anything.
 - **One render path.** The app owns a long-lived CAD engine, so what the agent builds,
-  what you see, and what you export are byte-for-byte the same geometry.
+  what you see, and what you export come from the same **committed-generation** of model
+  artifacts, with one **geometric consistency** path through the engine.
 - **Real CAD output.** Parts are genuine B-rep solids (OpenCascade), exportable to STEP
   for downstream CAD or STL for printing, not throwaway meshes.
 
@@ -118,9 +119,12 @@ solidifai-cad MCP bridge ── local RPC ──┐
 - **Watcher (Rust)** streams GLB bytes + `model.json` to the viewport; a monotonic
   `buildId` means stale writes are ignored.
 
-The agent's tool surface (`solidifai-cad` MCP server) includes `execute_script`,
-`set_params`, `inspect_features` / `set_feature`, `capture_views`, `get_model_info`, and
-`export`, all documented for the agent in the workspace's own instructions and skills.
+The agent's tool surface (`solidifai-cad` MCP server) includes capability triage
+(`get_engine_capabilities`, `assess_design_plan`), direct modeling (`execute_script`,
+`set_params`, `inspect_features` / `set_feature`), async writer-queue lifecycle
+(`submit_operation`, `get_operation`, `cancel_operation`), viewport verification
+(`capture_views`, `get_model_info`), and `export`, all documented for the agent in the
+workspace's own instructions and skills.
 
 ## Quick start
 

@@ -128,6 +128,81 @@ def test_required_bad_reference_is_reported_and_blocks_readiness(tmp_path):
     assert imports_manifest.load(str(root))[0]["required"] is True
 
 
+def test_required_loaded_reference_satisfies_reference_readiness(tmp_path):
+    src = tmp_path / "pcb.stl"
+    _write_geom(str(src), "stl")
+    s, root = _session(tmp_path)
+    s.propose_build(
+        {
+            "schema": 2,
+            "summary": "Reference-backed build",
+            "tier": "stream",
+            "parts": [],
+            "features": [],
+            "requirements": [],
+            "dimensions": [],
+            "interfaces": [],
+            "references": [{"id": "board", "required": True}],
+            "assumptions": [],
+            "manufacturing": [],
+            "obligations": [],
+        },
+        expected_revision=0,
+    )
+
+    result = s.import_reference(str(src), name="board", required=True)
+
+    assert result["ok"] is True
+    assert s.get_reference_status()["board"]["status"] == "loaded"
+    assert s.get_readiness() == {"level": "ready", "findingIds": []}
+    assert imports_manifest.load(str(root))[0]["required"] is True
+
+
+def test_required_unsupported_manifest_reference_blocks_readiness(tmp_path):
+    s, root = _session(tmp_path)
+    imports_manifest.add(
+        str(root),
+        {
+            "id": "outline",
+            "name": "outline",
+            "path": "assets/outline.iges",
+            "format": "iges",
+            "required": True,
+        },
+    )
+    (root / "assets").mkdir(exist_ok=True)
+    (root / "assets" / "outline.iges").write_text("not real", encoding="utf-8")
+    s.propose_build(
+        {
+            "schema": 2,
+            "summary": "Unsupported reference-backed build",
+            "tier": "stream",
+            "parts": [],
+            "features": [],
+            "requirements": [],
+            "dimensions": [],
+            "interfaces": [],
+            "references": [{"id": "outline", "required": True}],
+            "assumptions": [],
+            "manufacturing": [],
+            "obligations": [],
+        },
+        expected_revision=0,
+    )
+
+    assert s.run_file(str(root / "model.py"))["ok"] is True
+
+    assert s.get_reference_status()["outline"] == {
+        "required": True,
+        "path": "assets/outline.iges",
+        "format": "iges",
+        "status": "unsupported",
+        "diagnostic": s.get_reference_status()["outline"]["diagnostic"],
+    }
+    assert s.get_reference_status()["outline"]["diagnostic"]["code"] == "unsupported_format"
+    assert s.get_readiness() == {"level": "blocked", "findingIds": ["reference:outline"]}
+
+
 def test_unsupported_format_rejected(tmp_path):
     src = tmp_path / "thing.iges"
     src.write_text("not real", encoding="utf-8")

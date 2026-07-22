@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp.exceptions import ToolError
 
 from solidifai_engine import ipc
 from solidifai_engine.protocol import CAPABILITIES, PROTOCOL_VERSION
@@ -30,6 +31,7 @@ ENV_SOCK = "SOLIDIFAI_ENGINE_SOCK"
 # engine trips this timeout, never a real build.
 _LONGRUN_CEILING = float(os.environ.get("SOLIDIFAI_LONGRUN_TIMEOUT", "1200"))
 _SOCKET_TIMEOUT = _LONGRUN_CEILING + 600.0
+_MAX_RESPONSE_BYTES = 32_000_000
 
 _id_counter = itertools.count(1)
 
@@ -85,6 +87,10 @@ def forward(method: str, params: dict | None = None) -> Any:
             chunk = conn.recv(65536)
             if not chunk:
                 break
+            if len(buf) + len(chunk) > _MAX_RESPONSE_BYTES:
+                raise EngineError(
+                    f"engine response exceeded {_MAX_RESPONSE_BYTES} bytes; retry with less output"
+                )
             buf += chunk
     except TimeoutError as exc:
         raise EngineError(
@@ -110,27 +116,61 @@ def forward(method: str, params: dict | None = None) -> Any:
         # Keep every structured failure field the engine sent (scriptLine,
         # traceback, failed map, ...) so _call can surface them to the agent.
         extras = {k: v for k, v in response.items() if k not in ("id", "ok", "result", "error")}
+        if extras.get("failureKind") == "domain":
+            extras.pop("failureKind", None)
+            return {"ok": False, "error": error, **extras}
         raise EngineError(error, payload=extras)
     return response.get("result")
 
 
+def _tool_error_message(exc: EngineError) -> str:
+    message = str(exc)
+    payload = exc.payload
+    line = payload.get("scriptLine")
+    if isinstance(line, int):
+        message = f"{message} (line {line})"
+    failed = payload.get("failed")
+    if failed:
+        try:
+            rendered = json.dumps(failed, sort_keys=True)
+        except TypeError:
+            rendered = repr(failed)
+        message = f"{message}; failed={rendered}"
+    tb = payload.get("traceback")
+    if isinstance(tb, str) and tb.strip():
+        message = f"{message}\n{tb}"
+    return message
+
+
 def _call(method: str, params: dict | None = None) -> Any:
-    """Forward and convert engine errors into a return value (MCP tools should not
-    raise raw transport exceptions at the agent). On a failed build the returned
-    dict includes the engine's structured fields (scriptLine, traceback, a per-part
-    ``failed`` map, ...), and the error text names the script line when known."""
+    """Forward one call to the engine.
+
+    Domain failures returned by the engine as ``{ok:false,...}`` stay structured so
+    agents can inspect them. Transport, protocol, and unreachable-engine failures
+    are raised as actual FastMCP tool errors instead of success-shaped dicts.
+    """
     try:
-        return forward(method, params)
+        result = forward(method, params)
     except EngineError as exc:
-        message = str(exc)
-        payload = exc.payload
-        line = payload.get("scriptLine")
-        if isinstance(line, int):
-            message = f"{message} (line {line})"
-        return {"error": message, **payload}
+        raise ToolError(_tool_error_message(exc)) from exc
+    if isinstance(result, dict) and result.get("ok") is False:
+        return result
+    return result
 
 
 mcp = FastMCP("solidifai")
+
+
+@mcp.tool()
+def get_engine_capabilities() -> Any:
+    """Return the engine's versioned CAD capability catalog."""
+    return _call("get_engine_capabilities")
+
+
+@mcp.tool()
+def assess_design_plan(intents: list[str]) -> Any:
+    """Classify requested CAD intents as supported, conditional, unsupported, or unknown."""
+    return _call("assess_design_plan", {"intents": intents})
 
 
 @mcp.tool()
@@ -167,6 +207,22 @@ def get_model_info() -> Any:
 def get_operation(operation_id: str) -> Any:
     """Read a submitted operation's stable lifecycle status and terminal result."""
     return _call("get_operation", {"operationId": operation_id})
+
+
+@mcp.tool()
+def submit_operation(
+    method: str, params: dict | None = None, replace_key: str | None = None
+) -> Any:
+    """Submit a writer operation for asynchronous execution.
+
+    Use this for operations that mutate the CAD state and may take time to finish.
+    Read-only queries should call their direct MCP tools instead of going through
+    the writer queue.
+    """
+    return _call(
+        "submit_operation",
+        {"method": method, "params": params, "replaceKey": replace_key},
+    )
 
 
 @mcp.tool()
@@ -831,8 +887,9 @@ def capture_views(
     THIS render only, so a multi-part assembly is captured pulled apart — use it
     to review a fit (a lid seating, a plug clearing its bore) that's hidden when
     the parts nest assembled. It never changes the saved or exported model;
-    ``0`` (default) renders assembled. ``highlight`` emphasizes the named features
-    from ``inspect_features`` with an orange accent overlay.
+    ``0`` (default) renders assembled. ``highlight`` requests a best-effort orange
+    overlay for the named features from ``inspect_features`` when those faces are
+    exposed in the chosen view; use it as a locator aid, not a guaranteed mask.
     Pass ``resolution`` (256..2048 px, default 512) and use 1024+ whenever you
     need to actually read fine detail: a thread, an edge break, a port lip, a
     seam. Pass ``section={"axis": "x"|"y"|"z", "offset_mm": <mm>}`` to render

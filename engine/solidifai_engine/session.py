@@ -464,8 +464,8 @@ class Session:
         return {"ok": True, "buildId": self.build_id, **_publication_result(publication)}
 
     def get_params(self) -> dict:
-        """Return the current parameter ``{schema, values}`` (the normalized,
-        numeric-only slider view -- always frontend-valid).
+        """Return the current parameter ``{schema, values}`` block, normalized
+        into the published frontend contract.
 
         Empty schema/values when the current script does not define PARAMS."""
         block = self._params_block()
@@ -543,8 +543,10 @@ class Session:
         A schema'd numeric param must get a real number (bool rejected: it is an int
         subclass that silently builds size-1 geometry and then vanishes from
         get_params) inside its [min, max] range -- rejected, not clamped, so the
-        agent hears the truth. An unknown key (not a declared param) is rejected.
-        Declared non-numeric params (strings the schema carries) stay permitted."""
+        agent hears the truth. Boolean params require a real bool. Enum params
+        require a string inside their declared choices. An unknown key (not a
+        declared param) is rejected. Declared legacy non-schema params still pass
+        through for compatibility."""
         declared = set(self._param_values)
         for key, val in values.items():
             if key not in declared:
@@ -556,6 +558,28 @@ class Session:
             spec = self._params_schema.get(key)
             if spec is None:
                 continue  # declared but non-numeric (e.g. a string): pass through
+            if spec.get("type") == "boolean":
+                if not isinstance(val, bool):
+                    return {
+                        "ok": False,
+                        "error": f"parameter {key!r} must be a boolean, got "
+                        f"{type(val).__name__} ({val!r})",
+                    }
+                continue
+            if spec.get("type") == "enum":
+                choices = spec["choices"]
+                if not isinstance(val, str):
+                    return {
+                        "ok": False,
+                        "error": f"parameter {key!r} must be a string enum value, got "
+                        f"{type(val).__name__} ({val!r})",
+                    }
+                if val not in choices:
+                    return {
+                        "ok": False,
+                        "error": f"parameter {key!r} must be one of {choices}, got {val!r}",
+                    }
+                continue
             if not self._is_number(val):
                 return {
                     "ok": False,
@@ -1681,10 +1705,9 @@ class Session:
             else:
                 res = self.run_file(self.model_path)
                 if res.get("ok") and self.root is not None:
-                    saved = settings.load_params(self.root)
-                    block = self._params_block()
-                    if saved and block is not None:
-                        res = self.set_params(settings.merge(block["values"], saved))
+                    saved = self._filter_saved_param_values(settings.load_params(self.root))
+                    if saved:
+                        res = self.set_params(saved)
         finally:
             self._suppress_persist = False
         if not res.get("ok"):
@@ -1701,7 +1724,7 @@ class Session:
         self._material_overrides = part_materials.load_overrides(self.root)
         self._load_assembly_params()
         params = dict(self._param_values)
-        saved = settings.load_params(self.root)
+        saved = self._filter_saved_param_values(settings.load_params(self.root))
         if saved:
             params = settings.merge(params, saved)
         res = self._build_assembly(params=params)
@@ -1858,10 +1881,9 @@ class Session:
                 assert self.model_path is not None
                 res = self.run_file(self.model_path)
             if res.get("ok") and self.root is not None:
-                saved = settings.load_params(self.root)
-                block = self._params_block()
-                if saved and block is not None:
-                    self.set_params(settings.merge(block["values"], saved))
+                saved = self._filter_saved_param_values(settings.load_params(self.root))
+                if saved:
+                    self.set_params(saved)
         finally:
             self._suppress_persist = False
         # Fresh repo (no commits yet): write settings.json + the initial commit.
@@ -3087,64 +3109,128 @@ class Session:
 
     @classmethod
     def _normalize_schema(cls, schema: dict) -> dict:
-        """Return a NUMERIC-ONLY, fully-formed slider schema for the UI and
+        """Return a fully-formed published parameter schema for the UI and
         model.json.
 
-        For each entry whose ``value`` is a real number (int/float, not bool),
-        emit ``{value, min, max, step, unit, desc}`` with value/min/max/step
-        coerced to float (min/max default to value, step defaults to 1.0 when
-        missing or invalid), unit defaults to "" and is coerced to str, and desc
-        defaults to "" and is stripped when a string (non-string values become
-        ""). Entries whose value is not numeric are DROPPED -- they get no
-        slider, but still reach ``build()`` via ``_param_values``. This
-        guarantees the emitted schema is always accepted by the frontend's
-        strict validator.
+        Numeric entries retain the existing untagged slider schema exactly,
+        including legacy numeric PARAMS that carry arbitrary extra ``type``
+        metadata.
+        Boolean entries publish ``{type:"boolean",value:bool,desc}``.
+        Enum entries publish ``{type:"enum",value:str,choices:[...],desc}``.
+        Malformed typed entries raise ValueError so the engine does not publish a
+        misleading contract. Unknown explicit types raise only when the value is
+        non-numeric. Untyped legacy non-numeric entries are dropped from the
+        published schema but still reach ``build()`` via ``_param_values``.
         """
         normalized: dict = {}
         for key, spec in schema.items():
             if not isinstance(spec, dict):
                 continue
             value = spec.get("value")
-            if not cls._is_number(value):
-                continue
-            value_f = float(value)
-
-            def _num(raw, default):
-                if cls._is_number(raw):
-                    return float(raw)
-                return default
+            raw_type = spec.get("type")
 
             raw_desc = spec.get("desc")
             desc = raw_desc.strip() if isinstance(raw_desc, str) else ""
-            normalized[key] = {
-                "value": value_f,
-                "min": _num(spec.get("min"), value_f),
-                "max": _num(spec.get("max"), value_f),
-                "step": _num(spec.get("step"), 1.0),
-                "unit": str(spec.get("unit", "")),
-                "desc": desc,
-            }
+
+            # Numeric shape wins over legacy metadata named ``type``. Older
+            # workspaces used arbitrary strings here (including reserved names),
+            # so only a genuinely non-numeric value enters the typed branches.
+            if cls._is_number(value):
+                value_f = float(value)
+
+                def _num(raw, default):
+                    if cls._is_number(raw):
+                        return float(raw)
+                    return default
+
+                normalized[key] = {
+                    "value": value_f,
+                    "min": _num(spec.get("min"), value_f),
+                    "max": _num(spec.get("max"), value_f),
+                    "step": _num(spec.get("step"), 1.0),
+                    "unit": str(spec.get("unit", "")),
+                    "desc": desc,
+                }
+                continue
+
+            if raw_type == "boolean":
+                if not isinstance(value, bool):
+                    raise ValueError(f"parameter {key!r} boolean value must be bool")
+                normalized[key] = {"type": "boolean", "value": value, "desc": desc}
+                continue
+
+            if raw_type == "enum":
+                choices = spec.get("choices")
+                if not isinstance(value, str):
+                    raise ValueError(f"parameter {key!r} enum value must be str")
+                if not isinstance(choices, list) or not choices:
+                    raise ValueError(
+                        f"parameter {key!r} enum choices must be a non-empty list[str]"
+                    )
+                if not all(isinstance(choice, str) for choice in choices):
+                    raise ValueError(
+                        f"parameter {key!r} enum choices must be a non-empty list[str]"
+                    )
+                if len(set(choices)) != len(choices):
+                    raise ValueError(f"parameter {key!r} enum choices must not contain duplicates")
+                if value not in choices:
+                    raise ValueError(f"parameter {key!r} enum value {value!r} must be in choices")
+                normalized[key] = {
+                    "type": "enum",
+                    "value": value,
+                    "choices": list(choices),
+                    "desc": desc,
+                }
+                continue
+
+            if raw_type is not None:
+                raise ValueError(f"parameter {key!r} has unknown type {raw_type!r}")
         return normalized
 
     def _params_block(self, values: dict | None = None):
         """Build the model.json ``params`` block: ``{schema, values}`` where
-        schema is the normalized numeric-only slider schema and values is the
-        numeric subset (floats) for exactly the schema keys. Returns ``None``
-        when no parametric model is loaded."""
+        schema is the normalized published schema and values is the typed subset
+        for exactly the schema keys. Returns ``None`` when no parametric model is
+        loaded."""
         if self._build_fn is None and not self._is_assembly_mode():
             return None
         if not self._params_schema:
             return None
         source = self._param_values if values is None else values
-        numeric_values = {
-            key: float(source[key])
-            for key in self._params_schema
-            if key in source and self._is_number(source[key])
-        }
+        typed_values: dict = {}
+        for key, spec in self._params_schema.items():
+            if key not in source:
+                continue
+            value = source[key]
+            if spec.get("type") == "boolean":
+                if isinstance(value, bool):
+                    typed_values[key] = value
+                continue
+            if spec.get("type") == "enum":
+                if isinstance(value, str) and value in spec["choices"]:
+                    typed_values[key] = value
+                continue
+            if self._is_number(value):
+                typed_values[key] = float(value)
         return {
             "schema": dict(self._params_schema),
-            "values": numeric_values,
+            "values": typed_values,
         }
+
+    def _filter_saved_param_values(self, saved: dict | None) -> dict:
+        """Return the subset of persisted params that are still valid today.
+
+        Persisted restoration is intentionally tolerant: stale keys and invalid
+        typed values are ignored one-by-one so the remaining good saved values can
+        still be restored. Explicit ``set_params`` stays atomic and rejecting.
+        """
+        if not isinstance(saved, dict):
+            return {}
+        accepted: dict = {}
+        for key, value in saved.items():
+            if self._validate_param_values({key: value}) is None:
+                accepted[key] = value
+        return accepted
 
     def _cleanup_temps(self) -> None:
         for tmp in glob.glob(os.path.join(self.artifacts_dir, "*.tmp")):

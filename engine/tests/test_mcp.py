@@ -5,9 +5,11 @@ import sys
 import threading
 import time
 
+import pytest
 from mcp.server.fastmcp import Image as _McpImage
 from sockpath import short_socket_path
 
+from solidifai_engine.server import Server
 from solidifai_mcp.server import forward
 
 
@@ -88,6 +90,43 @@ def _spawn_capturing(sock_path, captured):
     return t
 
 
+def _send(sock_path, request):
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(1.0)
+    conn.connect(sock_path)
+    conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
+    buf = b""
+    while b"\n" not in buf:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+    conn.close()
+    return json.loads(buf.decode("utf-8").splitlines()[0])
+
+
+def _start_real_engine(tmp_path):
+    sock_path = short_socket_path(tmp_path)
+    artifacts = str(tmp_path / "artifacts")
+    os.makedirs(artifacts, exist_ok=True)
+    server = Server(sock_path, artifacts)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        try:
+            if _send(sock_path, {"id": 0, "method": "ping"}) == {
+                "id": 0,
+                "ok": True,
+                "result": "pong",
+            }:
+                return server, sock_path
+        except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
+            time.sleep(0.02)
+    server.shutdown()
+    raise TimeoutError("engine server did not complete startup within 30 seconds")
+
+
 def test_forward_sends_rpc_and_returns_result(tmp_path, monkeypatch):
     sock_path = short_socket_path(tmp_path)
     captured = []
@@ -114,6 +153,136 @@ def test_forward_sends_rpc_and_returns_result(tmp_path, monkeypatch):
         ],
     }
     assert result == {"echo": "execute_script", "params": {"code": "show('x')"}}
+
+
+def test_forward_preserves_real_server_domain_failure_contract(tmp_path, monkeypatch):
+    server, sock_path = _start_real_engine(tmp_path)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+    try:
+        out = forward(
+            "execute_script",
+            {
+                "code": (
+                    "from build123d import Box\n"
+                    "from solidifai import show\n\n"
+                    "raise ValueError('boom in the script')\n"
+                )
+            },
+        )
+
+        assert out["ok"] is False
+        assert "ValueError" in out["error"]
+        assert out["scriptLine"] == 4
+        assert "<solidifai-script>" in out["traceback"]
+        assert "boom in the script" in out["traceback"]
+        assert "session.py" not in out["traceback"]
+        assert "failureKind" not in out
+    finally:
+        server.shutdown()
+
+
+def test_capability_tools_round_trip_against_real_server(tmp_path, monkeypatch):
+    import solidifai_mcp.server as srv
+
+    server, sock_path = _start_real_engine(tmp_path)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+    try:
+        capabilities = srv.get_engine_capabilities()
+        assessment = srv.assess_design_plan(
+            ["simple_prismatic_part", "non_fdm_dfm_validation", "totally_new_intent"]
+        )
+
+        assert capabilities["version"] == 1
+        assert capabilities["verification"]["dfm"] == {"fdm": "supported", "non_fdm": "unsupported"}
+        assert assessment["summary"] == {
+            "status": "unsupported",
+            "counts": {"supported": 1, "conditional": 0, "unsupported": 1, "unknown": 1},
+        }
+        assert assessment["intents"][2] == {
+            "intent": "totally_new_intent",
+            "status": "unknown",
+            "limitations": ["intent is not recognized by the deterministic capability catalog"],
+            "fallbacks": ["map_request_to_known_intents", "decline_request"],
+        }
+    finally:
+        server.shutdown()
+
+
+def test_operation_tools_complete_a_real_successful_round_trip(tmp_path, monkeypatch):
+    import solidifai_mcp.server as srv
+
+    server, sock_path = _start_real_engine(tmp_path)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+    try:
+        operation = srv.submit_operation(
+            "execute_script",
+            {
+                "code": (
+                    "from build123d import Box\n"
+                    "from solidifai import show\n"
+                    "show(Box(10, 10, 10), name='Cube')\n"
+                )
+            },
+        )
+        operation_id = operation["operationId"]
+        assert operation["state"] in {"queued", "running"}
+
+        deadline = time.time() + 10.0
+        status = srv.get_operation(operation_id)
+        while status["state"] not in {"succeeded", "failed", "cancelled", "timed_out"}:
+            assert time.time() < deadline, status
+            time.sleep(0.05)
+            status = srv.get_operation(operation_id)
+
+        assert status["state"] == "succeeded"
+        assert status["result"]["ok"] is True
+        assert status["result"]["buildId"] == 1
+        assert "publicationId" in status["result"]
+        assert "sourceHash" in status["result"]
+        assert status["result"]["readiness"] == {"level": "blocked", "findingIds": ["brief"]}
+    finally:
+        server.shutdown()
+
+
+def test_operation_tools_cancel_a_real_running_operation(tmp_path, monkeypatch):
+    import solidifai_mcp.server as srv
+
+    server, sock_path = _start_real_engine(tmp_path)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+    try:
+        operation = srv.submit_operation(
+            "execute_script",
+            {
+                "code": (
+                    "import time\n"
+                    "from build123d import Box\n"
+                    "from solidifai import show\n"
+                    "time.sleep(2)\n"
+                    "show(Box(10, 10, 10), name='Cube')\n"
+                )
+            },
+        )
+        operation_id = operation["operationId"]
+
+        deadline = time.time() + 10.0
+        status = srv.get_operation(operation_id)
+        while status["state"] == "queued":
+            assert time.time() < deadline, status
+            time.sleep(0.05)
+            status = srv.get_operation(operation_id)
+
+        cancelled = srv.cancel_operation(operation_id)
+        assert cancelled["operationId"] == operation_id
+
+        while status["state"] not in {"cancelled", "succeeded", "failed", "timed_out"}:
+            assert time.time() < deadline, status
+            time.sleep(0.05)
+            status = srv.get_operation(operation_id)
+
+        assert status["state"] == "cancelled"
+        assert "cancel" in (status.get("error") or "").lower()
+    finally:
+        server.shutdown()
 
 
 def test_build_brief_tools_forward_expected_revision(monkeypatch):
@@ -443,9 +612,40 @@ def _spawn_reply(sock_path, reply_bytes, **kwargs):
     return t
 
 
-def test_forward_ok_false_carries_structured_payload(tmp_path, monkeypatch):
-    """forward raises EngineError whose payload holds the engine's structured
-    failure fields (scriptLine/traceback/failed), not just the message."""
+def test_forward_domain_ok_false_returns_structured_result(tmp_path, monkeypatch):
+    """Domain failures returned by the engine stay structured with ``ok:false``
+    so agents can inspect them instead of seeing a transport/tool error."""
+    from solidifai_mcp.server import forward
+
+    sock_path = short_socket_path(tmp_path)
+    reply = (
+        json.dumps(
+            {
+                "id": 1,
+                "ok": False,
+                "failureKind": "domain",
+                "error": "ValueError: boom",
+                "scriptLine": 5,
+                "traceback": '  File "<solidifai-script>", line 5\nValueError: boom',
+                "failed": {"lid": "bad radius"},
+            }
+        )
+        + "\n"
+    ).encode()
+    t = _spawn_reply(sock_path, reply)
+    monkeypatch.setenv("SOLIDIFAI_ENGINE_SOCK", sock_path)
+
+    out = forward("execute_script", {"code": "raise ValueError('boom')"})
+    assert out["ok"] is False
+    assert out["error"] == "ValueError: boom"
+    assert out["scriptLine"] == 5
+    assert out["failed"] == {"lid": "bad radius"}
+    assert "id" not in out
+    assert "failureKind" not in out
+    t.join(timeout=5)
+
+
+def test_forward_domain_classification_is_deterministic_and_spoof_resistant(tmp_path, monkeypatch):
     from solidifai_mcp.server import EngineError, forward
 
     sock_path = short_socket_path(tmp_path)
@@ -454,10 +654,8 @@ def test_forward_ok_false_carries_structured_payload(tmp_path, monkeypatch):
             {
                 "id": 1,
                 "ok": False,
+                "failureKind": "transport",
                 "error": "ValueError: boom",
-                "scriptLine": 5,
-                "traceback": '  File "<solidifai-script>", line 5\nValueError: boom',
-                "failed": {"lid": "bad radius"},
             }
         )
         + "\n"
@@ -470,15 +668,15 @@ def test_forward_ok_false_carries_structured_payload(tmp_path, monkeypatch):
         raise AssertionError("expected EngineError")
     except EngineError as exc:
         assert "ValueError: boom" in str(exc)
-        assert exc.payload["scriptLine"] == 5
-        assert exc.payload["failed"] == {"lid": "bad radius"}
-        assert "id" not in exc.payload and "ok" not in exc.payload
+        assert exc.payload["failureKind"] == "transport"
     t.join(timeout=5)
 
 
-def test_call_surfaces_line_and_extras(monkeypatch):
-    """_call names the script line in the error text and returns the structured
-    extras rather than dropping them."""
+def test_call_raises_tool_error_with_diagnostics_for_non_domain_engine_errors(monkeypatch):
+    """Transport/protocol engine failures become actual MCP tool errors, and the
+    message keeps the useful diagnostics FastMCP can carry."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
     import solidifai_mcp.server as srv
 
     def fake_forward(method, params=None):
@@ -488,10 +686,45 @@ def test_call_surfaces_line_and_extras(monkeypatch):
         )
 
     monkeypatch.setattr(srv, "forward", fake_forward)
+    try:
+        srv._call("execute_script", {"code": "x"})
+        raise AssertionError("expected ToolError")
+    except ToolError as exc:
+        message = str(exc)
+        assert "ValueError: boom" in message
+        assert "line 5" in message
+        assert "failed" in message
+        assert "lid" in message
+
+
+def test_call_preserves_domain_ok_false_results(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    expected = {
+        "ok": False,
+        "error": "ValueError: boom",
+        "scriptLine": 5,
+        "failed": {"lid": "bad radius"},
+    }
+    monkeypatch.setattr(srv, "forward", lambda method, params=None: expected)
+
     out = srv._call("execute_script", {"code": "x"})
-    assert out["error"] == "ValueError: boom (line 5)"
-    assert out["scriptLine"] == 5
-    assert out["failed"] == {"lid": "bad radius"}
+    assert out is expected
+    assert out == {
+        "ok": False,
+        "error": "ValueError: boom",
+        "scriptLine": 5,
+        "failed": {"lid": "bad radius"},
+    }
+
+
+def test_call_preserves_domain_results_even_without_explicit_failure_metadata(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    expected = {"ok": False, "error": "engine returned an error"}
+    monkeypatch.setattr(srv, "forward", lambda method, params=None: expected)
+
+    assert srv._call("execute_script", {"code": "x"}) is expected
 
 
 def test_forward_partial_reply_is_clean_error(tmp_path, monkeypatch):
@@ -540,6 +773,29 @@ def test_socket_timeout_sits_above_longrun_ceiling():
     assert srv._SOCKET_TIMEOUT > srv._LONGRUN_CEILING
 
 
+def test_forward_rejects_oversized_engine_response(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    class OversizedConnection:
+        def settimeout(self, _timeout):
+            pass
+
+        def sendall(self, _request):
+            pass
+
+        def recv(self, _size):
+            return b"x" * (srv._MAX_RESPONSE_BYTES + 1)
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv(srv.ENV_SOCK, "/tmp/fake-engine.sock")
+    monkeypatch.setattr(srv.ipc, "connect", lambda _path: OversizedConnection())
+
+    with pytest.raises(srv.EngineError, match="response exceeded"):
+        srv.forward("ping")
+
+
 def test_operation_status_and_cancel_tools_only_target_existing_operations(monkeypatch):
     import solidifai_mcp.server as srv
 
@@ -553,3 +809,56 @@ def test_operation_status_and_cancel_tools_only_target_existing_operations(monke
         ("get_operation", {"operationId": "op-1"}),
         ("cancel_operation", {"operationId": "op-1"}),
     ]
+
+
+def test_submit_operation_forwards_method_params_and_replace_key(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    calls = []
+    monkeypatch.setattr(srv, "_call", lambda method, params=None: calls.append((method, params)))
+
+    srv.submit_operation("set_params", {"values": {"d": 4}}, replace_key="writer:params")
+
+    assert calls == [
+        (
+            "submit_operation",
+            {
+                "method": "set_params",
+                "params": {"values": {"d": 4}},
+                "replaceKey": "writer:params",
+            },
+        )
+    ]
+
+
+def test_capability_tools_forward_expected_methods(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    calls = []
+    monkeypatch.setattr(srv, "_call", lambda method, params=None: calls.append((method, params)))
+
+    srv.get_engine_capabilities()
+    srv.assess_design_plan(["simple_prismatic_part", "step_brep_modification"])
+
+    assert calls == [
+        ("get_engine_capabilities", None),
+        (
+            "assess_design_plan",
+            {"intents": ["simple_prismatic_part", "step_brep_modification"]},
+        ),
+    ]
+
+
+def test_mcp_capability_tools_preserve_full_contract_payload(monkeypatch):
+    import solidifai_mcp.server as srv
+
+    payload = {
+        "version": 1,
+        "parameters": {
+            "schemas": {"boolean": {"type": "boolean", "value": "bool", "desc": "string?"}}
+        },
+        "intents": {"simple_prismatic_part": {"status": "supported"}},
+    }
+    monkeypatch.setattr(srv, "forward", lambda method, params=None: payload)
+
+    assert srv.get_engine_capabilities() == payload

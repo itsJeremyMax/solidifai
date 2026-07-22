@@ -57,8 +57,9 @@ export interface ModelObject {
 /** A `[x, y, z]` triple in model units (mm). */
 export type Vec3 = [number, number, number];
 
-/** Definition for one tunable parameter (slider bounds + unit + short description). */
-export interface ParamSchemaEntry {
+/** Definition for one numeric tunable parameter (slider bounds + unit + description). */
+export interface ParamNumberSchemaEntry {
+  type?: string;
   value: number;
   min: number;
   max: number;
@@ -67,6 +68,26 @@ export interface ParamSchemaEntry {
   /** Short, plain-language description ("" when none). Rendered as a subtitle. */
   desc: string;
 }
+
+export interface ParamBooleanSchemaEntry {
+  type: "boolean";
+  value: boolean;
+  desc: string;
+}
+
+export interface ParamEnumSchemaEntry {
+  type: "enum";
+  value: string;
+  choices: string[];
+  desc: string;
+}
+
+export type NumericParamSchemaEntry = ParamNumberSchemaEntry;
+
+export type ParamSchemaEntry =
+  ParamNumberSchemaEntry | ParamBooleanSchemaEntry | ParamEnumSchemaEntry;
+
+export type ParamValue = number | boolean | string;
 
 /** The full render manifest emitted alongside `model.glb`. */
 export interface ModelInfo {
@@ -83,7 +104,7 @@ export interface ModelInfo {
   manifold: boolean;
   params: {
     schema: Record<string, ParamSchemaEntry>;
-    values: Record<string, number>;
+    values: Record<string, ParamValue>;
   };
 }
 
@@ -110,9 +131,22 @@ function isModelObject(v: unknown): v is ModelObject {
   );
 }
 
-function isParamSchemaEntry(v: unknown): v is ParamSchemaEntry {
+export function isNumericParamSchemaEntry(v: ParamSchemaEntry): v is NumericParamSchemaEntry {
+  return typeof v.value === "number" && "min" in v && "max" in v && "step" in v;
+}
+
+export function isBooleanParamSchemaEntry(v: ParamSchemaEntry): v is ParamBooleanSchemaEntry {
+  return "type" in v && v.type === "boolean" && typeof v.value === "boolean";
+}
+
+export function isEnumParamSchemaEntry(v: ParamSchemaEntry): v is ParamEnumSchemaEntry {
+  return "type" in v && v.type === "enum" && typeof v.value === "string" && "choices" in v;
+}
+
+function isParamNumberSchemaEntry(v: unknown): v is ParamNumberSchemaEntry {
   if (!isRecord(v)) return false;
   return (
+    (v.type === undefined || typeof v.type === "string") &&
     typeof v.value === "number" &&
     typeof v.min === "number" &&
     typeof v.max === "number" &&
@@ -120,6 +154,33 @@ function isParamSchemaEntry(v: unknown): v is ParamSchemaEntry {
     typeof v.unit === "string" &&
     typeof v.desc === "string"
   );
+}
+
+function isParamBooleanSchemaEntry(v: unknown): v is ParamBooleanSchemaEntry {
+  return (
+    isRecord(v) &&
+    v.type === "boolean" &&
+    typeof v.value === "boolean" &&
+    typeof v.desc === "string"
+  );
+}
+
+function isParamEnumSchemaEntry(v: unknown): v is ParamEnumSchemaEntry {
+  return (
+    isRecord(v) &&
+    v.type === "enum" &&
+    typeof v.value === "string" &&
+    Array.isArray(v.choices) &&
+    v.choices.length > 0 &&
+    v.choices.every((choice) => typeof choice === "string") &&
+    new Set(v.choices).size === v.choices.length &&
+    v.choices.includes(v.value) &&
+    typeof v.desc === "string"
+  );
+}
+
+function isParamSchemaEntry(v: unknown): v is ParamSchemaEntry {
+  return isParamNumberSchemaEntry(v) || isParamBooleanSchemaEntry(v) || isParamEnumSchemaEntry(v);
 }
 
 /**
@@ -190,7 +251,7 @@ export function parseModelInfo(json: string | null | undefined): ModelInfo | nul
   // wrote a malformed entry) must never block geometry from rendering, so we
   // tolerantly keep only the well-formed bits rather than failing the manifest:
   //   • keep schema entries that are valid ParamSchemaEntry shapes;
-  //   • keep numeric `values` whose key survives in the sanitized schema;
+  //   • keep typed `values` whose key survives in the sanitized schema;
   //   • if `params` is missing / not an object, fall back to empty maps.
   // (All other top-level validations above stay strict.)
   const params = sanitizeParams(raw.params);
@@ -208,21 +269,35 @@ export function parseModelInfo(json: string | null | undefined): ModelInfo | nul
 function sanitizeParams(raw: unknown): ModelInfo["params"] {
   if (!isRecord(raw)) return { schema: {}, values: {} };
 
-  const schema: Record<string, ParamSchemaEntry> = {};
+  const schema: Record<string, ParamSchemaEntry> = Object.create(null);
   if (isRecord(raw.schema)) {
     for (const [key, entry] of Object.entries(raw.schema)) {
-      if (isParamSchemaEntry(entry)) schema[key] = entry;
+      if (isSafeParamKey(key) && isParamSchemaEntry(entry)) schema[key] = entry;
     }
   }
 
-  const values: Record<string, number> = {};
+  const values: Record<string, ParamValue> = Object.create(null);
   if (isRecord(raw.values)) {
     for (const [key, v] of Object.entries(raw.values)) {
-      if (key in schema && typeof v === "number" && Number.isFinite(v)) {
+      if (!isSafeParamKey(key) || !Object.prototype.hasOwnProperty.call(schema, key)) continue;
+      const entry = schema[key];
+      if (isNumericParamSchemaEntry(entry) && typeof v === "number" && Number.isFinite(v)) {
+        values[key] = v;
+      } else if (isBooleanParamSchemaEntry(entry) && typeof v === "boolean") {
+        values[key] = v;
+      } else if (
+        isEnumParamSchemaEntry(entry) &&
+        typeof v === "string" &&
+        entry.choices.includes(v)
+      ) {
         values[key] = v;
       }
     }
   }
 
   return { schema, values };
+}
+
+function isSafeParamKey(key: string): boolean {
+  return key !== "__proto__" && key !== "prototype" && key !== "constructor";
 }

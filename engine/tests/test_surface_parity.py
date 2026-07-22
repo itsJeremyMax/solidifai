@@ -18,7 +18,6 @@ from solidifai_engine.server import _HANDLERS
 # expose it as an MCP tool, or add it to this allowlist.
 RPC_ONLY = {
     "get_protocol_info",
-    "submit_operation",
     "ping",
     "set_part_material",
     "list_destinations",
@@ -69,3 +68,13 @@ def test_cad_goto_forwards_to_goto():
     forwarded = _mcp_forwarded_methods()
     assert "goto" in forwarded, "cad_goto must forward to the engine 'goto' method"
     assert "goto" not in RPC_ONLY, "goto is now MCP-exposed; drop it from RPC_ONLY"
+
+
+def test_capability_contract_methods_are_mcp_exposed():
+    forwarded = _mcp_forwarded_methods()
+    assert "get_engine_capabilities" in forwarded
+    assert "assess_design_plan" in forwarded
+    assert "submit_operation" in forwarded
+    assert "get_engine_capabilities" not in RPC_ONLY
+    assert "assess_design_plan" not in RPC_ONLY
+    assert "submit_operation" not in RPC_ONLY

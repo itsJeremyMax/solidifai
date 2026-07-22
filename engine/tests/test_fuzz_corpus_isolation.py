@@ -95,6 +95,7 @@ def proxy(tmp_path):
         str(tmp_path / ".solidifai" / "artifacts"),
         model_path=str(tmp_path / "model.py"),
         timeout=6.0,  # bound the hangs so the test is quick
+        hard_timeout=6.0,
     )
     yield p
     p.close()

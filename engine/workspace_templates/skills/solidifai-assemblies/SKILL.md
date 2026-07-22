@@ -35,6 +35,8 @@ millimetres; +Z is up.
 1. **State the pause-tier build brief** before you commit geometry (AGENTS.md "State the build
    brief"): its parts are the skeleton parts, its key_dims are skeleton scalars, its interfaces
    are the attach frames and clearances.
+   A mechanism, multi-axis motion request, or imported-assembly modification also gets
+   `get_engine_capabilities()` and `assess_design_plan([...])` before you write the skeleton.
 2. **Set the skeleton** with `set_skeleton(code)`: the shared design the parts build against.
 3. **Set each part** with `set_part(id, code, attach=..., inputs=[...])`.
 4. **Inspect and adjust the wiring** with the tree tools.
@@ -238,9 +240,13 @@ s.joint("hinge", "revolute", "hinge_axis", axis=(1, 0, 0), limits=[0, 110],
 - `kind` is `rigid` (no DOF), `revolute` (rotates about the axis), `slider` (translates along it),
   `cylindrical` (both), `planar`, or `ball`. `frame` is a published frame at the joint location;
   `axis` is a local vector (default +Z); `limits` is `[lo, hi]` in degrees (rotary) or mm (linear);
-  `between` names the two child ids `[moving, ground]`.
+  `between` names the two child ids `[moving, ground]`. Those declared kinds are source-compatible,
+  but verified motion kinds are only `rigid`, `revolute`, and `slider`.
 - Joints are declared **intent** for motion checking, not a constraint solver: parts are still
-  placed by their `attach` frame. `check_interfaces` validates the joint wiring.
+  placed by their `attach` frame. `check_interfaces` validates the joint wiring. `cylindrical`,
+  `planar`, and `ball` remain declared-only today and motion verification returns `{ok:false}` for
+  them instead of pretending it proved anything. All motion results are sampled, never continuous
+  collision proof.
 
 ### Fit and motion checks
 

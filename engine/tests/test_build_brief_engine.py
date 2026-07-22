@@ -196,6 +196,24 @@ def test_session_get_build_brief_preserves_v1_for_legacy_and_migrates_for_v2(tmp
     assert capable["schema"] == 2
 
 
+def test_load_build_brief_legacy_reads_preserve_persisted_v2_shape(tmp_path):
+    brief = _v2(
+        parts=[
+            {"id": "base", "name": "Base", "role": "support", "why": "carry load", "children": []}
+        ],
+        dimensions=[{"id": "span", "value": 42, "unit": "mm", "drives": "width"}],
+        manufacturing=[{"id": "fab", "description": "Print in PETG"}],
+    )
+    assert build_brief.write_build_brief(str(tmp_path), brief, expected_revision=0)["schema"] == 2
+
+    legacy = build_brief.load_build_brief(str(tmp_path))
+
+    assert legacy is not None
+    assert legacy["schema"] == 2
+    assert legacy["dimensions"] == [{"id": "span", "value": 42, "unit": "mm", "drives": "width"}]
+    assert "key_dims" not in legacy
+
+
 def test_session_get_build_brief_none_when_absent(tmp_path):
     s = _sess(tmp_path)
     assert s.get_build_brief()["brief"] is None

@@ -13,6 +13,7 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 
 import solidifai
+from solidifai.skeleton_api import UNVERIFIED_JOINT_KINDS, VERIFIED_JOINT_KINDS
 from solidifai_engine import converge as converge_mod
 from solidifai_engine import dfm as dfm_rules
 from solidifai_engine import explore as explore_mod
@@ -21,6 +22,36 @@ from solidifai_engine import requirements as requirements_mod
 
 if TYPE_CHECKING:
     from solidifai_engine.session import Session
+
+
+_PART_MOTION_KINDS = ("revolute", "prismatic")
+
+
+def _sampled_verification(
+    *,
+    requested: int,
+    actual: int,
+    span: float,
+    unit: str,
+    spacing_samples: int | None = None,
+    failed: int = 0,
+) -> dict[str, Any]:
+    grid_samples = actual if spacing_samples is None else spacing_samples
+    result = {
+        "method": "sampled",
+        "continuousProof": False,
+        "samples": actual,
+        "samplesRequested": requested,
+        "samplesActual": actual,
+        "spacing": {
+            "value": round(span / (grid_samples - 1), 3) if grid_samples > 1 else 0.0,
+            "unit": unit,
+        },
+        "note": "Sampled clearance is not a continuous proof.",
+    }
+    if failed:
+        result["failedSamples"] = failed
+    return result
 
 
 class Exploration:
@@ -283,6 +314,14 @@ class Exploration:
 
         if part is None:
             return {"ok": False, "error": "check_motion needs a part name or a joint name"}
+        if kind not in _PART_MOTION_KINDS:
+            return {
+                "ok": False,
+                "code": "unsupported_motion_kind",
+                "error": f"unsupported motion kind {kind!r}; expected revolute or prismatic",
+                "kind": kind,
+                "supportedKinds": list(_PART_MOTION_KINDS),
+            }
         objs = self.s._objects or []
         moving = next((o for o in objs if o.name == part), None)
         if moving is None:
@@ -304,10 +343,19 @@ class Exploration:
                 return [moving.shape.translate(direction.normalized() * at)]
             return [moving.shape.rotate(axis, at)]
 
-        body = self._sweep(transform, others, lo, hi, steps)
+        body = self._sweep(
+            transform,
+            others,
+            lo,
+            hi,
+            steps,
+            unit="mm" if kind == "prismatic" else "deg",
+        )
         return {"ok": True, "part": part, "kind": kind, **body}
 
-    def _sweep(self, transform, statics: list, start: float, stop: float, steps: int) -> dict:
+    def _sweep(
+        self, transform, statics: list, start: float, stop: float, steps: int, *, unit: str
+    ) -> dict:
         """Step a set of moving bodies (produced by ``transform(at)``) through
         start..stop and test each against ``statics`` for overlap at every step.
         Shared by part-mode and joint-mode check_motion so both report identically."""
@@ -315,15 +363,23 @@ class Exploration:
         span = float(stop) - float(start)
         samples: list[dict[str, Any]] = []
         collides, first = False, None
-        clear_through = float(stop)
-        last_clear = float(start)
+        clear_through: float | None = float(stop)
+        last_clear: float | None = None
+        verification_blocked = False
+        failed_samples = 0
+        successful_samples = 0
         for i in range(n):
             at = float(start) + span * i / (n - 1)
             try:
                 moved = transform(at)
             except Exception as exc:  # noqa: BLE001 - a degenerate pose fails its step only
-                samples.append({"at": round(at, 3), "collides": False, "error": str(exc)})
+                failed_samples += 1
+                if not verification_blocked:
+                    clear_through = round(last_clear, 3) if last_clear is not None else None
+                    verification_blocked = True
+                samples.append({"at": round(at, 3), "collides": None, "error": str(exc)})
                 continue
+            successful_samples += 1
             hit = None
             for shape in moved:
                 hit = next(
@@ -341,18 +397,40 @@ class Exploration:
                 step["with"] = hit
                 if first is None:
                     first = {"at": round(at, 3), "with": hit}
-                    clear_through = round(last_clear, 3)
+                    if not verification_blocked:
+                        clear_through = round(last_clear, 3) if last_clear is not None else None
+                        verification_blocked = True
                     collides = True
-            else:
+            elif not verification_blocked:
                 last_clear = at
             samples.append(step)
-        return {
+        result = {
+            "ok": failed_samples == 0,
             "range": [float(start), float(stop)],
             "collides": collides,
             "firstCollision": first,
             "clearThrough": clear_through,
             "steps": samples,
+            "verification": _sampled_verification(
+                requested=int(steps),
+                actual=successful_samples,
+                span=span,
+                unit=unit,
+                spacing_samples=n,
+                failed=failed_samples,
+            ),
         }
+        if failed_samples:
+            result.update(
+                {
+                    "code": "motion_pose_failed",
+                    "error": (
+                        "motion verification incomplete: "
+                        f"{failed_samples} of {n} sampled poses failed"
+                    ),
+                }
+            )
+        return result
 
     def _root_skeleton(self):
         """Run the root skeleton at the live params to read its frames + joints, or
@@ -383,10 +461,13 @@ class Exploration:
     def _check_motion_joint(self, joint_name: str, *, start, stop, steps: int) -> dict:
         """Drive a skeleton-declared joint through its range and report collisions.
 
-        Sweeps the joint's DOF (rotation for revolute/cylindrical/ball, translation
-        for slider/planar) about/along its frame axis, transforming every occurrence
-        of the joint's first ``between`` child per step and testing it against the
-        rest of the model."""
+        Sweeps only the currently verifiable joint kinds: rotation for revolute and
+        translation for slider, about/along the joint frame axis. Declared joint
+        kinds remain source-compatible, but cylindrical, planar, and ball are
+        declaration-compatible only and return an explicit unsupported verification
+        result. For supported kinds, every occurrence of the joint's first
+        ``between`` child is transformed per step and tested against the rest of
+        the model."""
         from build123d import Axis, Location, Pos, Vector
 
         if self.s.root is None or not self.s._is_assembly_mode():
@@ -412,6 +493,27 @@ class Exploration:
                 "clearThrough": 0.0,
                 "steps": [],
                 "note": "rigid joint has no degree of freedom to sweep",
+                "verification": {
+                    "method": "static",
+                    "continuousProof": False,
+                    "samples": 0,
+                    "samplesRequested": 0,
+                    "samplesActual": 0,
+                    "spacing": None,
+                    "note": "No motion to verify for a rigid joint.",
+                },
+            }
+        if kind in UNVERIFIED_JOINT_KINDS:
+            return {
+                "ok": False,
+                "code": "unsupported_joint_motion",
+                "error": (
+                    f"joint {joint_name!r} kind {kind!r} is declared but not verifiable"
+                    " by check_motion"
+                ),
+                "joint": joint_name,
+                "kind": kind,
+                "verifiedJoints": list(VERIFIED_JOINT_KINDS),
             }
         between = jrec.get("between")
         if not between:
@@ -450,7 +552,7 @@ class Exploration:
         if not statics:
             return {"ok": False, "error": "need another part for the joint to move against"}
 
-        rotary = kind in ("revolute", "cylindrical", "ball")
+        rotary = kind == "revolute"
         lims = jrec.get("limits")
         default_hi = 90.0 if rotary else 10.0
         lo = float(start) if start is not None else (float(lims[0]) if lims else 0.0)
@@ -462,5 +564,5 @@ class Exploration:
             offset = world_dir.normalized() * at
             return [o.shape.translate(offset) for o in moving]
 
-        body = self._sweep(transform, statics, lo, hi, steps)
+        body = self._sweep(transform, statics, lo, hi, steps, unit="deg" if rotary else "mm")
         return {"ok": True, "joint": joint_name, "kind": kind, "moving": moving_id, **body}

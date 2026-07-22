@@ -33,7 +33,9 @@
  */
 
 /** A batch of parameter values keyed by parameter name. */
-export type ParamValues = Record<string, number>;
+export type ParamValue = number | boolean | string;
+export type ParamValues = Record<string, ParamValue>;
+export type ParamCommitErrorHandler = (error: unknown) => void;
 
 export interface ParamCommitOptions {
   /**
@@ -52,7 +54,7 @@ export interface ParamCommitOptions {
 
 export interface ParamCommitScheduler {
   /** Record the latest value for `key` and schedule a send (single-flight). */
-  commit: (key: string, value: number) => void;
+  commit: (key: string, value: ParamValue, onError?: ParamCommitErrorHandler) => void;
   /** Re-send any value left pending by a prior failure (e.g. once engine ready). */
   retry: () => void;
   /** True while an engine call is outstanding (used by tests/diagnostics). */
@@ -62,7 +64,8 @@ export interface ParamCommitScheduler {
 export function createParamCommitScheduler(options: ParamCommitOptions): ParamCommitScheduler {
   const { send, onError, onSuccess, onBuildingChange } = options;
 
-  let pending: ParamValues = {};
+  let pending: ParamValues = Object.create(null);
+  let pendingErrorHandlers: ParamCommitErrorHandler[] = [];
   let hasPending = false;
   let inFlight = false;
 
@@ -71,7 +74,9 @@ export function createParamCommitScheduler(options: ParamCommitOptions): ParamCo
     if (inFlight || !hasPending) return;
 
     const payload = pending;
-    pending = {};
+    const errorHandlers = pendingErrorHandlers;
+    pending = Object.create(null);
+    pendingErrorHandlers = [];
     hasPending = false;
     inFlight = true;
     onBuildingChange?.(true);
@@ -94,18 +99,26 @@ export function createParamCommitScheduler(options: ParamCommitOptions): ParamCo
           // them, so the edit isn't lost. Don't auto-flush: that would hammer a
           // still-down engine. `retry()` (engine-ready) or the next commit re-sends.
           for (const key of Object.keys(payload)) {
-            if (!(key in pending)) pending[key] = payload[key];
+            if (!Object.prototype.hasOwnProperty.call(pending, key)) pending[key] = payload[key];
           }
           hasPending = Object.keys(pending).length > 0;
           inFlight = false;
           onBuildingChange?.(false);
+          for (const handler of errorHandlers) {
+            try {
+              handler(error);
+            } catch {
+              // A view callback cannot compromise scheduler recovery or retries.
+            }
+          }
         },
       );
   };
 
   return {
-    commit(key, value) {
+    commit(key, value, commitOnError) {
       pending[key] = value;
+      if (commitOnError) pendingErrorHandlers.push(commitOnError);
       hasPending = true;
       flush();
     },

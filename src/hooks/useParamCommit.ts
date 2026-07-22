@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { engineSetParams } from "../lib/ipc/engine";
 import { onEngineStatus } from "../lib/ipc/status";
-import { createParamCommitScheduler } from "../lib/paramCommit";
+import {
+  createParamCommitScheduler,
+  type ParamCommitErrorHandler,
+  type ParamValue,
+} from "../lib/paramCommit";
 
 /**
  * Returns a stable `commit(key, value)` that drives `engine_set_params`
@@ -25,7 +29,7 @@ import { createParamCommitScheduler } from "../lib/paramCommit";
 export function useParamCommit(
   refresh: () => Promise<void>,
   onBuilding?: (building: boolean) => void,
-): (key: string, value: number) => void {
+): (key: string, value: ParamValue, onError?: ParamCommitErrorHandler) => void {
   // Keep the latest refresh in a ref so the once-created scheduler always calls
   // the current one (refresh has stable identity today, but this is robust).
   const refreshRef = useRef(refresh);
@@ -84,7 +88,7 @@ export function useParamCommit(
     };
   }, []);
 
-  return useCallback((key: string, value: number) => {
-    scheduler.current!.commit(key, value);
+  return useCallback((key: string, value: ParamValue, commitOnError?: ParamCommitErrorHandler) => {
+    scheduler.current!.commit(key, value, commitOnError);
   }, []);
 }

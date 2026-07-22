@@ -36,8 +36,9 @@ import sys
 import threading
 from typing import Any
 
-from solidifai_engine import ipc, protocol, scratch
+from solidifai_engine import build_brief, ipc, protocol, scratch
 from solidifai_engine.build_brief import SCHEMA_V2
+from solidifai_engine.capabilities import assess_design_plan, engine_capabilities
 from solidifai_engine.operations import OperationQueue, OperationRecord
 from solidifai_engine.protocol import (
     CAP_BUILD_BRIEF_V2,
@@ -49,6 +50,10 @@ from solidifai_engine.protocol import (
 from solidifai_engine.worker import RemoteSessionError, SessionProxy
 
 _SCALAR_RESULT_KEY = "_legacy_scalar_result"
+_MAX_OPERATION_PARAM_BYTES = 256_000
+_MAX_REQUEST_FRAME_BYTES = 512_000
+_MAX_REPLACE_KEY_CHARS = 128
+_MAX_SAMPLES = 256
 
 # -- parent-death detection ---------------------------------------------------
 # On unix a dead parent reparents the engine, so polling getppid() works. On
@@ -138,8 +143,8 @@ def _trim_traceback(tb: str | None) -> str | None:
     Drops the engine-internal frames (the dispatch/exec plumbing, the kernel, the
     stdlib) so the agent sees its script's frames and the final exception, not
     pages of engine internals. Keeps the header, chaining notes, and the exception
-    line verbatim. Falls back to the full traceback when no user frame is present
-    (a purely internal error), so a location is never lost."""
+    line verbatim. A purely internal traceback is omitted at this trust boundary;
+    the full diagnostic remains available in the engine log."""
     if not tb:
         return None
     lines = tb.splitlines()
@@ -169,11 +174,11 @@ def _trim_traceback(tb: str | None) -> str | None:
         out.append(line)
         i += 1
     if not kept_user_frame:
-        return tb
+        return None
     return "\n".join(out)
 
 
-def _failure_response(req_id: Any, result: dict) -> dict:
+def _failure_response(req_id: Any, result: dict, *, failure_kind: str | None = None) -> dict:
     """Build a failed RPC envelope that carries the handler's structured failure
     fields through to the client.
 
@@ -187,6 +192,8 @@ def _failure_response(req_id: Any, result: dict) -> dict:
         "ok": False,
         "error": result.get("error", "build failed"),
     }
+    if failure_kind is not None:
+        resp["failureKind"] = failure_kind
     tb = result.get("traceback")
     line = _script_line(tb)
     if line is not None:
@@ -197,9 +204,41 @@ def _failure_response(req_id: Any, result: dict) -> dict:
     # Pass through any other structured fields the handler returned (end_round's
     # `failed`/`built`, composeEmpty/empty markers, buildId, skeletonChanged, ...).
     for key, value in result.items():
-        if key not in ("ok", "error", "traceback"):
+        if key not in ("ok", "error", "traceback", "_error_envelope", "failureKind"):
             resp.setdefault(key, value)
     return resp
+
+
+def _validate_operation_params(method: str, params: dict) -> None:
+    try:
+        encoded_size = len(
+            json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"operation params must be JSON-serializable: {exc}") from exc
+    if encoded_size > _MAX_OPERATION_PARAM_BYTES:
+        raise ValueError(
+            "operation params are too large "
+            f"({encoded_size} bytes; maximum {_MAX_OPERATION_PARAM_BYTES})"
+        )
+
+    if method in {"check_motion", "optimize"} and "steps" in params:
+        raw_steps = params["steps"]
+        if isinstance(raw_steps, bool):
+            raise ValueError("steps must be an integer")
+        try:
+            steps = int(raw_steps)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("steps must be an integer") from exc
+        if steps > _MAX_SAMPLES:
+            raise ValueError(f"steps must be at most {_MAX_SAMPLES}")
+
+    if method in {"sweep", "optimize"} and params.get("values") is not None:
+        values = params["values"]
+        if not isinstance(values, list):
+            raise ValueError(f"{method} values must be a list")
+        if len(values) > _MAX_SAMPLES:
+            raise ValueError(f"{method} values must contain at most {_MAX_SAMPLES} items")
 
 
 class Server:
@@ -414,8 +453,12 @@ class Server:
                 # the connection on any mismatch (or an oversized first line).
                 if not authed and len(buf) > 1024:
                     return
+                if authed and b"\n" not in buf and len(buf) > _MAX_REQUEST_FRAME_BYTES:
+                    return
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
+                    if authed and len(line) > _MAX_REQUEST_FRAME_BYTES:
+                        return
                     line = line.strip()
                     if not authed:
                         presented = line.decode("utf-8", "replace")
@@ -430,6 +473,8 @@ class Server:
                         conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                     except OSError:
                         return
+                if authed and len(buf) > _MAX_REQUEST_FRAME_BYTES:
+                    return
 
     def _handle_line(self, line: bytes) -> dict:
         try:
@@ -456,13 +501,21 @@ class Server:
             negotiation = protocol.negotiate(client_protocol, client_capabilities)
             if not negotiation["compatible"]:
                 raise ValueError("client protocol is incompatible with this engine")
+            policy_method = method
+            policy_params = params
+            if method == "submit_operation" and isinstance(params, dict):
+                policy_method = params.get("method")
+                policy_params = params.get("params") or {}
+
             # Keep legacy propose_build available, but require the explicitly
             # negotiated capability before accepting any v2 mutation contract.
-            v2_request = method == "update_build_brief" or (
-                method == "propose_build"
-                and isinstance(params, dict)
-                and isinstance(params.get("brief"), dict)
-                and params["brief"].get("schema") == 2
+            # For async requests the policy belongs to the nested target, not to
+            # the outer submit_operation envelope.
+            v2_request = policy_method == "update_build_brief" or (
+                policy_method == "propose_build"
+                and isinstance(policy_params, dict)
+                and isinstance(policy_params.get("brief"), dict)
+                and policy_params["brief"].get("schema") == 2
             )
             if v2_request and CAP_BUILD_BRIEF_V2 not in negotiation["enabledCapabilities"]:
                 raise ValueError("client must negotiate build_brief_v2 for v2 build briefs")
@@ -472,17 +525,24 @@ class Server:
             ):
                 raise ValueError("client must negotiate operations for operation scheduling")
             dispatch_params = dict(params)
-            if method == "export":
+            if method == "submit_operation":
+                dispatch_params["_operation_policy"] = {
+                    "strict_export": CAP_STRICT_EXPORT in negotiation["enabledCapabilities"],
+                    "build_brief_v2": CAP_BUILD_BRIEF_V2 in negotiation["enabledCapabilities"],
+                    "include_readiness": CAP_READINESS in negotiation["enabledCapabilities"],
+                }
+            if policy_method == "export" and method != "submit_operation":
                 dispatch_params["_strict_export"] = (
                     CAP_STRICT_EXPORT in negotiation["enabledCapabilities"]
                 )
-            if method == "get_build_brief":
+            if policy_method == "get_build_brief" and method != "submit_operation":
                 dispatch_params["_build_brief_v2"] = (
                     CAP_BUILD_BRIEF_V2 in negotiation["enabledCapabilities"]
                 )
-            dispatch_params["_include_readiness"] = (
-                CAP_READINESS in negotiation["enabledCapabilities"]
-            )
+            if method != "submit_operation":
+                dispatch_params["_include_readiness"] = (
+                    CAP_READINESS in negotiation["enabledCapabilities"]
+                )
             result = self._dispatch(method, dispatch_params)
         except RemoteSessionError as exc:
             # The worker already formatted the Session error as "<Type>: message";
@@ -501,17 +561,21 @@ class Server:
         # (e.g. a failed build) are surfaced as a failed RPC response, carrying
         # their structured failure fields through so the caller can debug.
         if isinstance(result, dict) and result.get("ok") is False:
-            return _failure_response(req_id, result)
+            return _failure_response(req_id, result, failure_kind="domain")
 
-        if (
-            isinstance(result, dict)
-            and CAP_PUBLICATION_METADATA not in negotiation["enabledCapabilities"]
-        ):
-            result = {
-                key: value
-                for key, value in result.items()
-                if key not in {"publicationId", "sourceHash"}
-            }
+        if isinstance(result, dict):
+            result = dict(result)
+            if CAP_PUBLICATION_METADATA not in negotiation["enabledCapabilities"]:
+                result.pop("publicationId", None)
+                result.pop("sourceHash", None)
+            if method in _OPERATION_METHODS and isinstance(result.get("result"), dict):
+                nested = dict(result["result"])
+                if CAP_PUBLICATION_METADATA not in negotiation["enabledCapabilities"]:
+                    nested.pop("publicationId", None)
+                    nested.pop("sourceHash", None)
+                if CAP_READINESS not in negotiation["enabledCapabilities"]:
+                    nested.pop("readiness", None)
+                result["result"] = nested
 
         return {"id": req_id, "ok": True, "result": result}
 
@@ -528,15 +592,33 @@ class Server:
             target = self._require(params, "method")
             if target not in _HANDLERS:
                 raise ValueError(f"unknown method: {target!r}")
-            if target in _PARENT_READ_METHODS or target in _OPERATION_METHODS:
-                raise ValueError(f"{target!r} is not a writer operation")
             if target in _PARENT_WRITER_METHODS:
                 raise ValueError(f"{target!r} is synchronous-only and cannot be cancelled")
-            operation_params = dict(params.get("params") or {})
-            operation_params["_include_readiness"] = bool(params.get("_include_readiness", False))
-            return self._operations.submit(
-                target, operation_params, replace_key=params.get("replaceKey")
+            if target not in _ASYNC_OPERATION_METHODS:
+                raise ValueError(f"{target!r} is not an asynchronous operation")
+            raw_operation_params = params.get("params") or {}
+            if not isinstance(raw_operation_params, dict):
+                raise ValueError("operation params must be an object")
+            private_keys = sorted(
+                key for key in raw_operation_params if isinstance(key, str) and key.startswith("_")
             )
+            if private_keys:
+                raise ValueError(f"private operation parameter is not allowed: {private_keys[0]!r}")
+            operation_params = dict(raw_operation_params)
+            _validate_operation_params(target, operation_params)
+            replace_key = params.get("replaceKey")
+            if replace_key is not None:
+                if not isinstance(replace_key, str):
+                    raise ValueError("replaceKey must be a string")
+                if len(replace_key) > _MAX_REPLACE_KEY_CHARS:
+                    raise ValueError(
+                        f"replaceKey must be at most {_MAX_REPLACE_KEY_CHARS} characters"
+                    )
+            policy = params.get("_operation_policy") or {}
+            if target == "export":
+                operation_params["_strict_export"] = bool(policy.get("strict_export", False))
+            operation_params["_include_readiness"] = bool(policy.get("include_readiness", False))
+            return self._operations.submit(target, operation_params, replace_key=replace_key)
         if method == "get_operation":
             return self._operations.get(self._require(params, "operationId"))
         if method == "cancel_operation":
@@ -547,6 +629,7 @@ class Server:
         if method in _PARENT_READ_METHODS:
             return handler(self, params)
         # Legacy calls remain synchronous and never acquire replacement semantics.
+        _validate_operation_params(method, params)
         operation = self._operations.submit(method, params)
         terminal = self._operations.wait(operation["operationId"])
         if terminal["state"] == "succeeded":
@@ -557,9 +640,9 @@ class Server:
             raise RemoteSessionError(terminal["error"] or "operation timed out")
         if terminal["state"] == "cancelled":
             raise RemoteSessionError(terminal["error"] or "operation cancelled")
-        if terminal["details"]:
+        if terminal["details"] is not None:
             details = dict(terminal["details"])
-            details.pop("_error_envelope", None)
+            details.pop("failureKind", None)
             return {
                 "ok": False,
                 "error": terminal["error"] or "operation failed",
@@ -574,19 +657,12 @@ class Server:
         if method in _PARENT_WRITER_METHODS:
             heartbeat(0.0, "running")
             result = handler(self, params)
-            if isinstance(result, dict) and result.get("ok") is False:
-                result = {"_error_envelope": True, **result}
             return result if isinstance(result, dict) else {_SCALAR_RESULT_KEY: result}
         with self._session.operation(heartbeat.operation_id):
             self._session._operation_heartbeat = heartbeat
             heartbeat(0.0, "running")
             try:
                 result = handler(self, params)
-            except RemoteSessionError as exc:
-                result = {"ok": False, "error": str(exc), "_error_envelope": True}
-                if exc.traceback:
-                    result["traceback"] = exc.traceback
-            try:
                 if (
                     include_readiness
                     and isinstance(result, dict)
@@ -595,6 +671,13 @@ class Server:
                 ):
                     result = {**result, "readiness": self._session.get_readiness()}
                 if isinstance(result, dict) and result.get("ok") is False:
+                    if "traceback" in result:
+                        trimmed = _trim_traceback(result.get("traceback"))
+                        result = dict(result)
+                        if trimmed is None:
+                            result.pop("traceback", None)
+                        else:
+                            result["traceback"] = trimmed
                     result = {"_error_envelope": True, **result}
             finally:
                 self._session._operation_heartbeat = None
@@ -620,6 +703,31 @@ def _h_list_materials(srv: Server, p: dict) -> Any:
 
 def _h_get_protocol_info(srv: Server, p: dict) -> dict[str, object]:
     return protocol.protocol_info()
+
+
+def _h_get_engine_capabilities(srv: Server, p: dict) -> dict[str, object]:
+    return engine_capabilities()
+
+
+def _h_assess_design_plan(srv: Server, p: dict) -> dict[str, object]:
+    intents = srv._require(p, "intents")
+    if not isinstance(intents, list) or not all(isinstance(intent, str) for intent in intents):
+        raise ValueError("intents must be a list of strings")
+    if len(intents) > 256:
+        raise ValueError("intents must contain at most 256 entries")
+    if any(len(intent) > 128 for intent in intents):
+        raise ValueError("each intent must be at most 128 characters")
+    return assess_design_plan(intents)
+
+
+def _h_get_build_brief(srv: Server, p: dict) -> dict[str, object]:
+    return {
+        "ok": True,
+        "brief": build_brief.load_build_brief(
+            srv._workspace_root(),
+            target_schema=SCHEMA_V2 if p.get("_build_brief_v2") else None,
+        ),
+    }
 
 
 def _published_snapshot(srv: Server) -> dict:
@@ -728,6 +836,8 @@ def _orient_overhang(srv: Server, p: dict) -> float:
 # protocol.py; the Rust host negotiates compatible ranges and required features.
 _HANDLERS: dict[str, Any] = {
     "get_protocol_info": _h_get_protocol_info,
+    "get_engine_capabilities": _h_get_engine_capabilities,
+    "assess_design_plan": _h_assess_design_plan,
     "ping": lambda srv, p: "pong",
     "submit_operation": lambda srv, p: None,
     "get_operation": lambda srv, p: None,
@@ -768,9 +878,7 @@ _HANDLERS: dict[str, Any] = {
     "propose_build": lambda srv, p: srv._session.propose_build(
         srv._require(p, "brief"), expected_revision=p.get("expectedRevision")
     ),
-    "get_build_brief": lambda srv, p: srv._session.get_build_brief(
-        target_schema=SCHEMA_V2 if p.get("_build_brief_v2") else None
-    ),
+    "get_build_brief": _h_get_build_brief,
     "get_conformance": lambda srv, p: srv._session.get_conformance(),
     "get_readiness": lambda srv, p: srv._session.get_readiness(),
     "update_build_brief": lambda srv, p: srv._session.update_build_brief(
@@ -892,10 +1000,19 @@ _HANDLERS: dict[str, Any] = {
 
 # These parent-owned calls read protocol/configuration or a committed generation
 # from disk.  They deliberately never enter the operation writer or SessionProxy.
+# Planning reads only belong here when the parent already has the exact published
+# data needed to answer them. ``get_build_brief`` is safe because it reads the
+# persisted brief directly. ``get_conformance``/``get_readiness`` still depend on
+# live session evidence (requirements, references, measurements, DFM, interfaces,
+# in-memory objects/features/params), so keeping them serialized avoids stale or
+# divergent answers until a broader snapshot contract exists.
 _PARENT_READ_METHODS = frozenset(
     {
         "get_protocol_info",
+        "get_engine_capabilities",
+        "assess_design_plan",
         "ping",
+        "get_build_brief",
         "get_model_info",
         "get_params",
         "list_materials",
@@ -907,6 +1024,40 @@ _PARENT_READ_METHODS = frozenset(
 )
 _PARENT_WRITER_METHODS = frozenset({"set_manufacturing_profile", "save_reference"})
 _OPERATION_METHODS = frozenset({"submit_operation", "get_operation", "cancel_operation"})
+_ASYNC_OPERATION_METHODS = frozenset(
+    {
+        "execute_script",
+        "run_file",
+        "render",
+        "set_requirements",
+        "propose_build",
+        "update_build_brief",
+        "sweep",
+        "optimize",
+        "check_motion",
+        "import_reference",
+        "stage_import",
+        "remove_import",
+        "create_drawing",
+        "set_feature",
+        "set_params",
+        "export",
+        "capture_views",
+        "converge_to_spec",
+        "set_skeleton",
+        "set_part",
+        "export_flat_model",
+        "attach",
+        "set_occurrences",
+        "set_inputs",
+        "remove_part",
+        "add_subassembly",
+        "build_part",
+        "begin_round",
+        "end_round",
+        "abort_round",
+    }
+)
 
 # The set of methods that need the material resolver refreshed before they run
 # now lives in worker.py (worker.REFRESH_METHODS): the resolver is configured in

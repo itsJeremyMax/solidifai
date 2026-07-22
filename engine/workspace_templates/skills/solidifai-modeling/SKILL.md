@@ -11,8 +11,9 @@ license: MIT
 This skill is the single-part build loop: write Python, run it through the `solidifai-cad`
 MCP server, and whatever you `show()` appears in the viewport in real time. Units are
 **millimetres**. **solidifai-product-design** owns what makes a human-facing part good; this
-skill owns how to build it. build123d is your internal toolkit; never name it to the user
-(AGENTS.md carries the Sol voice).
+skill owns how to build it. The geometry contract here is parametric B-rep solids, not
+sculpting, SubD, mesh push-pull, or direct NURBS editing. build123d is your internal toolkit;
+never name it to the user (AGENTS.md carries the Sol voice).
 
 ## When to use
 
@@ -25,12 +26,15 @@ skill owns how to build it. build123d is your internal toolkit; never name it to
 ## The procedure
 
 1. **State a stream-tier build brief** (AGENTS.md "State the build brief"): what it is, the
-   few functional dims (the PARAMS you'll define), and the process/material from the profile;
-   record it with `propose_build`. A fully-specified or pure-geometry part skips this. Ground a mechanism,
-   multi-part product, or image reproduction first (**solidifai-grounding**); bring in
-   **solidifai-product-design** when a person holds, wears, operates, or sees the part and
-   design is open. Apply AGENTS.md's risk matrix before committing an unknown that affects fit,
-   interface, load, motion, material, safety, or compliance.
+    few functional dims (the PARAMS you'll define), and the process/material from the profile;
+    record it with `propose_build`. A fully-specified or pure-geometry part skips this. Ground a mechanism,
+    multi-part product, or image reproduction first (**solidifai-grounding**); bring in
+    **solidifai-product-design** when a person holds, wears, operates, or sees the part and
+    design is open. Apply AGENTS.md's risk matrix before committing an unknown that affects fit,
+    interface, load, motion, material, safety, or compliance. Before freeform or fitted-surface
+    work, imported-model modification, safety-critical structural claims, or non-FDM validation,
+    call `get_engine_capabilities()` and `assess_design_plan([...])` first; ordinary prismatic
+    parts do not wait on triage.
 2. **Build.** Call `execute_script`; it rebuilds the model, updates the viewport, and
    auto-saves your code to `model.py`. Before picking dimensions, read
    `get_manufacturing_profile()` and use it for wall, fillet/edge-break, min feature, and mating
@@ -76,10 +80,12 @@ show(p.part, name="Block")
 
 ### Parametric model (exposes UI sliders)
 
-Define a module-level `PARAMS = {name: {value, min, max, step, unit, desc?}}` and a
-`def build(**params)` that calls `show(...)`. The app renders a slider per numeric parameter
-(with `desc` as a one-line subtitle); tweak with `set_params({...})`. End the script by
-calling `build(...)` with the defaults so it renders on load.
+Define a module-level `PARAMS` and a `def build(**params)` that calls `show(...)`. Numeric
+entries stay `{value, min, max, step, unit, desc?}` and render as sliders. Boolean entries are
+`{type: "boolean", value: bool, desc?}` and render as toggles. Enum entries are
+`{type: "enum", value: str, choices: [..], desc?}` and render as pickers. Tweak with
+`set_params({...})`. End the script by calling `build(...)` with the defaults so it renders on
+load.
 
 ```python
 from build123d import BuildPart, Box, Hole

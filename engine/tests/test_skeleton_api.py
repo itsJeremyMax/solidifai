@@ -1,6 +1,6 @@
 from build123d import Location
 
-from solidifai import skeleton
+from solidifai import skeleton, skeleton_api
 
 
 def test_collects_scalars_and_frames():
@@ -38,3 +38,15 @@ def test_frame_lookup_and_missing():
     assert s.frame_for(None).position == Location().position  # None -> node origin
     with pytest.raises(KeyError, match="ghost"):
         s.frame_for("ghost")
+
+
+def test_joint_kinds_remain_declared_but_only_some_are_verifiable():
+    assert skeleton_api.JOINT_KINDS == (
+        "rigid",
+        "revolute",
+        "slider",
+        "cylindrical",
+        "planar",
+        "ball",
+    )
+    assert getattr(skeleton_api, "VERIFIED_JOINT_KINDS", None) == ("rigid", "revolute", "slider")

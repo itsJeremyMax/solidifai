@@ -44,7 +44,7 @@ Units are millimetres.
    0.2 mm clearance. A skip-tier part keeps the plain grid; no section or focus passes
    there.
 4. **Measure.** Run the checks that matter for this part:
-   - `check_requirements`: your done-gate; pass / fail / not-built per goal.
+    - `check_requirements`: your done-gate; pass / fail / not-built per goal.
    - `analyze_dfm` for printability; judge flags against the manufacturing profile's own
      thresholds (`get_manufacturing_profile()`: `design.wallMm`, `design.minFeatureMm`,
      `process.overhangDeg`), not a generic guess.
@@ -53,9 +53,13 @@ Units are millimetres.
    - `measure_between` for an exact clearance or bore spacing: compare the built gap to the
      profile clearance instead of eyeballing (`query_faces` gives face ids to measure to;
      `thickness_at` checks a local wall against the profile min-wall).
-   - `check_motion(joint=...)` for any assembly with a declared non-rigid joint: sweep the DOF
-     and confirm it moves clear (`clearThrough`), no early `firstCollision`.
-   - `measure` for exact mass, center of mass, and bounding box.
+    - `check_motion(joint=...)` for any assembly with a declared non-rigid joint: sweep the DOF
+      and confirm it moves clear (`clearThrough`), no early `firstCollision`.
+    - `measure` for exact mass, center of mass, and bounding box.
+    - If the request touches safety-critical structure, non-FDM manufacturing, imported-model
+      modification, or anything you already triaged as conditional or unsupported, re-read
+      `get_engine_capabilities()` before you make the claim so you report the actual support
+      level and fallback.
 5. **Repair.** Fix the flags that matter (playbook below). A flag on an intentionally thin
    cosmetic rib can be left; a thin structural wall cannot.
 6. **Re-build and re-check.** Loop steps 3-5 until the visual read is right and the goals

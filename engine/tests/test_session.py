@@ -228,6 +228,103 @@ build(**{k: v["value"] for k, v in PARAMS.items()})
 """
 
 
+MIXED_PARAM_SCRIPT = """
+from build123d import BuildPart, Box
+from solidifai import show
+
+PARAMS = {
+    "size": {
+        "value": 20.0,
+        "min": 5.0,
+        "max": 100.0,
+        "step": 1.0,
+        "unit": "mm",
+        "desc": "Edge length",
+    },
+    "enabled": {"type": "boolean", "value": True, "desc": "Show the full body"},
+    "mode": {
+        "type": "enum",
+        "value": "draft",
+        "choices": ["draft", "final"],
+        "desc": "Output mode",
+    },
+}
+
+def build(size, enabled, mode):
+    width = size if enabled else size / 2
+    height = size if mode == "final" else size / 4
+    with BuildPart() as p:
+        Box(width, size, height)
+    show(p.part, name="Mixed")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
+LEGACY_NUMERIC_TYPE_SCRIPT = """
+from build123d import BuildPart, Box
+from solidifai import show
+
+PARAMS = {
+    "hole_dia": {
+        "type": "diameter",
+        "value": 10,
+        "min": 1,
+        "max": 20,
+        "step": 1,
+        "unit": "mm",
+        "desc": "Hole diameter",
+    }
+}
+
+def build(hole_dia):
+    with BuildPart() as p:
+        Box(hole_dia, 20, 20)
+    show(p.part, name="Legacy")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
+BAD_ENUM_SCRIPT = """
+from build123d import BuildPart, Box
+from solidifai import show
+
+PARAMS = {
+    "mode": {
+        "type": "enum",
+        "value": "draft",
+        "choices": ["draft", 1],
+        "desc": "Broken output mode",
+    }
+}
+
+def build(mode):
+    with BuildPart() as p:
+        Box(10, 10, 10)
+    show(p.part, name="Broken")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
+UNKNOWN_TYPE_SCRIPT = """
+from build123d import BuildPart, Box
+from solidifai import show
+
+PARAMS = {
+    "enabled": {"type": "bool", "value": True, "desc": "Broken enabled type"}
+}
+
+def build(enabled):
+    with BuildPart() as p:
+        Box(10, 10, 10)
+    show(p.part, name="Broken")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
 def test_features_refreshed_after_set_params(tmp_path):
     sess = Session(str(tmp_path))
     assert sess.execute_script(PARAM_FEATURE_SCRIPT)["ok"] is True
@@ -236,6 +333,104 @@ def test_features_refreshed_after_set_params(tmp_path):
     # the snapshot is refreshed by the set_params rebuild, not stale
     assert [f.name for f in sess._features] == ["center_hole"]
     assert sess._features[0].driven_by == ["bore"]
+
+
+def test_get_params_and_model_json_include_boolean_and_enum_params(tmp_path):
+    sess = Session(str(tmp_path))
+    assert sess.execute_script(MIXED_PARAM_SCRIPT)["ok"] is True
+
+    params = sess.get_params()
+    assert params["schema"] == {
+        "size": {
+            "value": 20.0,
+            "min": 5.0,
+            "max": 100.0,
+            "step": 1.0,
+            "unit": "mm",
+            "desc": "Edge length",
+        },
+        "enabled": {"type": "boolean", "value": True, "desc": "Show the full body"},
+        "mode": {
+            "type": "enum",
+            "value": "draft",
+            "choices": ["draft", "final"],
+            "desc": "Output mode",
+        },
+    }
+    assert params["values"] == {"size": 20.0, "enabled": True, "mode": "draft"}
+
+    model = json.loads((tmp_path / "model.json").read_text())
+    assert model["params"] == params
+
+
+def test_set_params_validates_boolean_and_enum_values(tmp_path):
+    sess = Session(str(tmp_path))
+    assert sess.execute_script(MIXED_PARAM_SCRIPT)["ok"] is True
+
+    bad_bool = sess.set_params({"enabled": "yes"})
+    assert bad_bool["ok"] is False
+    assert "must be a boolean" in bad_bool["error"]
+
+    bad_enum = sess.set_params({"mode": "turbo"})
+    assert bad_enum["ok"] is False
+    assert "must be one of" in bad_enum["error"]
+
+    bad_unknown = sess.set_params({"missing": True})
+    assert bad_unknown["ok"] is False
+    assert "unknown parameter" in bad_unknown["error"]
+
+    good = sess.set_params({"enabled": False, "mode": "final"})
+    assert good["ok"] is True
+    assert sess.get_params()["values"]["enabled"] is False
+    assert sess.get_params()["values"]["mode"] == "final"
+
+
+def test_execute_script_rejects_malformed_enum_choices(tmp_path):
+    sess = Session(str(tmp_path))
+
+    res = sess.execute_script(BAD_ENUM_SCRIPT)
+
+    assert res["ok"] is False
+    assert "choices" in res["error"]
+
+
+def test_execute_script_rejects_explicit_unknown_param_type(tmp_path):
+    sess = Session(str(tmp_path))
+
+    res = sess.execute_script(UNKNOWN_TYPE_SCRIPT)
+
+    assert res["ok"] is False
+    assert "unknown type" in res["error"]
+
+
+def test_execute_script_accepts_legacy_numeric_param_with_arbitrary_type_metadata(tmp_path):
+    sess = Session(str(tmp_path))
+
+    res = sess.execute_script(LEGACY_NUMERIC_TYPE_SCRIPT)
+
+    assert res["ok"] is True
+    assert sess.get_params() == {
+        "schema": {
+            "hole_dia": {
+                "value": 10.0,
+                "min": 1.0,
+                "max": 20.0,
+                "step": 1.0,
+                "unit": "mm",
+                "desc": "Hole diameter",
+            }
+        },
+        "values": {"hole_dia": 10.0},
+    }
+
+
+def test_execute_script_accepts_legacy_numeric_param_with_reserved_type_metadata(tmp_path):
+    sess = Session(str(tmp_path))
+
+    res = sess.execute_script(LEGACY_NUMERIC_TYPE_SCRIPT.replace('"diameter"', '"boolean"'))
+
+    assert res["ok"] is True
+    assert sess.get_params()["values"] == {"hole_dia": 10.0}
 
 
 def test_inspect_features_returns_inventory(tmp_path):

@@ -18,6 +18,56 @@ build(**{k: v["value"] for k, v in PARAMS.items()})
 """
 
 
+MIXED_PARAM_SCRIPT = """
+from build123d import BuildPart, Box
+from solidifai import show
+
+PARAMS = {
+    "size": {
+        "value": 20.0,
+        "min": 5.0,
+        "max": 100.0,
+        "step": 1.0,
+        "unit": "mm",
+        "desc": "Edge length",
+    },
+    "enabled": {"type": "boolean", "value": True, "desc": "Show the full body"},
+    "mode": {
+        "type": "enum",
+        "value": "draft",
+        "choices": ["draft", "final"],
+        "desc": "Output mode",
+    },
+}
+
+def build(size, enabled, mode):
+    width = size if enabled else size / 2
+    height = size if mode == "final" else size / 4
+    with BuildPart() as p:
+        Box(width, size, height)
+    show(p.part, name="Mixed")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
+SHOW_INTERNALS_SCRIPT = """
+from build123d import Box, Pos
+from solidifai import show
+
+PARAMS = {
+    "show_internals": {"type": "boolean", "value": True, "desc": "Show reference components"},
+}
+
+def build(show_internals):
+    show(Box(30, 30, 12), name="Shell")
+    if show_internals:
+        show(Pos(0, 0, 2) * Box(10, 10, 4), name="ref: pcb", role="reference")
+
+build(**{k: v["value"] for k, v in PARAMS.items()})
+"""
+
+
 def _ws(tmp_path):
     """A workspace layout: <root>/model.py + <root>/.solidifai/artifacts."""
     root = tmp_path
@@ -104,6 +154,24 @@ def test_set_params_writes_settings_json(tmp_path):
     }
 
 
+def test_set_params_persists_boolean_and_enum_values(tmp_path):
+    root, model, artifacts = _ws(tmp_path)
+    sess = Session(str(artifacts), model_path=str(model))
+    sess.execute_script(MIXED_PARAM_SCRIPT)
+
+    sess.set_params({"enabled": False, "mode": "final"})
+
+    assert settings.load_params(str(root)) == {"size": 20.0, "enabled": False, "mode": "final"}
+    pointer = paths.read_current_publication(str(artifacts))
+    assert pointer is not None
+    generation = artifacts / "generations" / pointer.publication_id
+    assert json.loads((generation / "inputs" / "settings.json").read_text())["params"] == {
+        "size": 20.0,
+        "enabled": False,
+        "mode": "final",
+    }
+
+
 def test_startup_applies_saved_values_over_defaults(tmp_path):
     root, model, artifacts = _ws(tmp_path)
     model.write_text(PARAM_SCRIPT)
@@ -127,6 +195,72 @@ def test_startup_ignores_unknown_saved_keys(tmp_path):
     info = json.loads((artifacts / "model.json").read_text())
     assert info["params"]["values"]["size"] == 60.0
     assert "removed_param" not in info["params"]["values"]
+
+
+def test_startup_restores_boolean_and_enum_saved_values(tmp_path):
+    root, model, artifacts = _ws(tmp_path)
+    model.write_text(MIXED_PARAM_SCRIPT)
+    settings.write_params(str(root), {"size": 73.0, "enabled": False, "mode": "final"})
+
+    sess = Session(str(artifacts), model_path=str(model))
+    sess.startup()
+
+    info = json.loads((artifacts / "model.json").read_text())
+    assert info["params"]["values"] == {"size": 73.0, "enabled": False, "mode": "final"}
+
+
+def test_startup_restores_each_valid_saved_value_and_ignores_invalid_or_stale_keys(tmp_path):
+    root, model, artifacts = _ws(tmp_path)
+    model.write_text(MIXED_PARAM_SCRIPT)
+    settings.write_params(
+        str(root),
+        {
+            "size": 73.0,
+            "enabled": "nope",
+            "mode": "final",
+            "removed_param": True,
+        },
+    )
+
+    sess = Session(str(artifacts), model_path=str(model))
+    sess.startup()
+
+    info = json.loads((artifacts / "model.json").read_text())
+    assert info["params"]["values"] == {"size": 73.0, "enabled": True, "mode": "final"}
+
+
+def test_show_internals_persists_as_a_boolean_and_restores_viewport_state(tmp_path):
+    root, model, artifacts = _ws(tmp_path)
+    model.write_text(SHOW_INTERNALS_SCRIPT)
+    sess = Session(str(artifacts), model_path=str(model))
+    sess.startup()
+
+    assert sess.set_params({"show_internals": False})["ok"] is True
+    assert settings.load_params(str(root)) == {"show_internals": False}
+
+    reopened = Session(str(artifacts), model_path=str(model))
+    reopened.startup()
+
+    info = json.loads((artifacts / "model.json").read_text())
+    assert info["params"]["schema"]["show_internals"] == {
+        "type": "boolean",
+        "value": True,
+        "desc": "Show reference components",
+    }
+    assert info["params"]["values"] == {"show_internals": False}
+    assert [obj["name"] for obj in info["objects"]] == ["Shell"]
+
+
+def test_show_internals_rejects_numeric_zero_workaround(tmp_path):
+    root, model, artifacts = _ws(tmp_path)
+    model.write_text(SHOW_INTERNALS_SCRIPT)
+    sess = Session(str(artifacts), model_path=str(model))
+    sess.startup()
+
+    result = sess.set_params({"show_internals": 0})
+
+    assert result["ok"] is False
+    assert "boolean" in result["error"]
 
 
 def test_build_auto_commits_and_undo_reverts_params(tmp_path):

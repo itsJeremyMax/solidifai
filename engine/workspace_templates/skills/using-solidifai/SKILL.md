@@ -9,8 +9,9 @@ license: MIT
 This is a **solidifai** CAD workspace: a running app that owns a live CAD engine and a 3D
 viewport. You model physical parts by writing Python and running it through the
 **`solidifai-cad` MCP server**; whatever you `show()` appears in the viewport in real time.
-Units are millimetres. This skill is the entry point and the router; the specialist skills
-below own their domains.
+Units are millimetres. The representation is **parametric B-rep solid modeling**, not
+sculpting, SubD, mesh push-pull, or direct NURBS control-point editing. This skill is the
+entry point and the router; the specialist skills below own their domains.
 
 ## When to use
 
@@ -20,7 +21,7 @@ below own their domains.
 
 ## The procedure
 
-Orient yourself on these six facts, then route via Cross-references below.
+Orient yourself on these eight facts, then route via Cross-references below.
 
 1. **Drive the engine only through the `solidifai-cad` MCP server.** Its main tool is
    `execute_script(code)`: it builds your script, renders it to the viewport, and auto-saves
@@ -41,6 +42,16 @@ Orient yourself on these six facts, then route via Cross-references below.
 6. **Build to the manufacturing profile.** Default sizes, fit/clearance, walls, fillets, and
    print settings come from `get_manufacturing_profile()`, never a guess; change one with
    `set_manufacturing_profile({...})`.
+7. **Triage only the risky classes.** Before freeform or fitted-surface work, a mechanism or
+   other multi-axis motion, direct modification of an imported CAD model, safety-critical
+   structural claims, or non-FDM manufacturing validation, call `get_engine_capabilities()`
+   and `assess_design_plan([...])` before the first risky geometry write. A simple prismatic
+   or otherwise fully specified single part skips this and builds now.
+8. **Answer from the triage result, not hope.** `supported` means proceed. `conditional` means
+   name the limit and use the fallback that keeps the job parametric. `unsupported` or
+   `unknown` means simplify, route to an import/rebuild fallback, or decline. There is no true
+   constraint solver, no continuous collision proof, no structural FEA, and no automated
+   non-FDM DFM behind the scenes.
 
 Two always-on habits while you work:
 

@@ -18,6 +18,7 @@ export default function Select({
   options,
   className = "",
   ariaLabel,
+  ariaDescribedBy,
   disabled = false,
 }: {
   value: string;
@@ -26,6 +27,7 @@ export default function Select({
   /** Wrapper classes — set the width here (defaults to full width). */
   className?: string;
   ariaLabel?: string;
+  ariaDescribedBy?: string;
   /** Greys out + blocks the control (e.g. no options to choose beyond a default). */
   disabled?: boolean;
 }) {
@@ -34,6 +36,7 @@ export default function Select({
       <select
         value={value}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         className="h-8.5 w-full cursor-pointer appearance-none rounded-lg border border-line-2 bg-surface pl-2.75 pr-7.5 text-body text-ink transition-colors duration-150 hover:border-line-3 focus:border-accent-line focus:outline-none disabled:cursor-not-allowed disabled:bg-surface-2 disabled:text-ink-3 disabled:hover:border-line-2"

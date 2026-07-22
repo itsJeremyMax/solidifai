@@ -119,3 +119,25 @@ def test_server_name_matches_the_app_and_templates():
     # eval server name would break every tool reference in the skills.
     assert MCP_SERVER_NAME == "solidifai-cad"
     assert MCP_SERVER_NAME in (TEMPLATES_DIR / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def test_provisioned_agents_carry_capability_triage_and_honest_limits(tmp_path):
+    ws = provision_workspace(tmp_path / "ws", "/opt/py")
+    agents = (ws / "AGENTS.md").read_text(encoding="utf-8").lower()
+
+    assert "get_engine_capabilities" in agents
+    assert "assess_design_plan" in agents
+    assert "simple prismatic" in agents and "build now" in agents
+    for token in (
+        "parametric",
+        "b-rep",
+        "sculpt",
+        "subd",
+        "mesh push-pull",
+        "direct nurbs",
+        "constraint solver",
+        "continuous collision proof",
+        "fea",
+        "non-fdm",
+    ):
+        assert token in agents

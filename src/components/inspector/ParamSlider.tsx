@@ -18,7 +18,7 @@
 import { useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 
-import type { ParamSchemaEntry } from "../../lib/artifacts";
+import type { NumericParamSchemaEntry } from "../../lib/artifacts";
 import { round1 } from "../../lib/format";
 
 /** Title-case a param key like `hole_dia` / `holeDia` → `Hole Dia`. */
@@ -43,7 +43,7 @@ function ratio(value: number, min: number, max: number): number {
  * `min`). Mirrors what the native range input does, so typed values land on the
  * same grid as dragged ones. Returns `null` for non-finite input.
  */
-function clampSnap(value: number, entry: ParamSchemaEntry): number | null {
+function clampSnap(value: number, entry: NumericParamSchemaEntry): number | null {
   if (!Number.isFinite(value)) return null;
   const { min, max, step } = entry;
   let v = Math.min(max, Math.max(min, value));
@@ -59,7 +59,7 @@ function clampSnap(value: number, entry: ParamSchemaEntry): number | null {
 
 interface ParamSliderProps {
   paramKey: string;
-  entry: ParamSchemaEntry;
+  entry: NumericParamSchemaEntry;
   /** Authoritative value from the latest model build (source of truth). */
   value: number;
   /** Monotonic build id — bumps when fresh artifacts arrive (reconcile trigger). */

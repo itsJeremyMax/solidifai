@@ -206,6 +206,26 @@ def test_persistence_evidence_rejects_source_that_changes_while_hashed(tmp_path,
     assert session._persistence_evidence() is None
 
 
+def test_required_reference_in_build_brief_blocks_readiness_until_evidence_exists(tmp_path):
+    session = _session(
+        tmp_path,
+        _brief(references=[{"id": "raspberry-pi-5", "required": True}]),
+    )
+
+    report = session.get_conformance()
+
+    assert report["readiness"] == {
+        "level": "blocked",
+        "findingIds": ["reference:raspberry-pi-5"],
+    }
+    assert _finding(session, "reference:raspberry-pi-5") == {
+        "id": "reference:raspberry-pi-5",
+        "status": "unknown",
+        "severity": "blocking",
+        "message": "reference raspberry-pi-5",
+    }
+
+
 def test_persisted_v2_brief_without_a_build_reports_blocking_unknowns(tmp_path):
     root = tmp_path / "unbuilt"
     root.mkdir()

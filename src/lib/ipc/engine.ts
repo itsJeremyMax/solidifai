@@ -1,4 +1,5 @@
 import { engineCall, invoke } from "./core";
+import type { ParamValue } from "../artifacts";
 
 /* ───────────────────────────── engine RPC ─────────────────────────────── */
 
@@ -10,7 +11,7 @@ import { engineCall, invoke } from "./core";
  * @param values Partial map of `{ [paramKey]: value }` to apply.
  * @returns The raw engine response string, or `null` if the engine isn't ready.
  */
-export async function engineSetParams(values: Record<string, number>): Promise<string | null> {
+export async function engineSetParams(values: Record<string, ParamValue>): Promise<string | null> {
   return engineCall<string>("engine_set_params", { values });
 }
 

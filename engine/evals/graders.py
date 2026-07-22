@@ -588,9 +588,10 @@ def grade_motion(gs: GradingSession, spec: dict) -> GraderResult:
         else:
             detail = f"'{moving.name}' never engages within {thr} deg (parts do not actually mesh)"
     else:
-        ok = (not res["collides"]) or res["clearThrough"] >= thr
+        clear_through = res["clearThrough"]
+        ok = (not res["collides"]) or (clear_through is not None and clear_through >= thr)
         detail = (
-            f"'{moving.name}' swings clear through {res['clearThrough']} deg"
+            f"'{moving.name}' swings clear through {clear_through} deg"
             if ok
             else f"'{moving.name}' collides at {res['firstCollision']['at']} deg (needs {thr})"
         )

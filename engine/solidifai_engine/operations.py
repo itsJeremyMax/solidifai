@@ -78,11 +78,14 @@ class OperationQueue:
         longrun_hard_timeout: float = _LONGRUN_HARD_TIMEOUT,
         max_terminal: int = 256,
         terminal_max_age: float = 3600.0,
+        max_queued: int = 64,
     ):
         if hard_timeout < soft_timeout:
             raise ValueError("hard_timeout must be at least soft_timeout")
         if longrun_hard_timeout < longrun_soft_timeout:
             raise ValueError("longrun hard_timeout must be at least longrun soft_timeout")
+        if max_queued < 1:
+            raise ValueError("max_queued must be at least 1")
         self._execute = execute
         self._cancel_running = cancel_running
         self._begin_cancel = begin_cancel
@@ -94,6 +97,7 @@ class OperationQueue:
         self._longrun_hard_timeout = longrun_hard_timeout
         self._max_terminal = max_terminal
         self._terminal_max_age = terminal_max_age
+        self._max_queued = max_queued
         self._operations: dict[str, OperationRecord] = {}
         self._queued: deque[OperationRecord] = deque()
         self._running: OperationRecord | None = None
@@ -119,6 +123,8 @@ class OperationQueue:
                         self._finish(existing, "cancelled", error="superseded by replacement")
                 if self._running is not None and self._running.replace_key == replace_key:
                     cancel = self._running
+            if len(self._queued) >= self._max_queued:
+                raise RuntimeError(f"operation queue is full (maximum {self._max_queued} pending)")
             record = OperationRecord(
                 uuid.uuid4().hex, method, dict(params), replace_key=replace_key
             )
@@ -259,20 +265,22 @@ class OperationQueue:
                         if record.phase == "cancelling"
                         else "failed"
                     )
-                    self._finish(record, state, error=str(exc))
+                    error = "operation cancelled" if state == "cancelled" else str(exc)
+                    self._finish(record, state, error=error)
             else:
                 with self._condition:
                     if isinstance(result, dict) and result.get("ok") is False:
+                        domain_envelope = bool(result.get("_error_envelope"))
                         details = {
                             key: value
                             for key, value in result.items()
-                            if key not in {"ok", "error"}
+                            if key not in {"ok", "error", "_error_envelope"}
                         }
                         self._finish(
                             record,
                             "failed",
                             error=str(result.get("error", "operation failed")),
-                            details=details or None,
+                            details=details if domain_envelope or details else None,
                         )
                     else:
                         state = (

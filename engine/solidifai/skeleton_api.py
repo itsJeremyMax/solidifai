@@ -10,10 +10,8 @@ from typing import Any
 # constraint solver: placement stays frame-driven; a joint records how a child is
 # meant to move so check_motion can sweep it and check_interfaces can validate it.
 JOINT_KINDS = ("rigid", "revolute", "slider", "cylindrical", "planar", "ball")
-# Kinds that need a motion axis (default +Z when omitted). rigid has no DOF; ball
-# rotates freely but we still record an axis for the swept check.
-_ROTARY_KINDS = ("revolute", "cylindrical", "ball")
-_LINEAR_KINDS = ("slider", "cylindrical", "planar")
+VERIFIED_JOINT_KINDS = ("rigid", "revolute", "slider")
+UNVERIFIED_JOINT_KINDS = tuple(kind for kind in JOINT_KINDS if kind not in VERIFIED_JOINT_KINDS)
 
 
 @dataclass

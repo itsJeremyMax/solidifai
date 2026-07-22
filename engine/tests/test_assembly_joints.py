@@ -191,6 +191,15 @@ def build():
     rep = s.check_motion(joint="weld")
     assert rep["ok"] is True and rep["collides"] is False
     assert "rigid" in rep["note"]
+    assert rep["verification"] == {
+        "method": "static",
+        "continuousProof": False,
+        "samples": 0,
+        "samplesRequested": 0,
+        "samplesActual": 0,
+        "spacing": None,
+        "note": "No motion to verify for a rigid joint.",
+    }
 
 
 def test_check_motion_still_works_in_part_mode(tmp_path):
