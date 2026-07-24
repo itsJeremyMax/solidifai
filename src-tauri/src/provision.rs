@@ -279,7 +279,10 @@ fn is_file_name(value: &str) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Resolve current.json exactly once, then read its matching immutable pair. A

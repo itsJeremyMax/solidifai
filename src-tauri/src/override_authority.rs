@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use sha2::Sha256;
