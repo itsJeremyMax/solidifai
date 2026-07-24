@@ -19,7 +19,6 @@ use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
@@ -46,12 +45,21 @@ fn ipc_dir() -> PathBuf {
 }
 
 /// Marker substring that flags a file as owned/managed by solidifai.
-const MANAGED_MARKER: &str = "solidifai-managed";
+pub(crate) const MANAGED_MARKER: &str = "solidifai-managed";
+
+/// Summary of the managed files handled by one provisioning pass. Paths are
+/// workspace-relative so callers can surface them without exposing host paths.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionReport {
+    pub written: Vec<String>,
+    pub skipped_user_owned: Vec<String>,
+    pub errors: Vec<String>,
+}
 
 /// Canonical instructional content, embedded from `engine/workspace_templates/`
 /// so it ships in the binary and is written verbatim.
 const AGENTS_MD: &str = include_str!("../../engine/workspace_templates/AGENTS.md");
-const CLAUDE_MD: &str = include_str!("../../engine/workspace_templates/CLAUDE.md");
 
 const MFG_REGION_START: &str = "<!-- solidifai-profile:start";
 const MFG_REGION_END: &str = "<!-- solidifai-profile:end -->";
@@ -59,26 +67,10 @@ const MFG_REGION_END: &str = "<!-- solidifai-profile:end -->";
 const CUSTOM_START: &str = "<!-- solidifai-custom:start -->";
 const CUSTOM_END: &str = "<!-- solidifai-custom:end -->";
 
-/// The using-solidifai entry-point directive, injected verbatim into the agent's
-/// context at session start (the Claude hook reads it; the Cursor rule embeds it).
-/// No managed marker: it must land in context clean.
-const USING_SOLIDIFAI_DIRECTIVE: &str = "\
-solidifai CAD workspace: do this first.
-
-Before you reply, take any action, or invoke any other skill, invoke the \
-`using-solidifai` skill. It orients you to this workspace and the `solidifai-cad` \
-engine that every other solidifai skill drives. This holds even when the request \
-looks simple or maps cleanly to modeling or product design: those skills assume \
-you have already read using-solidifai.
-
-If your harness has no skill mechanism, read \
-`.claude/skills/using-solidifai/SKILL.md` first instead, then continue.
-";
-
 /// The app-managed Agent Skills collection (multiple skills, each a directory with
 /// `SKILL.md` plus optional `references/` and `examples/`). Embedded as a tree so
 /// the whole thing ships in the binary and is written into every workspace under
-/// both agent skill roots. Unlike the overridable templates, these are NOT
+/// each adapter's native skill root. Unlike the overridable templates, these are NOT
 /// per-file user-editable: we always refresh OUR skill files on each provision so
 /// improvements flow, but we never touch other skills a user adds.
 static SKILLS_DIR: include_dir::Dir =
@@ -390,9 +382,9 @@ pub fn legacy_workspace_root() -> Option<PathBuf> {
 // One template is user-overridable via the global settings store: AGENTS.md.
 // An override lives at `<app_config_dir>/templates/<name>`. When present, it
 // wins over the embedded `include_str!` default. The other config files
-// (.mcp.json / .codex / opencode.json / .claude settings) are code-generated and
-// NOT user-editable; CLAUDE.md stays the embedded `@AGENTS.md`; and the Agent
-// Skills collection is app-managed (see `SKILLS_DIR`), not per-file overridable.
+// Adapter configs and harness pointers are code-generated and NOT user-editable;
+// the Agent Skills collection is app-managed (see `SKILLS_DIR`), not per-file
+// overridable.
 
 /// The overridable template names.
 pub const TEMPLATE_NAMES: [&str; 1] = ["AGENTS.md"];
@@ -502,13 +494,18 @@ pub fn sanitize_folder_name(name: &str) -> String {
 /// Write `content` to `path` if the file is missing or is one of ours (contains
 /// the managed marker). Creates parent dirs as needed. Returns `Ok(true)` if it
 /// wrote, `Ok(false)` if it skipped a user-owned file.
-fn write_managed(path: &Path, content: &str) -> Result<bool, String> {
+enum WriteOutcome {
+    Written,
+    SkippedUserOwned,
+}
+
+fn write_managed(path: &Path, content: &str) -> Result<WriteOutcome, String> {
     if path.exists() {
         let existing = fs::read_to_string(path)
             .map_err(|e| format!("failed to read existing {}: {e}", path.display()))?;
         if !existing.contains(MANAGED_MARKER) {
             // User made this file their own; leave it untouched.
-            return Ok(false);
+            return Ok(WriteOutcome::SkippedUserOwned);
         }
     }
     if let Some(parent) = path.parent() {
@@ -516,121 +513,19 @@ fn write_managed(path: &Path, content: &str) -> Result<bool, String> {
             .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
     fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(true)
+    Ok(WriteOutcome::Written)
 }
 
-// -- config file builders (pure; produce strings with the managed marker) -----
-
-/// `.mcp.json` — Claude Code / generic MCP server registration.
-pub fn mcp_json(py: &str, sock: &str) -> String {
-    let v = json!({
-        "//": format!("{MANAGED_MARKER}: generated by solidifai; safe to overwrite"),
-        "mcpServers": {
-            "solidifai-cad": {
-                "command": py,
-                "args": ["-m", "solidifai_mcp"],
-                "env": { "SOLIDIFAI_ENGINE_SOCK": sock }
-            }
-        }
-    });
-    pretty(&v)
-}
-
-/// `.claude/settings.json` — pre-approve the `.mcp.json` server (skip the per-server
-/// prompt) and install a `SessionStart` hook injecting the using-solidifai directive
-/// each session: the hard backstop for AGENTS.md's soft "read using-solidifai first"
-/// line. `directive_path` is the absolute path to the file the hook prints.
-pub fn claude_settings_json(py: &str, directive_path: &str) -> String {
-    let v = json!({
-        "//": format!("{MANAGED_MARKER}: generated by solidifai; safe to overwrite"),
-        "enabledMcpjsonServers": ["solidifai-cad"],
-        // No matcher: fire on every session start (startup, resume, clear, compact)
-        // so the orientation is re-seeded after a context reset too.
-        "hooks": {
-            "SessionStart": [
-                { "hooks": [
-                    { "type": "command", "command": session_start_hook_command(py, directive_path) }
-                ] }
-            ]
-        }
-    });
-    pretty(&v)
-}
-
-/// Shell command for a SessionStart hook: print the using-solidifai directive to
-/// stdout so the harness injects it as context. Uses the engine's absolute Python
-/// (already required for the MCP server) to read the directive path passed as
-/// `argv[1]` — the path never enters the Python source, so there is no inline
-/// quoting or Windows-backslash hazard across sh / cmd / powershell.
-fn session_start_hook_command(py: &str, directive_path: &str) -> String {
-    format!(
-        "\"{py}\" -c \"import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))\" \"{directive_path}\""
-    )
-}
-
-/// `.cursor/rules/using-solidifai.mdc` — Cursor has no session hook and does not
-/// reliably inject AGENTS.md, so an `alwaysApply` project rule is its equivalent
-/// of the Claude SessionStart hook: Cursor prepends it to every request. The
-/// managed marker rides in an HTML comment (Cursor ignores it) so [`write_managed`]
-/// can refresh it without clobbering a rule the user made their own.
-pub fn cursor_rule_mdc() -> String {
-    format!(
-        "---\nalwaysApply: true\n---\n<!-- {MANAGED_MARKER}: generated by solidifai; safe to overwrite -->\n\n{USING_SOLIDIFAI_DIRECTIVE}"
-    )
-}
-
-/// `opencode.json` — OpenCode MCP + instructions config.
-///
-/// OpenCode's config schema sets `additionalProperties: false`, so a `"//"`
-/// comment key is rejected as an unrecognized key. It does enable
-/// `allowComments`, so the managed marker rides on a leading JSONC `//` line
-/// comment instead (still detected by `write_managed`).
-pub fn opencode_json(py: &str, sock: &str) -> String {
-    let v = json!({
-        "$schema": "https://opencode.ai/config.json",
-        "mcp": {
-            "solidifai-cad": {
-                "type": "local",
-                "command": [py, "-m", "solidifai_mcp"],
-                "environment": { "SOLIDIFAI_ENGINE_SOCK": sock },
-                "enabled": true
-            }
-        },
-        "instructions": ["AGENTS.md"]
-    });
-    format!(
-        "// {MANAGED_MARKER}: generated by solidifai; safe to overwrite\n{}",
-        pretty(&v)
-    )
-}
-
-/// `.codex/config.toml` — Codex MCP server registration.
-pub fn codex_config_toml(py: &str, sock: &str) -> String {
-    // Hand-rendered TOML so we can place a managed-marker comment at the top and
-    // control quoting. Backslashes/quotes are not expected in our generated paths,
-    // but escape defensively for TOML basic strings.
-    let py_e = toml_escape(py);
-    let sock_e = toml_escape(sock);
-    format!(
-        "# {MANAGED_MARKER}: generated by solidifai; safe to overwrite\n\
-         \n\
-         [mcp_servers.solidifai-cad]\n\
-         command = \"{py_e}\"\n\
-         args = [\"-m\", \"solidifai_mcp\"]\n\
-         \n\
-         [mcp_servers.solidifai-cad.env]\n\
-         SOLIDIFAI_ENGINE_SOCK = \"{sock_e}\"\n"
-    )
-}
-
-fn toml_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn pretty(v: &serde_json::Value) -> String {
-    let mut s = serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".to_string());
-    s.push('\n');
-    s
+fn record_write(report: &mut ProvisionReport, root: &Path, path: &Path, outcome: WriteOutcome) {
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    match outcome {
+        WriteOutcome::Written => report.written.push(relative),
+        WriteOutcome::SkippedUserOwned => report.skipped_user_owned.push(relative),
+    }
 }
 
 /// Render the full `## Manufacturing profile` region (markers + lines).
@@ -765,8 +660,9 @@ pub fn provision(
     py: &str,
     sock: &str,
     templates_dir: &Path,
-) -> Result<(), String> {
+) -> Result<ProvisionReport, String> {
     let root = &ws.root;
+    let mut report = ProvisionReport::default();
 
     // Render the live manufacturing-profile region into the always-loaded brief.
     // Rust stays the sole writer of AGENTS.md. config_dir is the parent of the
@@ -779,47 +675,34 @@ pub fn provision(
         &crate::custom_instructions::render_block(config_dir, root.as_path()),
     );
 
-    // The SessionStart hook reads this by absolute path. It is marker-less (so it
-    // injects cleanly), which means it must bypass write_managed — write_managed
-    // would mistake a marker-less existing file for a user-owned one and skip it.
-    let directive_path = ws.dot.join("using-solidifai-directive.md");
-    if let Some(parent) = directive_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    // Instruction pointers are independent of the engine and must be available
+    // on an offline first launch. MCP config embeds the interpreter as its command,
+    // so defer only those files until it has been resolved.
+    for adapter in crate::agent_harness::adapter_registry() {
+        for output in adapter.instruction_outputs() {
+            let path = root.join(output.path);
+            let outcome = write_managed(&path, &output.content)?;
+            record_write(&mut report, root, &path, outcome);
+        }
     }
-    fs::write(&directive_path, USING_SOLIDIFAI_DIRECTIVE)
-        .map_err(|e| format!("failed to write {}: {e}", directive_path.display()))?;
-    let directive_str = directive_path.to_string_lossy();
-
-    // MCP / agent config (code-generated; NOT user-editable). All four embed the
-    // interpreter as the command, so when it is unknown (e.g. an offline first
-    // launch before the engine cache exists) skip them rather than writing a
-    // broken empty command; they are managed files, rewritten on the next open
-    // once the engine resolves.
     if !py.is_empty() {
-        write_managed(&root.join(".mcp.json"), &mcp_json(py, sock))?;
-        write_managed(
-            &root.join(".codex/config.toml"),
-            &codex_config_toml(py, sock),
-        )?;
-        write_managed(&root.join("opencode.json"), &opencode_json(py, sock))?;
-        write_managed(
-            &root.join(".claude/settings.json"),
-            &claude_settings_json(py, &directive_str),
-        )?;
+        for adapter in crate::agent_harness::adapter_registry() {
+            for output in adapter.mcp_outputs(py, sock) {
+                let path = root.join(output.path);
+                let outcome = write_managed(&path, &output.content)?;
+                record_write(&mut report, root, &path, outcome);
+            }
+        }
     }
-    // Cursor's session-start equivalent (always-apply rule).
-    write_managed(
-        &root.join(".cursor/rules/using-solidifai.mdc"),
-        &cursor_rule_mdc(),
-    )?;
 
-    // Instructions (AGENTS.md overridable; CLAUDE.md stays the embedded @AGENTS.md).
-    write_managed(&root.join("AGENTS.md"), &agents)?;
-    write_managed(&root.join("CLAUDE.md"), CLAUDE_MD)?;
+    // Instructions are rendered above with the live manufacturing and custom
+    // regions. Harness pointers are renderer outputs owned by agent_harness.
+    let agents_path = root.join("AGENTS.md");
+    let outcome = write_managed(&agents_path, &agents)?;
+    record_write(&mut report, root, &agents_path, outcome);
 
     // App-managed Agent Skills collection: write the ENABLED embedded skills under
-    // both agent skill roots (preserving subdirs). The enabled set is the
+    // every distinct adapter skill root (preserving subdirs). The enabled set is the
     // per-workspace agent config (default: all skills, auto-provision on). When
     // auto-provision is off the user hand-manages their skill dirs and we skip
     // writing entirely. Re-writes OUR enabled skill files so improvements flow;
@@ -827,14 +710,15 @@ pub fn provision(
     let agent_cfg = crate::agent_config::load(&ws.dot);
     if agent_cfg.auto_provision_skills {
         let enabled = agent_cfg.enabled_skills.as_deref();
-        write_skills_tree(&root.join(".claude/skills"), enabled)?;
-        write_skills_tree(&root.join(".opencode/skills"), enabled)?;
+        for skill_root in crate::agent_harness::skill_roots() {
+            write_skills_tree(&root.join(skill_root), enabled)?;
+        }
     }
 
     // No starter model.py: a fresh workspace opens modelless (the viewport shows
     // its empty state) and the agent's first build writes model.py itself.
 
-    Ok(())
+    Ok(report)
 }
 
 /// Recursively write the ENABLED embedded skills into `dest` (a `skills/` root),
@@ -1049,103 +933,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_json_is_valid_and_has_contract_shape() {
-        let s = mcp_json(PY, SOCK);
-        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
-        let srv = &v["mcpServers"]["solidifai-cad"];
-        assert_eq!(srv["command"], PY);
-        assert_eq!(srv["args"][0], "-m");
-        assert_eq!(srv["args"][1], "solidifai_mcp");
-        assert_eq!(srv["env"]["SOLIDIFAI_ENGINE_SOCK"], SOCK);
-        assert!(s.contains(MANAGED_MARKER));
-    }
-
-    #[test]
-    fn opencode_json_is_valid_and_has_contract_shape() {
-        let s = opencode_json(PY, SOCK);
-        // The managed marker rides on a leading JSONC `//` comment, not a `"//"`
-        // key (OpenCode's schema rejects unknown keys but allows comments).
-        assert!(s.starts_with("// "));
-        assert!(s.contains(MANAGED_MARKER));
-        // Strip comment lines so we can validate the body as strict JSON.
-        let body: String = s
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
-        assert_eq!(v["$schema"], "https://opencode.ai/config.json");
-        let srv = &v["mcp"]["solidifai-cad"];
-        assert_eq!(srv["type"], "local");
-        assert_eq!(srv["command"][0], PY);
-        assert_eq!(srv["command"][2], "solidifai_mcp");
-        assert_eq!(srv["environment"]["SOLIDIFAI_ENGINE_SOCK"], SOCK);
-        assert_eq!(srv["enabled"], true);
-        assert_eq!(v["instructions"][0], "AGENTS.md");
-    }
-
-    #[test]
-    fn claude_settings_enables_server_and_injects_using_solidifai_hook() {
-        let directive = "/abs/ws/.solidifai/using-solidifai-directive.md";
-        let s = claude_settings_json(PY, directive);
-        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
-        assert_eq!(v["enabledMcpjsonServers"][0], "solidifai-cad");
-
-        // A SessionStart hook injects the using-solidifai directive into the
-        // agent's context at the start of every session (the hard backstop for
-        // the soft "read using-solidifai first" instruction).
-        let entry = &v["hooks"]["SessionStart"][0]["hooks"][0];
-        assert_eq!(entry["type"], "command");
-        let cmd = entry["command"]
-            .as_str()
-            .expect("SessionStart command string");
-        assert!(cmd.contains(PY), "hook runs the engine python: {cmd}");
-        assert!(
-            cmd.contains(directive),
-            "hook reads the directive file by absolute path: {cmd}"
-        );
-        assert!(s.contains(MANAGED_MARKER));
-    }
-
-    #[test]
-    fn using_solidifai_directive_is_imperative_and_names_the_skill() {
-        let d = USING_SOLIDIFAI_DIRECTIVE;
-        assert!(d.contains("using-solidifai"), "directive names the skill");
-        assert!(!d.trim().is_empty());
-        // Injected verbatim into context, so it must not carry the managed marker.
-        assert!(
-            !d.contains(MANAGED_MARKER),
-            "directive is injected as-is; no marker noise"
-        );
-    }
-
-    #[test]
-    fn cursor_rule_is_always_applied_and_names_the_skill() {
-        let r = cursor_rule_mdc();
-        // Cursor has no session hook and does not reliably inject AGENTS.md, so an
-        // always-apply rule is its SessionStart-equivalent.
-        assert!(
-            r.contains("alwaysApply: true"),
-            "rule must be always-applied"
-        );
-        assert!(r.contains("using-solidifai"), "rule names the skill");
-        // Managed (via an HTML comment Cursor ignores) so provision can refresh it.
-        assert!(r.contains(MANAGED_MARKER));
-    }
-
-    #[test]
-    fn codex_toml_parses_and_has_contract_shape() {
-        let s = codex_config_toml(PY, SOCK);
-        let v: toml::Value = toml::from_str(&s).expect("valid TOML");
-        let srv = &v["mcp_servers"]["solidifai-cad"];
-        assert_eq!(srv["command"].as_str().unwrap(), PY);
-        assert_eq!(srv["args"][0].as_str().unwrap(), "-m");
-        assert_eq!(srv["args"][1].as_str().unwrap(), "solidifai_mcp");
-        assert_eq!(srv["env"]["SOLIDIFAI_ENGINE_SOCK"].as_str().unwrap(), SOCK);
-        assert!(s.contains(MANAGED_MARKER));
-    }
-
-    #[test]
     fn provision_writes_all_files_and_is_idempotent() {
         let ws = tmp_ws();
         let templates = tmp_templates();
@@ -1156,28 +943,16 @@ mod tests {
             ".codex/config.toml",
             "opencode.json",
             ".claude/settings.json",
+            ".gemini/settings.json",
+            ".github/mcp.json",
+            ".pi/mcp.json",
             "AGENTS.md",
             "CLAUDE.md",
-            // Cross-harness using-solidifai entry-point: the Claude SessionStart
-            // hook's directive file and the Cursor always-apply rule.
-            ".solidifai/using-solidifai-directive.md",
-            ".cursor/rules/using-solidifai.mdc",
+            "GEMINI.md",
         ];
         for rel in expected {
             assert!(ws.root.join(rel).is_file(), "missing {rel}");
         }
-
-        // The Claude SessionStart hook must point at the directive file's real
-        // absolute path in THIS workspace (not a placeholder), and the directive
-        // file must carry the using-solidifai instruction.
-        let settings = fs::read_to_string(ws.root.join(".claude/settings.json")).unwrap();
-        let directive_abs = ws.root.join(".solidifai/using-solidifai-directive.md");
-        assert!(
-            settings.contains(&*directive_abs.to_string_lossy()),
-            "SessionStart hook must reference the directive's absolute path"
-        );
-        let directive = fs::read_to_string(&directive_abs).unwrap();
-        assert!(directive.contains("using-solidifai"));
 
         // No starter model is provisioned: a fresh workspace has no model.py
         // until the agent's first build creates it.
@@ -1186,8 +961,9 @@ mod tests {
             "model.py should not be provisioned into a new workspace"
         );
 
-        // The whole app-managed skill tree is provisioned under BOTH agent skill
-        // roots, preserving subdirs (SKILL.md + references/ + examples/).
+        // The whole app-managed skill tree is provisioned under every distinct
+        // adapter skill root, preserving subdirs (SKILL.md + references/ +
+        // examples/).
         let skill_tree = [
             "skills/using-solidifai/SKILL.md",
             "skills/solidifai-product-design/SKILL.md",
@@ -1201,15 +977,13 @@ mod tests {
             "skills/solidifai-debugging/SKILL.md",
             "skills/solidifai-debugging/references/common-errors.md",
         ];
-        for rel in skill_tree {
-            assert!(
-                ws.root.join(".claude").join(rel).is_file(),
-                "missing .claude/{rel}"
-            );
-            assert!(
-                ws.root.join(".opencode").join(rel).is_file(),
-                "missing .opencode/{rel}"
-            );
+        for root in [".agents", ".claude", ".opencode", ".gemini"] {
+            for rel in skill_tree {
+                assert!(
+                    ws.root.join(root).join(rel).is_file(),
+                    "missing {root}/{rel}"
+                );
+            }
         }
 
         // The provisioned SKILL.md matches the embedded source (frontmatter name).
@@ -1222,6 +996,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(ws.root.join("CLAUDE.md")).unwrap().trim_end(),
             "<!-- solidifai-managed: safe to overwrite. Canonical copy: engine/workspace_templates/CLAUDE.md -->\n@AGENTS.md".trim_end()
+        );
+        assert_eq!(
+            fs::read_to_string(ws.root.join("GEMINI.md")).unwrap().trim_end(),
+            "<!-- solidifai-managed: safe to overwrite. Canonical copy: engine/workspace_templates/GEMINI.md -->\n@AGENTS.md".trim_end()
         );
 
         // The provisioned AGENTS.md must carry the live manufacturing-profile region.
@@ -1236,10 +1014,83 @@ mod tests {
         let _ = fs::remove_dir_all(&templates);
     }
 
+    #[test]
+    fn workspace_provisioning_exposes_the_six_documented_harnesses_in_display_order() {
+        let documented_names = crate::agent_harness::adapter_registry()
+            .iter()
+            .map(|adapter| adapter.display_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            documented_names,
+            [
+                "Codex",
+                "Claude Code",
+                "OpenCode",
+                "Gemini CLI",
+                "GitHub Copilot CLI",
+                "Pi",
+            ]
+        );
+    }
+
+    #[test]
+    fn provision_reports_written_and_user_owned_paths() {
+        let ws = tmp_ws();
+        let templates = tmp_templates();
+        let user_owned = ws.root.join(".pi/mcp.json");
+        fs::create_dir_all(user_owned.parent().unwrap()).unwrap();
+        fs::write(&user_owned, "USER OWNED").unwrap();
+
+        let report = provision(&ws, PY, SOCK, &templates).expect("provision");
+
+        assert!(report.written.contains(&"AGENTS.md".to_string()));
+        assert!(report
+            .skipped_user_owned
+            .contains(&".pi/mcp.json".to_string()));
+        assert!(report.errors.is_empty());
+
+        let _ = fs::remove_dir_all(&ws.root);
+        let _ = fs::remove_dir_all(&templates);
+    }
+
+    #[test]
+    fn provision_writes_harness_instruction_pointers_without_an_interpreter() {
+        let ws = tmp_ws();
+        let templates = tmp_templates();
+
+        provision(&ws, "", SOCK, &templates).expect("offline provision");
+
+        assert!(
+            ws.root.join("CLAUDE.md").is_file(),
+            "Claude pointer must not depend on the interpreter"
+        );
+        assert!(
+            ws.root.join("GEMINI.md").is_file(),
+            "Gemini pointer must not depend on the interpreter"
+        );
+        for rel in [
+            ".mcp.json",
+            ".claude/settings.json",
+            ".codex/config.toml",
+            "opencode.json",
+            ".gemini/settings.json",
+            ".github/mcp.json",
+            ".pi/mcp.json",
+        ] {
+            assert!(
+                !ws.root.join(rel).exists(),
+                "MCP configuration must wait for an interpreter: {rel}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&ws.root);
+        let _ = fs::remove_dir_all(&templates);
+    }
+
     /// The always-loaded brief must LEAD with the using-solidifai directive, so
-    /// every harness that reads AGENTS.md (Codex, OpenCode, Cursor, Claude via
-    /// CLAUDE.md) sees it before anything else — the universal baseline behind the
-    /// Claude/Cursor hard hooks.
+    /// every harness that reads AGENTS.md (directly or through a harness pointer)
+    /// sees it before anything else.
     #[test]
     fn provisioned_agents_md_leads_with_using_solidifai_directive() {
         let ws = tmp_ws();

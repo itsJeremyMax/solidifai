@@ -23,6 +23,26 @@ and your conversation with Sol.
 > A workspace is a real folder on disk with its own git history. Every change Sol
 > makes is committed, so your work is versioned and you can always step back.
 
+## Choose a CLI harness
+
+When you open a workspace, solidifai writes its managed instruction files and embedded skills
+for each supported harness; it writes MCP configuration once the engine interpreter is ready.
+Bring the CLI you already use: solidifai does not install any CLI or extension for you.
+
+| Harness | Native config | Native skill path |
+|---------|---------------|-------------------|
+| Codex | `.codex/config.toml` | `.agents/skills/` |
+| Claude Code | `.mcp.json`; `.claude/settings.json` | `.claude/skills/` |
+| OpenCode | `opencode.json` | `.opencode/skills/` |
+| Gemini CLI | `.gemini/settings.json` | `.gemini/skills/` |
+| GitHub Copilot CLI | `.github/mcp.json` | `.agents/skills/` |
+| Pi | `.pi/mcp.json` | `.agents/skills/` |
+
+Codex, OpenCode, GitHub Copilot CLI, and Pi read `AGENTS.md`; Claude Code also receives
+`CLAUDE.md`, and Gemini CLI also receives `GEMINI.md`. If you use Pi, run
+`pi install npm:pi-mcp-extension` once to enable its MCP tools. solidifai does not install
+that extension.
+
 ## Describe a part
 
 The editor opens with a terminal on one side. That is where you talk to Sol.
