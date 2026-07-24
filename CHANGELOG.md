@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.8.0](https://github.com/itsJeremyMax/solidifai/compare/v0.7.0...v0.8.0) (2026-07-24)
+
+
+### Features
+
+* add capability-aware CAD operations ([679cf8d](https://github.com/itsJeremyMax/solidifai/commit/679cf8d8d3c0a8bb00744d03e4361d970d10b5a2))
+* add native agent harness registry ([5b12d01](https://github.com/itsJeremyMax/solidifai/commit/5b12d0120efdd3994f46ef458bc6af51cbbb5c80))
+* **agent:** require explicit risk assumption dispositions ([69c4677](https://github.com/itsJeremyMax/solidifai/commit/69c46770d916fd7c7baa74eee6b67cd49372f4a1))
+* centralize manufacturing standards and materials ([3c3ff48](https://github.com/itsJeremyMax/solidifai/commit/3c3ff48fb1ee1610b8b13521623834664a6a130b))
+* **engine:** schedule cancellable single-writer operations ([097671e](https://github.com/itsJeremyMax/solidifai/commit/097671eaecb80d6b62b594caa888176663d39f38))
+* **engine:** version protocol and design intent contracts ([f5f7b4f](https://github.com/itsJeremyMax/solidifai/commit/f5f7b4fb0470057266f57eb98708b6006cc11602))
+* gate strict exports on design readiness ([0709f97](https://github.com/itsJeremyMax/solidifai/commit/0709f97e99a8b8a90398e062da1f20f884f036eb))
+* native harness provisioning registry + agent support panel ([af2a849](https://github.com/itsJeremyMax/solidifai/commit/af2a849bb7b7c1d5481790187523552382dd36cf))
+* publish imports and build artifacts transactionally ([eda67b3](https://github.com/itsJeremyMax/solidifai/commit/eda67b363085fabed90999ab0fa9bdaf3e96108e))
+* report and refresh agent harness support ([93718ca](https://github.com/itsJeremyMax/solidifai/commit/93718ca827568df0d596cfab3a0705d597179d2d))
+* show workspace agent harness readiness ([bd099e5](https://github.com/itsJeremyMax/solidifai/commit/bd099e51ae0f9c3468ea885c791cf8eca58ae6a8))
+
+
+### Bug Fixes
+
+* align native harness labels ([6c12ee0](https://github.com/itsJeremyMax/solidifai/commit/6c12ee0415c65104c8549b1979e0b9ab82981acc))
+* **ci:** clippy cmp_owned in harness tests, skip local-only spec test, bump fast-uri ([041de38](https://github.com/itsJeremyMax/solidifai/commit/041de388aafa742b803537b6a3b89f8840fd61f4))
+* **ci:** restore security and compatibility gates ([11f856f](https://github.com/itsJeremyMax/solidifai/commit/11f856f546bd502f5b56fedc6ffa6404427f95dc))
+* **ci:** restore x-release-please-version annotation in engine uv.lock ([1df5200](https://github.com/itsJeremyMax/solidifai/commit/1df52008d813657520d71c0cabb4ccc4f2073c0a))
+* close trust audit findings ([a35c414](https://github.com/itsJeremyMax/solidifai/commit/a35c414a01e1ca57e0d68dd2e4ca2fd0a6e02f16))
+* **engine:** align type and lock metadata ([2d573ef](https://github.com/itsJeremyMax/solidifai/commit/2d573ef25c5caa17540a031dd44af1ad38118a54))
+* **engine:** preserve compatibility across trust boundaries ([f50ba73](https://github.com/itsJeremyMax/solidifai/commit/f50ba73afd125a3cf78adfdd64e155805be5e57b))
+* **engine:** update Pillow security baseline ([7ce2c47](https://github.com/itsJeremyMax/solidifai/commit/7ce2c47ef7337ab853c3d33f33a05f1496a9e312))
+* provision native harness roots offline ([3ced7c2](https://github.com/itsJeremyMax/solidifai/commit/3ced7c2d5771a616f652ba092681e30023d56e27))
+* **security:** bump mcp to 1.28.1 (PYSEC-2026-3483) ([826dfbc](https://github.com/itsJeremyMax/solidifai/commit/826dfbc998922b8fa496dd5bacfe35b40a303d5d))
+
 ## [0.7.0](https://github.com/itsJeremyMax/solidifai/compare/v0.6.0...v0.7.0) (2026-07-10)
 
 
