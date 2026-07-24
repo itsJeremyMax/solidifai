@@ -1865,7 +1865,7 @@ wheels = [
 
 [[package]]
 name = "solidifai-engine"
-version = "0.7.0"
+version = "0.7.0" # x-release-please-version
 source = { editable = "." }
 dependencies = [
     { name = "build123d" },
