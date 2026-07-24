@@ -479,7 +479,7 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     use super::{
         adapter, adapter_registry, detect_with, is_executable_file, skill_roots, HarnessId,
@@ -608,7 +608,7 @@ mod tests {
         assert!(adapter(HarnessId::GeminiCli)
             .outputs(PY, SOCK)
             .iter()
-            .any(|o| o.path == PathBuf::from(".gemini/settings.json")));
+            .any(|o| o.path == Path::new(".gemini/settings.json")));
     }
 
     #[test]
@@ -639,7 +639,7 @@ mod tests {
             let output = adapter(id)
                 .outputs(PY, SOCK)
                 .into_iter()
-                .find(|output| output.path == PathBuf::from(path))
+                .find(|output| output.path == Path::new(path))
                 .unwrap_or_else(|| panic!("{id:?} is missing {path}"));
             assert!(
                 output.content.contains("solidifai-managed"),
@@ -695,7 +695,7 @@ mod tests {
         let settings = adapter(HarnessId::ClaudeCode)
             .outputs(PY, SOCK)
             .into_iter()
-            .find(|output| output.path == PathBuf::from(".claude/settings.json"))
+            .find(|output| output.path == Path::new(".claude/settings.json"))
             .expect("Claude Code settings output");
         let value: serde_json::Value = serde_json::from_str(&settings.content).expect("valid JSON");
         let command = value["hooks"]["SessionStart"][0]["hooks"][0]["command"]

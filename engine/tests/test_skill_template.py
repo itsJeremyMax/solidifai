@@ -360,6 +360,7 @@ def test_readme_summarizes_capability_triage_and_async_operations():
     assert "get_operation" in text
 
 
+@pytest.mark.skipif(not SPEC.exists(), reason="docs/superpowers/ is local-only (gitignored)")
 def test_capability_contract_spec_uses_tagged_boolean_and_enum_params():
     text = SPEC.read_text(encoding="utf-8")
     assert '{type: "boolean", value: bool}' in text
