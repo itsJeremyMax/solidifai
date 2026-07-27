@@ -72,7 +72,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 # Base64 encoding for thumbnail data URLs (already transitive; declared so the
 # version is explicit and the usage of `Engine` trait is not an unlisted dep).
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 # Parse generated .codex/config.toml back in provisioner unit tests.
