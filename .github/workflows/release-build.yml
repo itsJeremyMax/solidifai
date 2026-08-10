@@ -86,7 +86,7 @@ jobs:
           - { os: ubuntu-22.04,   rust_target: x86_64-unknown-linux-gnu, label: Linux,                   bundles: appimage }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # A partial re-run of a single build leg AFTER the release was published
       # would clobber assets whose signatures are frozen in the mirrored
@@ -120,14 +120,14 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libgl1-mesa-dev libglu1-mesa xvfb
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with: { toolchain: stable, targets: '${{ matrix.rust_target }}' }
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with: { workspaces: 'src-tauri -> target' }
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - run: pnpm install --frozen-lockfile
 
@@ -264,7 +264,7 @@ jobs:
       actions: write
     steps:
       # Needed for scripts/build_updater_notes.py (imported by the manifest step).
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # SINGLE WRITER of latest.json. The build legs upload payloads + .sig but
       # no manifest (tauri-action's per-leg merge of the shared asset raced when
@@ -528,7 +528,7 @@ jobs:
     concurrency:
       group: engine-index
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build + upload solidifai-engine-index.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
